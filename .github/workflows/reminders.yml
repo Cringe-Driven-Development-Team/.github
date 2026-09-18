@@ -2,28 +2,34 @@ name: Напоминания о ревью
 
 on:
   schedule:
-    # 10:00, 15:00, 20:00 по Москве; GitHub может запустить на 5–15 минут позже
-    - cron: '0 7,12,17 * * *'
+    # 10:00, 15:00, 20:00 по Москве; GitHub может запустить на 5–15 минут позже.
+    # Утренний запуск отдельной строкой: по ней job узнаёт, что пора проверить срок токена доски
+    - cron: '0 7 * * *'
+    - cron: '0 12,17 * * *'
   workflow_dispatch:
     inputs:
       min_hours:
-        description: Сколько часов ревью должно ждать, чтобы попасть в напоминание
+        description: Сколько часов ревью или апрув должны ждать, чтобы попасть в напоминание
         default: '4'
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   remind:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Напомнить ревьюверам
+      - name: Напомнить о ревью и проверить уведомления
         env:
           GH_TOKEN:  ${{ github.token }}
           TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT:      ${{ vars.TELEGRAM_CHAT_ID }}
           TOPIC:     ${{ vars.TELEGRAM_REVIEW_TOPIC_ID || vars.TELEGRAM_TOPIC_ID }}
+          OPS_TOPIC: ${{ vars.TELEGRAM_TOPIC_ID }}
           MAP:       ${{ vars.TELEGRAM_USER_MAP }}
           MIN_HOURS: ${{ inputs.min_hours || '4' }}
+          PAT:       ${{ secrets.ADD_TO_PROJECT_PAT }}
+          DAILY:     ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0 7 * * *' }}
         run: bash scripts/reminders.sh
