@@ -26,6 +26,7 @@
 | [react](https://github.com/Cringe-Driven-Development-Team/react) | своя реализация React, публикуется в npm |
 | [static](https://github.com/Cringe-Driven-Development-Team/static) | статика, выкладывается в S3 и раздаётся через CDN |
 | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | инфраструктура: Pulumi и Ansible для двух VPS |
+| [figma](https://github.com/Cringe-Driven-Development-Team/figma) | всё, что связано с макетами в Figma |
 | [docs](https://github.com/Cringe-Driven-Development-Team/docs) | архитектурные схемы — [сайт](https://cringe-driven-development-team.github.io/docs/) |
 | [.github](https://github.com/Cringe-Driven-Development-Team/.github) | общие workflow: уведомления в Telegram и доска задач |
 

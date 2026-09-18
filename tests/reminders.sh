@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Прогоняет scripts/reminders.sh на подставных ответах GitHub.
-# gh подменён заглушкой: отдаёт $TMP/fixture.json, запрос сохраняет в $TMP/query.
+# gh подменён заглушкой: ответы берёт из env и $TMP/fixture.json, запросы записывает в $TMP/query и $TMP/calls.
 # Нужны bash, jq и GNU date. Запуск: bash tests/reminders.sh
 set -u
 
@@ -10,20 +10,52 @@ SCRIPT="$ROOT/scripts/reminders.sh"
 
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
-# заглушка gh api graphql: запомнить запрос, отдать фикстуру или упасть
-for a in "$@"; do case "$a" in query=*) printf '%s' "${a#query=}" > "$QUERY_FILE" ;; esac; done
-[ -z "${GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
-cat "$FIXTURE"
+# заглушка gh api: GraphQL — фикстура; запуски workflow — из RUNS и PREV_RUN; rate_limit — заголовки из PAT_HEADERS
+printf '%s\t%s\n' "${GH_TOKEN:-}" "$*" >> "$CALLS"
+filter="."
+args=("$@")
+for i in "${!args[@]}"; do
+  case "${args[$i]}" in
+    query=*) printf '%s' "${args[$i]#query=}" > "$QUERY_FILE" ;;
+    --jq) filter=${args[$((i + 1))]} ;;
+  esac
+done
+case "$*" in
+  "api graphql"*)
+    [ -z "${GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+    cat "$FIXTURE" ;;
+  "api -i rate_limit")
+    printf '%s\n' "$PAT_HEADERS"
+    case "$PAT_HEADERS" in *" 200"*) ;; *) exit 1 ;; esac ;;
+  *"/runs?status=success"*)
+    [ -z "${RUNS_FAIL:-}" ] || { echo "gh: HTTP 500" >&2; exit 1; }
+    jq -n --arg at "${PREV_RUN:-}" '{workflow_runs: (if $at == "" then [] else [{created_at: $at}] end)}' | jq -r "$filter" ;;
+  *"/runs?status=failure"*)
+    key=${2#repos/}
+    key=${key%%/runs*}
+    key=${key/\/actions\/workflows\//:}
+    case " ${RUNS_404:-} " in *" $key "*) echo "gh: HTTP 404" >&2; exit 1 ;; esac
+    printf '%s' "${RUNS:-{\}}" | jq --arg k "$key" '.[$k] // 0
+      | {total_count: ., workflow_runs: (if . > 0 then [{html_url: "https://github.com/\($k | sub(":.*"; ""))/actions/runs/1"}] else [] end)}' \
+      | jq -r "$filter" ;;
+  *) echo "неожиданный запрос: $*" >&2; exit 1 ;;
+esac
 STUB
 chmod +x "$TMP/bin/gh"
 
-# «сейчас» во всех случаях — 2026-09-20 12:00 UTC. ID в карте и топике ненастоящие.
+# «сейчас» во всех случаях — 2026-09-20 12:00 UTC. ID в карте и топиках ненастоящие.
+# RUNS — сколько упавших запусков: {"<репозиторий>:<workflow>": N}; RUNS_404 — где workflow нет;
+# PREV_RUN — когда был предыдущий успешный запуск напоминаний; PAT_HEADERS — ответ на проверку токена доски
+OK_HEADERS=$'HTTP/2.0 200 OK\nContent-Type: application/json'
 DEFAULTS=(
-  TOKEN=test-token CHAT=-100 TOPIC=77 MAP='{"YarikMix":"111","blackHATred":"222"}'
+  TOKEN=test-token CHAT=-100 TOPIC=77 OPS_TOPIC=26 MAP='{"YarikMix":"111","blackHATred":"222"}'
   MIN_HOURS=4 NOW="$(date -u -d 2026-09-20T12:00:00Z +%s)" LAST_COMMIT=2026-09-19T12:00:00Z
-  FIXTURE="$TMP/fixture.json" QUERY_FILE="$TMP/query"
+  FIXTURE="$TMP/fixture.json" QUERY_FILE="$TMP/query" CALLS="$TMP/calls"
+  GH_TOKEN=test-gh PAT=test-pat DAILY=false PAT_HEADERS="$OK_HEADERS"
+  RUNS='{}' RUNS_404= RUNS_FAIL= PREV_RUN=2026-09-20T07:00:00Z
 )
 
+SELF=Cringe-Driven-Development-Team/.github
 FRONT=frontend-park-mail-ru/2026_2_Cringe_Driven_Development
 BACK=go-park-mail-ru/2026_2_Cringe_Driven_Development
 
@@ -32,14 +64,21 @@ BACK=go-park-mail-ru/2026_2_Cringe_Driven_Development
 #   team                — в Reviewers команда (логина нет)
 #   req:<логин>@<время> — у логина запрошено ревью
 #   ready@<время>       — PR переведён из черновика в Ready
+#   author:<логин>      — автор PR (по умолчанию MrDuckVC)
+#   ok:<логин>@<время>  — последний вердикт логина — апрув
+#   no:<логин>@<время>  — последний вердикт логина — запрошены правки
 pr() {
   local repo=$1 title=$2 created=$3 draft=$4
   shift 4
   jq -nc --arg repo "$repo" --arg title "$title" --arg created "$created" --argjson draft "$draft" '
     {repo: $repo, title: $title, url: "https://github.com/\($repo)/pull/1", isDraft: $draft, createdAt: $created,
+     author: {login: ([$ARGS.positional[] | select(startswith("author:")) | .[7:]] | first // "MrDuckVC")},
      reviewRequests: {nodes: [$ARGS.positional[]
        | (select(startswith("wait:")) | {requestedReviewer: {login: .[5:]}}),
          (select(. == "team") | {requestedReviewer: {}})]},
+     latestOpinionatedReviews: {nodes: [$ARGS.positional[]
+       | select(startswith("ok:") or startswith("no:")) | .[0:2] as $v | (.[3:] | split("@"))
+       | {author: {login: .[0]}, state: (if $v == "ok" then "APPROVED" else "CHANGES_REQUESTED" end), submittedAt: .[1]}]},
      timelineItems: {nodes: [$ARGS.positional[]
        | (select(startswith("req:")) | .[4:] | split("@")
           | {__typename: "ReviewRequestedEvent", createdAt: .[1], requestedReviewer: {login: .[0]}}),
@@ -60,11 +99,11 @@ fixture
 when "нет открытых PR — тишина"
 silent
 
-when "запрос покрывает все семь репозиториев"
+when "запрос покрывает все восемь репозиториев"
 missing=""
 for r in Cringe-Driven-Development-Team/.github Cringe-Driven-Development-Team/docs \
   Cringe-Driven-Development-Team/static Cringe-Driven-Development-Team/infra \
-  Cringe-Driven-Development-Team/react "$FRONT" "$BACK"; do
+  Cringe-Driven-Development-Team/react Cringe-Driven-Development-Team/figma "$FRONT" "$BACK"; do
   grep -qF "owner: \"${r%%/*}\", name: \"${r#*/}\"" "$TMP/query" || missing="$missing $r"
 done
 if [ -z "$missing" ]; then pass; else fail "в запросе нет:$missing"; fi
@@ -150,6 +189,129 @@ sent "могут отключиться в любой момент"
 fixture
 when "49 дней без коммитов — без предупреждения" LAST_COMMIT=2026-08-02T12:00:00Z
 silent
+
+# --- одобрены, ждут мержа
+
+fixture "$(pr "$FRONT" "WEB-25: Форма" 2026-09-19T12:00:00Z false author:blackHATred ok:YarikMix@2026-09-20T06:00:00Z)"
+when "одобрен 6 часов назад — в блоке, пинг автора, апрувнувший текстом"
+sent_to 1 77 "<b>✅ Одобрены, ждут мержа</b>" \
+  "• frontend · <a href=\"https://github.com/$FRONT/pull/1\">WEB-25: Форма</a>" \
+  '  <a href="tg://user?id=222">blackHATred</a> · одобрен 6 ч назад (апрув: YarikMix)' \
+  "!Ждут ревью" "!tg://user?id=111"
+only 1
+
+fixture "$(pr "$FRONT" "WEB-25: Форма" 2026-09-19T12:00:00Z false ok:YarikMix@2026-09-20T09:00:00Z)"
+when "одобрен 3 часа назад — ещё рано"
+silent
+
+fixture "$(pr "$FRONT" "WEB-25: Форма" 2026-09-19T12:00:00Z false ok:YarikMix@2026-09-19T06:00:00Z no:blackHATred@2026-09-19T07:00:00Z)"
+when "есть запрошенные правки — не одобрен"
+silent
+
+fixture "$(pr "$FRONT" "WEB-25: Форма" 2026-09-19T12:00:00Z true ok:YarikMix@2026-09-19T06:00:00Z)"
+when "одобренный черновик пропущен"
+silent
+
+fixture "$(pr "$FRONT" "WEB-25: Форма" 2026-09-19T12:00:00Z false ok:YarikMix@2026-09-19T06:00:00Z \
+  wait:blackHATred req:blackHATred@2026-09-19T08:00:00Z)"
+when "одобрен, но ждут ещё одного ревьювера — только в «Ждут ревью»"
+sent "⏰ Ждут ревью" "blackHATred</a> · ждёт 1 д 4 ч" "!Одобрены"
+
+fixture "$(pr "$FRONT" "WEB-25: Форма" 2026-09-19T12:00:00Z false ok:YarikMix@2026-09-19T06:00:00Z ok:iRedTea@2026-09-20T02:00:00Z)"
+when "два апрува — счёт от последнего, оба в скобках"
+sent "одобрен 10 ч назад (апрув: YarikMix, iRedTea)"
+
+fixture \
+  "$(pr "$BACK" "API-3: Ждёт ревью" 2026-09-19T10:00:00Z false wait:blackHATred req:blackHATred@2026-09-19T10:00:00Z)" \
+  "$(pr "$FRONT" "WEB-25: Одобрен недавно" 2026-09-19T12:00:00Z false ok:YarikMix@2026-09-20T06:00:00Z)" \
+  "$(pr "$FRONT" "WEB-20: Одобрен давно" 2026-09-18T12:00:00Z false ok:YarikMix@2026-09-18T12:00:00Z)"
+when "оба блока в одном сообщении: ревью выше, одобренные — по давности"
+sent "⏰ Ждут ревью" "✅ Одобрены, ждут мержа"
+only 1
+before "API-3: Ждёт ревью" "✅ Одобрены"
+before "WEB-20: Одобрен давно" "WEB-25: Одобрен недавно"
+
+prs=()
+for i in $(seq 1 22); do
+  prs+=("$(pr "$BACK" "API-$i: PR" 2026-09-18T12:00:00Z false ok:YarikMix@2026-09-18T12:00:00Z)")
+done
+fixture "${prs[@]}"
+when "больше 20 одобренных — «…и ещё N»"
+sent "✅ Одобрены" "…и ещё 2"
+
+# --- служебные алерты
+
+fixture
+when "сбоев нет, токен не проверяется — тишина"
+silent
+
+when "упавшие запуски: отдельное сообщение в общий топик, пинг владельца" \
+  RUNS="{\"$BACK:automation.yml\": 2, \"$SELF:reminders.yml\": 1, \"$SELF:automation.yml\": 5}"
+sent_to 1 26 '<b>🚨 Сбои уведомлений</b> · <a href="tg://user?id=111">YarikMix</a>' \
+  "• backend: 2 упавших запуска «Автоматизации» — <a href=\"https://github.com/$BACK/actions/runs/1\">последний</a>" \
+  "• .github: 5 упавших запусков «Автоматизации»" \
+  "• .github: 1 упавший запуск «Напоминаний о ревью»" "!frontend"
+only 1
+
+when "окно — от предыдущего успешного запуска напоминаний" PREV_RUN=2026-09-20T07:00:12Z
+if grep -qF "$BACK/actions/workflows/automation.yml/runs?status=failure&created=%3E2026-09-20T07:00:12Z" "$TMP/calls"; then
+  pass; else fail "в запросе нет created=>2026-09-20T07:00:12Z"; fi
+
+when "успешных запусков ещё не было — последние 24 часа" PREV_RUN=
+if grep -qF "created=%3E2026-09-19T12:00:00Z" "$TMP/calls"; then pass; else fail "в запросе нет created=>2026-09-19T12:00:00Z"; fi
+
+when "в репозитории нет workflow (404) — пропущен, остальные проверены" \
+  RUNS_404="Cringe-Driven-Development-Team/figma:automation.yml" RUNS="{\"$FRONT:automation.yml\": 1}"
+sent "• frontend: 1 упавший запуск" "!figma"
+if grep -qF "::warning::Не проверил запуски automation.yml в Cringe-Driven-Development-Team/figma" "$TMP/out"; then
+  pass; else fail "нет ::warning:: про figma"; fi
+
+fixture "$(pr "$BACK" "API-3: PR" 2026-09-18T12:00:00Z false wait:blackHATred)"
+when "сбои и дайджест — два сообщения в разные топики" RUNS="{\"$FRONT:automation.yml\": 1}"
+sent_to 1 26 "🚨 Сбои уведомлений"
+sent_to 2 77 "⏰ Ждут ревью" "!🚨"
+only 2
+
+when "служебный API лежит — дайджест всё равно уходит" RUNS_FAIL=1 RUNS_404="$BACK:automation.yml"
+sent_to 1 77 "⏰ Ждут ревью"
+only 1
+
+fixture
+when "дайджест упал — о сбоях уже сообщили" GH_FAIL=1 RUNS="{\"$FRONT:automation.yml\": 1}"
+if [ "$CODE" -ne 0 ] && [ "$(sent_count)" -eq 1 ] && grep -qF "🚨" "$TMP/sent/1"; then pass; else fail "код $CODE, сообщений $(sent_count)"; fi
+
+# --- срок токена доски
+
+exp() { printf 'HTTP/2.0 200 OK\nGithub-Authentication-Token-Expiration: %s\nContent-Type: application/json' "$1"; }
+
+when "токен истекает через 5 дней — предупреждение с датой" DAILY=true PAT_HEADERS="$(exp "2026-09-25 18:00:00 UTC")"
+sent_to 1 26 "🚨 Сбои уведомлений" "🔑 ADD_TO_PROJECT_PAT истекает через 5 дней (2026-09-25)" \
+  "обновите секрет в организации, frontend и backend"
+if grep -qxF "test-pat"$'\t'"api -i rate_limit" "$TMP/calls"; then pass; else fail "срок проверен не токеном доски"; fi
+
+when "токен истекает сегодня" DAILY=true PAT_HEADERS="$(exp "2026-09-20 20:00:00 UTC")"
+sent "ADD_TO_PROJECT_PAT истекает сегодня (2026-09-20)"
+
+when "до истечения 8 дней — тишина" DAILY=true PAT_HEADERS="$(exp "2026-09-28 18:00:00 UTC")"
+silent
+
+when "бессрочный токен — тишина" DAILY=true
+silent
+
+when "токен отвергнут — не работает" DAILY=true PAT_HEADERS=$'HTTP/2.0 401 Unauthorized\nContent-Type: application/json'
+sent_to 1 26 "🔑 ADD_TO_PROJECT_PAT не работает: новые задачи не попадают на доску"
+
+when "не утренний запуск — токен не проверяется" DAILY=false PAT_HEADERS="$(exp "2026-09-25 18:00:00 UTC")"
+silent
+if grep -qF "rate_limit" "$TMP/calls"; then fail "токен проверялся"; else pass; fi
+
+when "секрет недоступен — предупреждение в лог, без сообщения" DAILY=true PAT=
+silent
+if grep -qF "::warning::ADD_TO_PROJECT_PAT недоступен" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "GitHub не ответил на проверку токена — предупреждение в лог" DAILY=true PAT_HEADERS=
+silent
+if grep -qF "::warning::Не проверил срок ADD_TO_PROJECT_PAT" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
 
 # --- ошибки
 
