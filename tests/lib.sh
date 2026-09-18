@@ -16,7 +16,8 @@ FAIL=0
 when() {
   NAME=$1
   shift
-  rm -rf "$TMP/sent"
+  # sent — отправленные сообщения, calls — журнал вызовов заглушек (если тест его ведёт)
+  rm -rf "$TMP/sent" "$TMP/calls"
   mkdir "$TMP/sent"
   env PATH="$TMP/bin:$PATH" SENT="$TMP/sent" "${DEFAULTS[@]}" "$@" \
     bash -e "$SCRIPT" > "$TMP/out" 2>&1
