@@ -1,7 +1,21 @@
-# Colab
+<h1 align="center">Colab</h1>
 
-Аналог Google Colab: пишешь код в браузере и сразу его запускаешь.
-Проект команды «Cringe Driven Development», второй семестр Технопарка, осень 2026.
+<p align="center">
+  Аналог Google Colab: пишешь код в браузере и сразу его запускаешь.<br />
+  Проект команды «Cringe Driven Development», второй семестр Технопарка, осень 2026.
+</p>
+
+<p align="center">
+  <a href="https://github.com/orgs/Cringe-Driven-Development-Team/projects/1">Доска задач</a> ·
+  <a href="https://cringe-driven-development-team.github.io/docs/">Схемы архитектуры</a> ·
+  <a href="https://www.figma.com/design/iWGdAUKc8v8oaIGhM9X20T/Colab">Макеты в Figma</a>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Cringe-Driven-Development-Team/.github/main/profile/banner.webp" alt="Colab" width="100%" />
+</p>
+
+<br />
 
 ## Репозитории
 
@@ -14,12 +28,6 @@
 | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | инфраструктура: Pulumi и Ansible для двух VPS |
 | [docs](https://github.com/Cringe-Driven-Development-Team/docs) | архитектурные схемы — [сайт](https://cringe-driven-development-team.github.io/docs/) |
 | [.github](https://github.com/Cringe-Driven-Development-Team/.github) | общие workflow: уведомления в Telegram и доска задач |
-
-## Ссылки
-
-- [Доска задач](https://github.com/orgs/Cringe-Driven-Development-Team/projects/1)
-- [Схемы архитектуры](https://cringe-driven-development-team.github.io/docs/)
-- [Макеты в Figma](https://www.figma.com/design/iWGdAUKc8v8oaIGhM9X20T/Colab)
 
 ## Команда
 
