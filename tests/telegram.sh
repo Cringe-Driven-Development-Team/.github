@@ -1,34 +1,19 @@
 #!/usr/bin/env bash
 # Прогоняет скрипт из .github/workflows/telegram.yml на подставных событиях.
-# curl подменён заглушкой: в Telegram ничего не уходит, текст сообщения пишется в файл.
 # Нужны bash, jq, perl, GNU date и awk. Запуск: bash tests/telegram.sh
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+source "$ROOT/tests/lib.sh"
 
-awk -f "$ROOT/tests/extract-run.awk" "$ROOT/.github/workflows/telegram.yml" > "$TMP/script.sh"
-[ -s "$TMP/script.sh" ] || { echo "в telegram.yml не найден блок run: |"; exit 1; }
-
-mkdir "$TMP/bin"
-cat > "$TMP/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-# заглушка: запомнить text= и ответить как Telegram
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --data-urlencode) case "$2" in text=*) printf '%s' "${2#text=}" > "$SENT" ;; esac; shift 2 ;;
-    *) shift ;;
-  esac
-done
-echo '{"ok":true}'
-STUB
-chmod +x "$TMP/bin/curl"
+SCRIPT="$TMP/script.sh"
+awk -f "$ROOT/tests/extract-run.awk" "$ROOT/.github/workflows/telegram.yml" > "$SCRIPT"
+[ -s "$SCRIPT" ] || { echo "в telegram.yml не найден блок run: |"; exit 1; }
 
 # так GitHub заполняет env: отсутствующее поле события — пустая строка, toJSON(null) — null.
-# ID в карте ненастоящие: репозиторий публичный.
+# ID в карте и топиках ненастоящие: репозиторий публичный.
 DEFAULTS=(
-  TOKEN=test-token CHAT=-100 TOPIC=26 MAP='{"YarikMix":"111","blackHATred":"222"}'
+  TOKEN=test-token CHAT=-100 TOPIC=26 REVIEW_TOPIC=77 MAP='{"YarikMix":"111","blackHATred":"222"}'
   EVENT= ACTION= MERGED= DRAFT= BASE= REVIEW= REVIEWER= PR_AUTHOR=
   ACTOR=YarikMix REPO=Cringe-Driven-Development-Team/react
   NUMBER= TITLE= URL= BRANCH= COMMITS=null COMPARE= FORCED=
@@ -39,56 +24,6 @@ DEFAULTS=(
 # когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
 LONG_AGO=$(date -u -d '-10 minutes' +%Y-%m-%dT%H:%M:%SZ)
 JUST_NOW=$(date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%SZ)
-
-PASS=0
-FAIL=0
-
-# when "название" VAR=значение ... — прогнать скрипт на событии
-when() {
-  NAME=$1
-  shift
-  rm -f "$TMP/sent"
-  env PATH="$TMP/bin:$PATH" SENT="$TMP/sent" "${DEFAULTS[@]}" "$@" \
-    bash -e "$TMP/script.sh" > "$TMP/out" 2>&1
-  CODE=$?
-}
-
-pass() { PASS=$((PASS + 1)); echo "ok   $NAME"; }
-
-fail() {
-  FAIL=$((FAIL + 1))
-  echo "FAIL $NAME: $1"
-  if [ -f "$TMP/sent" ]; then sed 's/^/     | /' "$TMP/sent"; echo; fi
-  sed 's/^/     > /' "$TMP/out"
-}
-
-# sent "есть" "!нет" ... — ушло сообщение, в нём есть одни куски и нет других
-sent() {
-  [ "$CODE" -eq 0 ] || { fail "код выхода $CODE"; return; }
-  [ -f "$TMP/sent" ] || { fail "сообщение не отправлено"; return; }
-  for s in "$@"; do
-    case "$s" in
-      !*) ! grep -qF -- "${s#!}" "$TMP/sent" || { fail "лишнее «${s#!}»"; return; } ;;
-      *) grep -qF -- "$s" "$TMP/sent" || { fail "нет «$s»"; return; } ;;
-    esac
-  done
-  pass
-}
-
-# silent — отработал без ошибки и ничего не отправил
-silent() {
-  [ "$CODE" -eq 0 ] || { fail "код выхода $CODE"; return; }
-  [ ! -f "$TMP/sent" ] || { fail "сообщение отправлено"; return; }
-  pass
-}
-
-# error "текст" — упал до отправки и сказал почему
-error() {
-  [ "$CODE" -ne 0 ] || { fail "код выхода 0"; return; }
-  [ ! -f "$TMP/sent" ] || { fail "сообщение отправлено"; return; }
-  grep -qF -- "$1" "$TMP/out" || { fail "нет «$1» в выводе"; return; }
-  pass
-}
 
 # --- задачи
 
@@ -230,6 +165,4 @@ when "review requested из формы создания молчит" \
   PR_CREATED="$JUST_NOW" NUMBER=7 TITLE=t URL=u
 silent
 
-echo
-echo "итого: $PASS ok, $FAIL fail"
-[ "$FAIL" -eq 0 ]
+summary
