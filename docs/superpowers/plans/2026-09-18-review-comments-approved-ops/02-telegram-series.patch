@@ -1,0 +1,154 @@
+diff --git a/.github/workflows/telegram.yml b/.github/workflows/telegram.yml
+index 1d67f05..8478b23 100644
+--- a/.github/workflows/telegram.yml
++++ b/.github/workflows/telegram.yml
+@@ -9,6 +9,12 @@ on:
+ jobs:
+   notify:
+     runs-on: ubuntu-latest
++    # одиночные комментарии ревью приходят по одному событию: следующий комментарий того же ревьювера
++    # к тому же PR отменяет ждущий запуск, и в чат уходит одно сообщение на серию.
++    # Остальные события получают свою группу и друг друга не отменяют
++    concurrency:
++      group: ${{ github.event_name == 'pull_request_review' && format('tg-review-{0}-{1}-{2}', github.repository, github.event.pull_request.number, github.event.review.user.login) || format('tg-{0}', github.run_id) }}
++      cancel-in-progress: true
+     steps:
+       - name: Отправить сообщение
+         env:
+@@ -23,6 +29,9 @@ jobs:
+           DRAFT:     ${{ github.event.pull_request.draft }}
+           BASE:      ${{ github.event.pull_request.base.ref }}
+           REVIEW:    ${{ github.event.review.state }}
++          REVIEW_BY: ${{ github.event.review.user.login }}
++          REVIEW_BY_TYPE: ${{ github.event.review.user.type }}
++          REVIEW_URL: ${{ github.event.review.html_url }}
+           REVIEWER:  ${{ github.event.requested_reviewer.login }}
+           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+           ACTOR:     ${{ github.actor }}
+@@ -62,17 +71,18 @@ jobs:
+ 
+           esc () { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+ 
+-          # 1 коммит / 2 коммита / 5 коммитов
++          # plural 3 коммит коммита коммитов → «коммита»
+           plural () {
+             case "$(($1 % 100))" in
+-              11|12|13|14) printf 'коммитов' ;;
++              11|12|13|14) printf '%s' "$4" ;;
+               *) case "$(($1 % 10))" in
+-                   1)     printf 'коммит' ;;
+-                   2|3|4) printf 'коммита' ;;
+-                   *)     printf 'коммитов' ;;
++                   1)     printf '%s' "$2" ;;
++                   2|3|4) printf '%s' "$3" ;;
++                   *)     printf '%s' "$4" ;;
+                  esac ;;
+             esac
+           }
++          commits () { plural "$1" коммит коммита коммитов; }
+ 
+           # LAST="<состояние>\t<коммит>" последнего отправленного ревью REVIEWER на этом PR, пусто — не ревьюил;
+           # API недоступен — пусто и предупреждение в лог: лучше обычный запрос, чем упавший job
+@@ -87,6 +97,39 @@ jobs:
+             fi
+           }
+ 
++          # серия ревью REVIEW_BY — идущие подряд с конца отправленные ревью с паузами короче 3 минут
++          # (столько ждём перед отправкой, см. REVIEW_WAIT). NOTES — сколько в серии комментариев:
++          # inline плюс ревью с общим текстом; пусто — API недоступен. FIRST_URL — первое ревью серии
++          series () {
++            NOTES=""
++            FIRST_URL="$REVIEW_URL"
++            ERR="${RUNNER_TEMP:-/tmp}/gh-series.err"
++            if ! LIST=$(gh api "repos/$REPO/pulls/$NUMBER/reviews" --paginate \
++                --jq ".[] | select(.user.login == \"$REVIEW_BY\" and .state != \"PENDING\") | [.id, .submitted_at, ((.body // \"\") != \"\"), .html_url] | @tsv" 2>"$ERR"); then
++              echo "::warning::Не прочитал ревью PR, сообщение без числа комментариев: $(head -c 200 "$ERR")"
++              return 0
++            fi
++            SERIES=$(printf '%s\n' "$LIST" | jq -Rsc '
++              [gsub("\r"; "") | split("\n")[] | select(length > 0) | split("\t")
++                | {id: .[0], at: (.[1] | fromdateiso8601), body: (.[2] == "true"), url: .[3]}]
++              | sort_by(.at) | reverse
++              | reduce .[] as $x ({s: [], open: true};
++                  if .open and ((.s | length) == 0 or (.s[-1].at - $x.at) < 180)
++                  then .s += [$x] else .open = false end)
++              | .s | reverse')
++            [ "$(printf '%s' "$SERIES" | jq 'length')" -gt 0 ] || return 0
++            FIRST_URL=$(printf '%s' "$SERIES" | jq -r '.[0].url')
++            if ! INLINE=$(gh api "repos/$REPO/pulls/$NUMBER/comments" --paginate \
++                --jq '.[].pull_request_review_id' 2>"$ERR"); then
++              echo "::warning::Не прочитал комментарии PR, сообщение без их числа: $(head -c 200 "$ERR")"
++              return 0
++            fi
++            NOTES=$(jq -n --argjson s "$SERIES" --arg inline "$INLINE" '
++              ($s | map(.id)) as $ids
++              | ([$inline | gsub("\r"; "") | split("\n")[] | select(. as $i | $ids | index($i))] | length)
++                + ($s | map(select(.body)) | length)')
++          }
++
+           case "$EVENT:$ACTION" in
+             push:)
+               # коммиты, которые уже были в других ветках (подтянутые из main), — не новость
+@@ -95,9 +138,9 @@ jobs:
+               # создание и удаление ветки, пуш тега — событие есть, коммитов нет
+               [ "$COUNT" -eq 0 ] && exit 0
+               if [ "$FORCED" = "true" ]; then
+-                HEAD="⚠️ $COUNT $(plural "$COUNT") (force-push)"
++                HEAD="⚠️ $COUNT $(commits "$COUNT") (force-push)"
+               else
+-                HEAD="⚒️ $COUNT $(plural "$COUNT")"
++                HEAD="⚒️ $COUNT $(commits "$COUNT")"
+               fi ;;
+             issues:opened)   HEAD="🆕 Новая задача" ;;
+             issues:closed)   HEAD="✅ Задача закрыта" ;;
+@@ -147,7 +190,7 @@ jobs:
+                   if [ "$AHEAD" -eq 0 ]; then
+                     AFTER="$AFTER: новых коммитов нет"
+                   else
+-                    AFTER="$AFTER: $AHEAD $(plural "$AHEAD")"
++                    AFTER="$AFTER: $AHEAD $(commits "$AHEAD")"
+                     MARKUP=$(printf '{"inline_keyboard":[[{"text":"Что изменилось","url":"https://github.com/%s/pull/%s/files/%s..%s"}]]}' \
+                       "$REPO" "$NUMBER" "$SHA" "$HEAD_SHA")
+                   fi
+@@ -161,11 +204,24 @@ jobs:
+               fi ;;
+             pull_request_review:submitted)
+               DEST="$RTOPIC"
++              # ответы автора в ветках обсуждения и ревью ботов — не новость
++              [ "$REVIEW_BY" = "$PR_AUTHOR" ] && exit 0
++              [ "$REVIEW_BY_TYPE" = "Bot" ] && exit 0
+               case "$REVIEW" in
+-                approved)          HEAD="👍 Апрув";            WHO="$PR_AUTHOR" ;;
+-                changes_requested) HEAD="✋ Запрошены правки";  WHO="$PR_AUTHOR" ;;
+-                *)                 exit 0 ;;
+-              esac ;;
++                approved)          HEAD="👍 Апрув" ;;
++                changes_requested) HEAD="✋ Запрошены правки" ;;
++                commented)
++                  # каждый одиночный комментарий — отдельное событие: ждём, пока ревьювер затихнет;
++                  # его следующий комментарий отменит этот запуск (concurrency у job)
++                  sleep "${REVIEW_WAIT:-180}"
++                  HEAD="💬 Комментарии к PR" ;;
++                *) exit 0 ;;
++              esac
++              KIND=reviewed
++              series
++              if [ -n "$FIRST_URL" ] && { [ "$REVIEW" = "commented" ] || [ "${NOTES:-0}" -gt 0 ]; }; then
++                MARKUP=$(printf '{"inline_keyboard":[[{"text":"Открыть ревью","url":"%s"}]]}' "$FIRST_URL")
++              fi ;;
+             *) exit 0 ;;
+           esac
+ 
+@@ -259,6 +315,12 @@ jobs:
+                 requested)
+                   LINE=$(asked)
+                   [ -n "$AFTER" ] && LINE=$(printf '%s\n%s' "$LINE" "$AFTER") ;;
++                # ревью оставлено: действовать автору — пингуем его, ревьювер текстом
++                reviewed)
++                  LINE="автор: $(mention "$PR_AUTHOR") · ревьювер: $(esc "$REVIEW_BY")"
++                  if [ "${NOTES:-0}" -gt 0 ]; then
++                    LINE=$(printf '%s\n%s %s' "$LINE" "$NOTES" "$(plural "$NOTES" комментарий комментария комментариев)")
++                  fi ;;
+                 *)         LINE=$(mention "$WHO") ;;
+               esac
+             fi

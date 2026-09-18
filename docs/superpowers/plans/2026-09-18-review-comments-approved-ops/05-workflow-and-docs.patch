@@ -1,0 +1,81 @@
+diff --git a/.github/workflows/reminders.yml b/.github/workflows/reminders.yml
+index fe8f578..10ce630 100644
+--- a/.github/workflows/reminders.yml
++++ b/.github/workflows/reminders.yml
+@@ -2,28 +2,34 @@ name: Напоминания о ревью
+ 
+ on:
+   schedule:
+-    # 10:00, 15:00, 20:00 по Москве; GitHub может запустить на 5–15 минут позже
+-    - cron: '0 7,12,17 * * *'
++    # 10:00, 15:00, 20:00 по Москве; GitHub может запустить на 5–15 минут позже.
++    # Утренний запуск отдельной строкой: по ней job узнаёт, что пора проверить срок токена доски
++    - cron: '0 7 * * *'
++    - cron: '0 12,17 * * *'
+   workflow_dispatch:
+     inputs:
+       min_hours:
+-        description: Сколько часов ревью должно ждать, чтобы попасть в напоминание
++        description: Сколько часов ревью или апрув должны ждать, чтобы попасть в напоминание
+         default: '4'
+ 
+ permissions:
+   contents: read
++  actions: read
+ 
+ jobs:
+   remind:
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+-      - name: Напомнить ревьюверам
++      - name: Напомнить о ревью и проверить уведомления
+         env:
+           GH_TOKEN:  ${{ github.token }}
+           TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+           CHAT:      ${{ vars.TELEGRAM_CHAT_ID }}
+           TOPIC:     ${{ vars.TELEGRAM_REVIEW_TOPIC_ID || vars.TELEGRAM_TOPIC_ID }}
++          OPS_TOPIC: ${{ vars.TELEGRAM_TOPIC_ID }}
+           MAP:       ${{ vars.TELEGRAM_USER_MAP }}
+           MIN_HOURS: ${{ inputs.min_hours || '4' }}
++          PAT:       ${{ secrets.ADD_TO_PROJECT_PAT }}
++          DAILY:     ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0 7 * * *' }}
+         run: bash scripts/reminders.sh
+diff --git a/README.md b/README.md
+index 2bd3e84..e831aa0 100644
+--- a/README.md
++++ b/README.md
+@@ -7,8 +7,8 @@
+ | `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, PR и ревью |
+ | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску |
+ | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
+-| `.github/workflows/reminders.yml` | в 10:00, 15:00 и 20:00 МСК напоминает ревьюверам о PR, которые ждут ответа 4 часа и дольше |
+-| `scripts/reminders.sh` | логика напоминаний |
++| `.github/workflows/reminders.yml` | в 10:00, 15:00 и 20:00 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува, и сообщает о сбоях самих уведомлений |
++| `scripts/reminders.sh` | логика напоминаний и служебных проверок; здесь же список репозиториев |
+ | `tests/` | тесты скриптов и линтер |
+ 
+ Почему всё устроено так — [спека](docs/superpowers/specs/2026-09-18-central-workflows-design.md).
+@@ -76,4 +76,10 @@ jobs:
+ gh workflow run reminders.yml -R Cringe-Driven-Development-Team/.github -f min_hours=0
+ ```
+ 
++Новый репозиторий, кроме `automation.yml`, нужно добавить в список `REPOS` в `scripts/reminders.sh` — иначе напоминания и служебные проверки его не увидят.
++
++В тех же запусках в общий топик уходит «🚨 Сбои уведомлений»: упавшие запуски «Автоматизации» в подключённых репозиториях и, раз в день, срок `ADD_TO_PROJECT_PAT` — за неделю до истечения. Кого звать на сбои — `OPS_PING` в начале скрипта.
++
++Одиночные комментарии ревью склеиваются: сообщение «💬 Комментарии к PR» уходит, когда ревьювер молчит 3 минуты. Серые отменённые запуски «Автоматизации» в Actions — это они, а не сбой.
++
+ GitHub отключает расписание в публичном репозитории, если в нём 60 дней нет активности. За 10 дней до этого напоминания начинают предупреждать; включить обратно: `gh workflow enable reminders.yml -R Cringe-Driven-Development-Team/.github`.
+diff --git a/profile/README.md b/profile/README.md
+index 54ac13a..350381b 100644
+--- a/profile/README.md
++++ b/profile/README.md
+@@ -26,6 +26,7 @@
+ | [react](https://github.com/Cringe-Driven-Development-Team/react) | своя реализация React, публикуется в npm |
+ | [static](https://github.com/Cringe-Driven-Development-Team/static) | статика, выкладывается в S3 и раздаётся через CDN |
+ | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | инфраструктура: Pulumi и Ansible для двух VPS |
++| [figma](https://github.com/Cringe-Driven-Development-Team/figma) | всё, что связано с макетами в Figma |
+ | [docs](https://github.com/Cringe-Driven-Development-Team/docs) | архитектурные схемы — [сайт](https://cringe-driven-development-team.github.io/docs/) |
+ | [.github](https://github.com/Cringe-Driven-Development-Team/.github) | общие workflow: уведомления в Telegram и доска задач |
+ 

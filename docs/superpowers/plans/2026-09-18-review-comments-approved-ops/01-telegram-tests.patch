@@ -1,0 +1,115 @@
+diff --git a/tests/telegram.sh b/tests/telegram.sh
+index f17ce5a..c1a73ad 100644
+--- a/tests/telegram.sh
++++ b/tests/telegram.sh
+@@ -22,6 +22,7 @@ done
+ case "$path" in
+   */reviews)   body=${GH_REVIEWS-}; fail=${GH_REVIEWS_FAIL-} ;;
+   */compare/*) body=${GH_COMPARE-}; fail=${GH_COMPARE_FAIL-} ;;
++  */comments)  body=${GH_COMMENTS-}; fail=${GH_COMMENTS_FAIL-} ;;
+   *) echo "неожиданный запрос $path" >&2; exit 1 ;;
+ esac
+ [ -z "$fail" ] || { echo "$fail" >&2; exit 1; }
+@@ -39,6 +40,7 @@ DEFAULTS=(
+   BODY= ASSIGNEES=null CREATED= UPDATED= CHG_BODY=null
+   REVIEWERS=null PR_CREATED= HEAD_SHA= GH_TOKEN=test-gh
+   GH_REVIEWS='[]' GH_REVIEWS_FAIL= GH_COMPARE= GH_COMPARE_FAIL=
++  REVIEW_BY= REVIEW_BY_TYPE=User REVIEW_URL= REVIEW_WAIT=0 GH_COMMENTS='[]' GH_COMMENTS_FAIL=
+ )
+ 
+ # когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
+@@ -120,16 +122,16 @@ when "pr закрыт без мержа" \
+   EVENT=pull_request ACTION=closed MERGED=false BASE=main NUMBER=7 TITLE=t URL=u
+ sent "🚫 PR закрыт без мержа"
+ 
+-when "review approved: в Code Review, пинг автора PR" \
+-  EVENT=pull_request_review ACTION=submitted REVIEW=approved PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
+-sent_to 1 77 "👍 Апрув" 'tg://user?id=222'
++when "review approved: в Code Review, пинг автора PR, ревьювер текстом" \
++  EVENT=pull_request_review ACTION=submitted REVIEW=approved PR_AUTHOR=blackHATred REVIEW_BY=YarikMix NUMBER=7 TITLE=t URL=u
++sent_to 1 77 "👍 Апрув" 'автор: <a href="tg://user?id=222">blackHATred</a> · ревьювер: YarikMix' "!комментари"
+ 
+ when "review changes requested: в Code Review, пинг автора PR" \
+   EVENT=pull_request_review ACTION=submitted REVIEW=changes_requested PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
+ sent_to 1 77 "✋ Запрошены правки" 'tg://user?id=222'
+ 
+-when "review commented молчит" \
+-  EVENT=pull_request_review ACTION=submitted REVIEW=commented PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
++when "review неизвестного вида молчит" \
++  EVENT=pull_request_review ACTION=submitted REVIEW=dismissed PR_AUTHOR=blackHATred REVIEW_BY=YarikMix NUMBER=7 TITLE=t URL=u
+ silent
+ 
+ when "без карты: логин текстом, сторона — имя репозитория" \
+@@ -266,4 +268,72 @@ when "API не отдал ревью — обычный запрос и пред
+ sent_to 1 77 "👀 Запрошено ревью" "!🔁"
+ if grep -qF "::warning::" "$TMP/out" && grep -qF "HTTP 403" "$TMP/out"; then pass; else fail "нет ::warning:: с причиной"; fi
+ 
++# --- ревью с комментариями
++
++# rv <id> <логин> <состояние> <время> [общий текст] — ревью в ответе GET /pulls/N/reviews
++rv() {
++  jq -nc --argjson id "$1" --arg u "$2" --arg st "$3" --arg at "$4" --arg body "${5-}" \
++    '{id: $id, user: {login: $u}, state: $st, submitted_at: $at, body: $body, commit_id: "aaa111",
++      html_url: "https://github.com/o/r/pull/12#pullrequestreview-\($id)"}'
++}
++# inline <id ревью>… — inline-комментарии в ответе GET /pulls/N/comments
++inline() { printf '%s\n' "$@" | jq -sc 'map({pull_request_review_id: .})'; }
++CM=(EVENT=pull_request_review ACTION=submitted REVIEW=commented PR_AUTHOR=blackHATred REVIEW_BY=YarikMix
++    REPO="$BACK" NUMBER=12 TITLE='API-3: Проект' URL=u REVIEW_URL=https://github.com/o/r/pull/12#pullrequestreview-9)
++
++when "один комментарий: пинг автора, ревьювер текстом, кнопка" "${CM[@]}" \
++  GH_REVIEWS="[$(rv 9 YarikMix COMMENTED 2026-09-20T10:00:00Z)]" GH_COMMENTS="$(inline 9)"
++sent_to 1 77 "<b>💬 Комментарии к PR</b> · backend" \
++  'автор: <a href="tg://user?id=222">blackHATred</a> · ревьювер: YarikMix' "1 комментарий" \
++  '"text":"Открыть ревью","url":"https://github.com/o/r/pull/12#pullrequestreview-9"' "!tg://user?id=111"
++only 1
++
++when "серия одиночных комментариев — одно число, кнопка на первое ревью серии" "${CM[@]}" \
++  GH_REVIEWS="[$(rv 7 YarikMix COMMENTED 2026-09-20T10:00:00Z),$(rv 8 YarikMix COMMENTED 2026-09-20T10:02:00Z),$(rv 9 YarikMix COMMENTED 2026-09-20T10:04:30Z)]" \
++  GH_COMMENTS="$(inline 7 8 8 9)"
++sent "4 комментария" "pullrequestreview-7" "!pullrequestreview-9"
++
++when "пауза 3 минуты и больше разрывает серию" "${CM[@]}" \
++  GH_REVIEWS="[$(rv 7 YarikMix COMMENTED 2026-09-20T10:00:00Z),$(rv 8 YarikMix COMMENTED 2026-09-20T10:03:00Z),$(rv 9 YarikMix COMMENTED 2026-09-20T10:04:00Z)]" \
++  GH_COMMENTS="$(inline 7 7 7 8 9)"
++sent "2 комментария" "pullrequestreview-8"
++
++when "общий текст ревью считается комментарием" "${CM[@]}" \
++  GH_REVIEWS="[$(rv 9 YarikMix COMMENTED 2026-09-20T10:00:00Z "В целом ок, но…")]" GH_COMMENTS="$(inline 9 9 9 9)"
++sent "5 комментариев"
++
++when "чужие ревью и комментарии не считаются" "${CM[@]}" \
++  GH_REVIEWS="[$(rv 8 ManInTheCoat COMMENTED 2026-09-20T10:03:00Z),$(rv 9 YarikMix COMMENTED 2026-09-20T10:04:00Z)]" \
++  GH_COMMENTS="$(inline 8 8 9)"
++sent "1 комментарий" "!2 комментария"
++
++when "апрув после серии комментариев — со строкой комментариев" "${CM[@]}" REVIEW=approved \
++  GH_REVIEWS="[$(rv 8 YarikMix COMMENTED 2026-09-20T10:00:00Z),$(rv 9 YarikMix APPROVED 2026-09-20T10:01:00Z)]" \
++  GH_COMMENTS="$(inline 8 8)"
++sent_to 1 77 "👍 Апрув" "2 комментария" "Открыть ревью"
++only 1
++
++when "запрошены правки с inline-комментариями" "${CM[@]}" REVIEW=changes_requested \
++  GH_REVIEWS="[$(rv 9 YarikMix CHANGES_REQUESTED 2026-09-20T10:00:00Z "Поправь")]" GH_COMMENTS="$(inline 9 9)"
++sent "✋ Запрошены правки" "3 комментария"
++
++when "апрув без комментариев — без строки и кнопки" "${CM[@]}" REVIEW=approved \
++  GH_REVIEWS="[$(rv 9 YarikMix APPROVED 2026-09-20T10:00:00Z)]"
++sent "👍 Апрув" "!комментари" "!Открыть ревью"
++
++when "автор отвечает в ветке обсуждения — молчим" "${CM[@]}" REVIEW_BY=blackHATred
++silent
++
++when "ревью бота — молчим" "${CM[@]}" REVIEW_BY=some-bot REVIEW_BY_TYPE=Bot
++silent
++
++when "API не отдал ревью — сообщение без числа, предупреждение в лог" "${CM[@]}" \
++  GH_REVIEWS_FAIL="HTTP 403: Resource not accessible by integration"
++sent_to 1 77 "💬 Комментарии к PR" "Открыть ревью" "pullrequestreview-9" "!комментари"
++if grep -qF "::warning::" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
++
++when "API не отдал inline-комментарии — сообщение без числа" "${CM[@]}" \
++  GH_REVIEWS="[$(rv 9 YarikMix COMMENTED 2026-09-20T10:00:00Z)]" GH_COMMENTS_FAIL="HTTP 502"
++sent "💬 Комментарии к PR" "!комментари"
++
+ summary

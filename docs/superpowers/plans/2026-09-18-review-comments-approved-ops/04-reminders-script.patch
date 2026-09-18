@@ -1,0 +1,253 @@
+diff --git a/scripts/reminders.sh b/scripts/reminders.sh
+index f631f47..3153c38 100644
+--- a/scripts/reminders.sh
++++ b/scripts/reminders.sh
+@@ -1,6 +1,8 @@
+ #!/usr/bin/env bash
+-# Напоминает в Telegram ревьюверам открытых PR, которые ждут ответа дольше MIN_HOURS часов.
+-# Env: GH_TOKEN, TOKEN (бот), CHAT, TOPIC, MAP (github-логин → telegram id), MIN_HOURS (по умолчанию 4).
++# Три раза в день: напоминает ревьюверам о PR, которые ждут ответа, и авторам — об одобренных, но не влитых;
++# заодно следит за самими уведомлениями — упавшие запуски и срок токена доски.
++# Env: GH_TOKEN, TOKEN (бот), CHAT, TOPIC (топик ревью), OPS_TOPIC (общий топик), MAP (github-логин → telegram id),
++#      MIN_HOURS (по умолчанию 4), PAT (ADD_TO_PROJECT_PAT), DAILY (true — проверить срок PAT).
+ # Для тестов: NOW — «сейчас» в unix-времени, LAST_COMMIT — дата последнего коммита .github.
+ set -euo pipefail
+ 
+@@ -10,11 +12,15 @@ REPOS=(
+   Cringe-Driven-Development-Team/static
+   Cringe-Driven-Development-Team/infra
+   Cringe-Driven-Development-Team/react
++  Cringe-Driven-Development-Team/figma
+   frontend-park-mail-ru/2026_2_Cringe_Driven_Development
+   go-park-mail-ru/2026_2_Cringe_Driven_Development
+ )
+-LIMIT=20        # больше PR в сообщение не влезет: у Telegram лимит 4096 символов
+-WARN_DAYS=50    # GitHub отключает cron в публичном репо после 60 дней без активности
++SELF=Cringe-Driven-Development-Team/.github
++LIMIT=20          # больше PR в блок не влезет: у Telegram лимит 4096 символов
++WARN_DAYS=50      # GitHub отключает cron в публичном репо после 60 дней без активности
++PAT_WARN_DAYS=7   # за сколько дней предупреждать об истечении токена доски
++OPS_PING=YarikMix # кого звать на сбои: владелец .github и токена доски
+ 
+ [ -n "${TOKEN:-}" ] || { echo "::error::Не задан секрет TELEGRAM_BOT_TOKEN"; exit 1; }
+ [ -n "${CHAT:-}" ] || { echo "::error::Не задана переменная TELEGRAM_CHAT_ID"; exit 1; }
+@@ -24,11 +30,118 @@ NOW=${NOW:-$(date +%s)}
+ LAST_COMMIT=${LAST_COMMIT:-$(git log -1 --format=%cI)}
+ MAP=${MAP:-}
+ [ -n "$MAP" ] || MAP='{}'
++TOPIC=${TOPIC:-}
++OPS_TOPIC=${OPS_TOPIC:-$TOPIC}
++DAILY=${DAILY:-true}
++PAT=${PAT:-}
+ 
+-# один запрос на все репозитории: открытые PR, кто в Reviewers, когда запрошено ревью и PR переведён в Ready
++# plural 3 день дня дней → «дня»
++plural () {
++  case "$(($1 % 100))" in
++    11|12|13|14) printf '%s' "$4" ;;
++    *) case "$(($1 % 10))" in
++         1)     printf '%s' "$2" ;;
++         2|3|4) printf '%s' "$3" ;;
++         *)     printf '%s' "$4" ;;
++       esac ;;
++  esac
++}
++days () { printf '%s %s' "$1" "$(plural "$1" день дня дней)"; }
++
++# frontend / backend / имя репозитория — как в telegram.yml
++side () {
++  case "$1" in
++    frontend-park-mail-ru/*) printf 'frontend' ;;
++    go-park-mail-ru/*)       printf 'backend' ;;
++    *)                       printf '%s' "${1#*/}" ;;
++  esac
++}
++
++# send <топик> <текст> — отправить в Telegram; отказ валит job
++send () {
++  RESP=$(curl -sS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
++    -d chat_id="$CHAT" \
++    -d message_thread_id="$1" \
++    -d parse_mode=HTML \
++    -d disable_web_page_preview=true \
++    --data-urlencode text="$2")
++  echo "$RESP"
++  case "$RESP" in
++    *'"ok":true'*) ;;
++    *) echo "::error::Telegram отклонил сообщение"; exit 1 ;;
++  esac
++}
++
++# ---------- служебные проверки: идут первыми, чтобы сбой дайджеста ниже не оставил их без внимания;
++# ---------- сами не валят job — не проверилось, значит предупреждение в лог
++
++OPS=""
++
++# упавшие запуски — с предыдущего успешного запуска напоминаний, чтобы не повторяться
++SINCE=$(gh api "repos/$SELF/actions/workflows/reminders.yml/runs?status=success&per_page=1" \
++  --jq '.workflow_runs[0].created_at // empty' 2>/dev/null | tr -d '\r') || SINCE=""
++[ -n "$SINCE" ] || SINCE=$(date -u -d "@$((NOW - 86400))" +%Y-%m-%dT%H:%M:%SZ)
++
++for r in "${REPOS[@]}"; do
++  WFS="automation.yml"
++  [ "$r" = "$SELF" ] && WFS="automation.yml reminders.yml"
++  for wf in $WFS; do
++    if ! OUT=$(gh api "repos/$r/actions/workflows/$wf/runs?status=failure&created=%3E$SINCE&per_page=1" \
++        --jq '[.total_count, (.workflow_runs[0].html_url // "")] | @tsv' 2>/dev/null); then
++      echo "::warning::Не проверил запуски $wf в $r"
++      continue
++    fi
++    IFS=$'\t' read -r COUNT LAST_URL <<< "${OUT//$'\r'/}" || true
++    [[ "${COUNT:-}" =~ ^[1-9][0-9]*$ ]] || continue
++    case "$wf" in
++      automation.yml) WHAT="«Автоматизации»" ;;
++      *)              WHAT="«Напоминаний о ревью»" ;;
++    esac
++    OPS=$(printf '%s\n• %s: %s %s %s — <a href="%s">последний</a>' "$OPS" "$(side "$r")" "$COUNT" \
++      "$(plural "$COUNT" "упавший запуск" "упавших запуска" "упавших запусков")" "$WHAT" "$LAST_URL")
++  done
++done
++
++# срок токена доски — раз в день: GitHub отдаёт его в заголовке ответа
++if [ "$DAILY" = "true" ]; then
++  RENEW="Выпустите новый и обновите секрет в организации, frontend и backend."
++  if [ -z "$PAT" ]; then
++    echo "::warning::ADD_TO_PROJECT_PAT недоступен — срок не проверен"
++  else
++    HDR=$(GH_TOKEN="$PAT" gh api -i rate_limit 2>/dev/null | tr -d '\r' || true)
++    STATUS=$(printf '%s\n' "$HDR" | head -n 1)
++    EXP=$(printf '%s\n' "$HDR" | grep -i '^github-authentication-token-expiration:' | head -n 1 | cut -d' ' -f2- || true)
++    case "$STATUS" in
++      *" 401"*)
++        OPS=$(printf '%s\n🔑 ADD_TO_PROJECT_PAT не работает: новые задачи не попадают на доску. %s' "$OPS" "$RENEW") ;;
++      *" 200"*)
++        if [ -n "$EXP" ]; then
++          LEFT=$(( ($(date -d "$EXP" +%s) - NOW) / 86400 ))
++          if [ "$LEFT" -le "$PAT_WARN_DAYS" ]; then
++            if [ "$LEFT" -le 0 ]; then WHEN="сегодня"; else WHEN="через $(days "$LEFT")"; fi
++            OPS=$(printf '%s\n🔑 ADD_TO_PROJECT_PAT истекает %s (%s). %s' "$OPS" "$WHEN" "$(date -u -d "$EXP" +%Y-%m-%d)" "$RENEW")
++          fi
++        fi ;;
++      *) echo "::warning::Не проверил срок ADD_TO_PROJECT_PAT: ${STATUS:-нет ответа}" ;;
++    esac
++  fi
++fi
++
++if [ -n "$OPS" ]; then
++  PING=$(jq -rn --argjson map "$MAP" --arg u "$OPS_PING" \
++    'if $map[$u] then "<a href=\"tg://user?id=\($map[$u])\">\($u)</a>" else $u end' | tr -d '\r')
++  send "$OPS_TOPIC" "$(printf '<b>🚨 Сбои уведомлений</b> · %s%s' "$PING" "$OPS")"
++fi
++
++# ---------- дайджест ревью
++
++# один запрос на все репозитории: открытые PR, кто в Reviewers, вердикты ревьюверов,
++# когда запрошено ревью и когда PR переведён в Ready
+ FIELDS='pullRequests(states: OPEN, first: 50) { nodes {
+   title url isDraft createdAt
++  author { login }
+   reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
++  latestOpinionatedReviews(first: 20) { nodes { author { login } state submittedAt } }
+   timelineItems(last: 100, itemTypes: [REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT]) { nodes {
+     __typename
+     ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } }
+@@ -43,9 +156,7 @@ QUERY="$QUERY }"
+ 
+ DATA=$(gh api graphql -f query="$QUERY")
+ 
+-# строки дайджеста: PR, где кто-то ждёт дольше порога; сверху те, кто ждёт дольше всех
+-BODY=$(printf '%s' "$DATA" | jq -r --argjson now "$NOW" --argjson min "$((MIN_HOURS * 3600))" \
+-  --argjson limit "$LIMIT" --argjson map "$MAP" '
++DEFS='
+   def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+   def who: if $map[.] then "<a href=\"tg://user?id=\($map[.])\">\(esc)</a>" else esc end;
+   def dur: (. / 3600 | floor) as $h
+@@ -55,8 +166,20 @@ BODY=$(printf '%s' "$DATA" | jq -r --argjson now "$NOW" --argjson min "$((MIN_HO
+   def side: if startswith("frontend-park-mail-ru/") then "frontend"
+     elif startswith("go-park-mail-ru/") then "backend"
+     else sub("^[^/]*/"; "") end;
++  def prline: "• \(.repo | side) · <a href=\"\(.url)\">\(.title | esc)</a>\n";
++  # до $limit строк, дальше «…и ещё N»
++  def block(line): (.[:$limit] | map(line) | join("\n"))
++    + (if length > $limit then "\n…и ещё \(length - $limit)" else "" end);
++  def prs: .data[] | .nameWithOwner as $repo | .pullRequests.nodes[] | select(.isDraft | not) | .repo = $repo;
++'
++digest () {
++  printf '%s' "$DATA" | jq -r --argjson now "$NOW" --argjson min "$((MIN_HOURS * 3600))" \
++    --argjson limit "$LIMIT" --argjson map "$MAP" "$DEFS $1" | tr -d '\r'
++}
+ 
+-  [ .data[] | .nameWithOwner as $repo | .pullRequests.nodes[] | select(.isDraft | not) | . as $pr
++# ждут ревью: кто в Reviewers дольше порога — от последнего запроса ревью или перевода в Ready
++WAITING=$(digest '
++  [ prs | . as $pr
+     | ([.timelineItems.nodes[] | select(.__typename == "ReadyForReviewEvent") | .createdAt] | max) as $ready
+     | [ .reviewRequests.nodes[] | .requestedReviewer.login // empty | . as $login
+         | ([$pr.timelineItems.nodes[]
+@@ -65,25 +188,22 @@ BODY=$(printf '%s' "$DATA" | jq -r --argjson now "$NOW" --argjson min "$((MIN_HO
+         | {login: $login, wait: ($now - ([$asked, $ready] | map(select(. != null)) | max | fromdateiso8601))}
+         | select(.wait >= $min) ]
+     | select(length > 0)
+-    | {repo: $repo, title: $pr.title, url: $pr.url, reviewers: sort_by(-.wait)} ]
++    | {repo: $pr.repo, title: $pr.title, url: $pr.url, reviewers: sort_by(-.wait)} ]
+   | sort_by(-.reviewers[0].wait)
+-  | (.[:$limit] | map(
+-        "• \(.repo | side) · <a href=\"\(.url)\">\(.title | esc)</a>\n"
+-        + (.reviewers | map("  \(.login | who) · ждёт \(.wait | dur)") | join("\n"))
+-      ) | join("\n"))
+-    + (if length > $limit then "\n…и ещё \(length - $limit)" else "" end)')
+-
+-# 1 день / 2 дня / 5 дней
+-days () {
+-  case "$(($1 % 100))" in
+-    11|12|13|14) printf '%s дней' "$1" ;;
+-    *) case "$(($1 % 10))" in
+-         1)     printf '%s день' "$1" ;;
+-         2|3|4) printf '%s дня' "$1" ;;
+-         *)     printf '%s дней' "$1" ;;
+-       esac ;;
+-  esac
+-}
++  | block(prline + (.reviewers | map("  \(.login | who) · ждёт \(.wait | dur)") | join("\n")))')
++
++# одобрены, но не влиты: ревью больше ни от кого не ждут, есть апрув и нет запрошенных правок.
++# reviewDecision не годится: без правил ветки GitHub его не заполняет
++APPROVED=$(digest '
++  [ prs | select((.reviewRequests.nodes | length) == 0)
++    | (.latestOpinionatedReviews.nodes // []) as $ops
++    | [$ops[] | select(.state == "APPROVED")] as $ok
++    | select(($ok | length) > 0 and ($ops | any(.state == "CHANGES_REQUESTED") | not))
++    | {repo, title, url, author: (.author.login // "ghost"), by: [$ok[].author.login],
++       wait: ($now - ($ok | map(.submittedAt | fromdateiso8601) | max))}
++    | select(.wait >= $min) ]
++  | sort_by(-.wait)
++  | block(prline + "  \(.author | who) · одобрен \(.wait | dur) назад (апрув: \(.by | map(esc) | join(", ")))")')
+ 
+ WARN=""
+ IDLE=$(( (NOW - $(date -d "$LAST_COMMIT" +%s)) / 86400 ))
+@@ -99,20 +219,10 @@ if [ "$IDLE" -ge "$WARN_DAYS" ]; then
+ fi
+ 
+ TEXT=""
+-[ -n "$BODY" ] && TEXT=$(printf '<b>⏰ Ждут ревью</b>\n\n%s' "$BODY")
+-if [ -n "$WARN" ]; then
+-  if [ -n "$TEXT" ]; then TEXT=$(printf '%s\n\n%s' "$TEXT" "$WARN"); else TEXT="$WARN"; fi
+-fi
++add () { if [ -n "$TEXT" ]; then TEXT=$(printf '%s\n\n%s' "$TEXT" "$1"); else TEXT="$1"; fi; }
++[ -n "$WAITING" ] && add "$(printf '<b>⏰ Ждут ревью</b>\n\n%s' "$WAITING")"
++[ -n "$APPROVED" ] && add "$(printf '<b>✅ Одобрены, ждут мержа</b>\n\n%s' "$APPROVED")"
++[ -n "$WARN" ] && add "$WARN"
+ [ -n "$TEXT" ] || exit 0
+ 
+-RESP=$(curl -sS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+-  -d chat_id="$CHAT" \
+-  -d message_thread_id="${TOPIC:-}" \
+-  -d parse_mode=HTML \
+-  -d disable_web_page_preview=true \
+-  --data-urlencode text="$TEXT")
+-echo "$RESP"
+-case "$RESP" in
+-  *'"ok":true'*) ;;
+-  *) echo "::error::Telegram отклонил сообщение"; exit 1 ;;
+-esac
++send "$TOPIC" "$TEXT"
