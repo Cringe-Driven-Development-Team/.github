@@ -78,13 +78,15 @@ silent
 when "pr opened без ревьюверов: только автор" \
   EVENT=pull_request ACTION=opened DRAFT=false BASE=main NUMBER=7 TITLE='WEB-5: Вход' URL=https://github.com/o/r/pull/7 \
   PR_AUTHOR=YarikMix REVIEWERS='[]'
-sent "🔀 Открыт pull request" "WEB-5: Вход" 'автор: <a href="tg://user?id=111">YarikMix</a>' "!ревьювер"
+sent_to 1 26 "🔀 Открыт pull request" "WEB-5: Вход" 'автор: <a href="tg://user?id=111">YarikMix</a>' "!ревьювер"
+only 1
 
-when "review requested позже: автор и ревьювер" \
+when "review requested позже: в Code Review, пинг ревьювера" \
   EVENT=pull_request ACTION=review_requested DRAFT=false REVIEWER=blackHATred PR_AUTHOR=YarikMix \
   PR_CREATED="$LONG_AGO" NUMBER=7 TITLE=t URL=u
-sent "👀 Запрошено ревью" \
-  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: <a href="tg://user?id=222">blackHATred</a>'
+sent_to 1 77 "👀 Запрошено ревью" \
+  'автор: YarikMix · ревьювер: <a href="tg://user?id=222">blackHATred</a>'
+only 1
 
 when "pr review requested у команды молчит" \
   EVENT=pull_request ACTION=review_requested REVIEWER= NUMBER=7 TITLE=t URL=u
@@ -92,15 +94,19 @@ silent
 
 when "pr влит в main" \
   EVENT=pull_request ACTION=closed MERGED=true BASE=main NUMBER=7 TITLE=t URL=u
-sent "🎉 Влито в main"
+sent_to 1 26 "🎉 Влито в main"
 
 when "pr закрыт без мержа" \
   EVENT=pull_request ACTION=closed MERGED=false BASE=main NUMBER=7 TITLE=t URL=u
 sent "🚫 PR закрыт без мержа"
 
-when "review approved: упомянут автор PR" \
+when "review approved: в Code Review, пинг автора PR" \
   EVENT=pull_request_review ACTION=submitted REVIEW=approved PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
-sent "👍 Апрув" 'tg://user?id=222'
+sent_to 1 77 "👍 Апрув" 'tg://user?id=222'
+
+when "review changes requested: в Code Review, пинг автора PR" \
+  EVENT=pull_request_review ACTION=submitted REVIEW=changes_requested PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
+sent_to 1 77 "✋ Запрошены правки" 'tg://user?id=222'
 
 when "review commented молчит" \
   EVENT=pull_request_review ACTION=submitted REVIEW=commented PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
@@ -146,14 +152,30 @@ error "TELEGRAM_CHAT_ID"
 when "pr opened с ревьюверами из формы" \
   EVENT=pull_request ACTION=opened DRAFT=false NUMBER=7 TITLE=t URL=u PR_AUTHOR=YarikMix \
   REVIEWERS='[{"login":"blackHATred"},{"login":"iRedTea"}]'
-sent "🔀 Открыт pull request" \
-  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: <a href="tg://user?id=222">blackHATred</a>, iRedTea'
+sent_to 1 26 "🔀 Открыт pull request" \
+  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: blackHATred, iRedTea' "!tg://user?id=222"
+sent_to 2 77 "👀 Запрошено ревью" \
+  'автор: YarikMix · ревьювер: <a href="tg://user?id=222">blackHATred</a>, iRedTea' "!tg://user?id=111"
+only 2
 
 when "ready: ревьюверы, выбранные в черновике" \
   EVENT=pull_request ACTION=ready_for_review DRAFT=false NUMBER=7 TITLE=t URL=u ACTOR=iRedTea \
   PR_AUTHOR=YarikMix REVIEWERS='[{"login":"blackHATred"}]'
-sent "🔀 Открыт pull request" \
-  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: <a href="tg://user?id=222">blackHATred</a>'
+sent_to 1 26 "🔀 Открыт pull request" \
+  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: blackHATred' "!tg://user?id=222"
+sent_to 2 77 "👀 Запрошено ревью" \
+  'автор: YarikMix · ревьювер: <a href="tg://user?id=222">blackHATred</a>'
+only 2
+
+when "без TELEGRAM_REVIEW_TOPIC_ID: оба сообщения в обычный топик" \
+  REVIEW_TOPIC= EVENT=pull_request ACTION=opened DRAFT=false NUMBER=7 TITLE=t URL=u PR_AUTHOR=YarikMix \
+  REVIEWERS='[{"login":"blackHATred"}]'
+sent_to 1 26 "🔀 Открыт pull request"
+sent_to 2 26 "👀 Запрошено ревью"
+
+when "без TELEGRAM_REVIEW_TOPIC_ID: апрув в обычный топик" \
+  REVIEW_TOPIC= EVENT=pull_request_review ACTION=submitted REVIEW=approved PR_AUTHOR=blackHATred NUMBER=7 TITLE=t URL=u
+sent_to 1 26 "👍 Апрув"
 
 when "review requested у черновика молчит" \
   EVENT=pull_request ACTION=review_requested DRAFT=true REVIEWER=blackHATred PR_AUTHOR=YarikMix \
