@@ -7,7 +7,9 @@
 | `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, PR и ревью |
 | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску |
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
-| `tests/` | тесты скрипта уведомлений и линтер |
+| `.github/workflows/reminders.yml` | в 10:00, 15:00 и 20:00 МСК напоминает ревьюверам о PR, которые ждут ответа 4 часа и дольше |
+| `scripts/reminders.sh` | логика напоминаний |
+| `tests/` | тесты скриптов и линтер |
 
 Почему всё устроено так — [спека](docs/superpowers/specs/2026-09-18-central-workflows-design.md).
 
@@ -44,7 +46,9 @@ jobs:
 Репозиторию должны быть доступны:
 
 - секреты `TELEGRAM_BOT_TOKEN` и `ADD_TO_PROJECT_PAT`;
-- переменные `TELEGRAM_CHAT_ID`, `TELEGRAM_TOPIC_ID` и, по желанию, `TELEGRAM_USER_MAP` — JSON `{"github-логин": "telegram id"}`: логины из карты упоминаются кликабельно.
+- переменные `TELEGRAM_CHAT_ID`, `TELEGRAM_TOPIC_ID` и, по желанию:
+  - `TELEGRAM_REVIEW_TOPIC_ID` — топик для сообщений о ревью: запросы, апрувы, правки, напоминания. Без неё всё идёт в `TELEGRAM_TOPIC_ID`;
+  - `TELEGRAM_USER_MAP` — JSON `{"github-логин": "telegram id"}`: логины из карты упоминаются кликабельно.
 
 Репозитории этой организации получают их с уровня организации. Репозиториям других организаций их нужно завести в настройках самого репозитория.
 
@@ -55,6 +59,7 @@ jobs:
 1. Прогнать тесты и линтер — оба должны пройти:
    ```bash
    bash tests/telegram.sh
+   bash tests/reminders.sh
    bash tests/lint.sh
    ```
    Нужны `bash`, `jq`, `perl`, GNU `date` и `awk` (всё, кроме `jq`, есть в Git Bash), а также `shellcheck` и `actionlint`.
@@ -62,3 +67,13 @@ jobs:
 3. События `issues` всегда берут workflow из `main` — их видно только после мержа.
 
 Если после мержа что-то сломалось — revert здесь, исправление сразу дойдёт до всех.
+
+## Напоминания о ревью
+
+Запускаются по расписанию из `main`. Проверить вручную, не дожидаясь порога в 4 часа:
+
+```bash
+gh workflow run reminders.yml -R Cringe-Driven-Development-Team/.github -f min_hours=0
+```
+
+GitHub отключает расписание в публичном репозитории, если в нём 60 дней нет активности. За 10 дней до этого напоминания начинают предупреждать; включить обратно: `gh workflow enable reminders.yml -R Cringe-Driven-Development-Team/.github`.

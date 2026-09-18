@@ -1,0 +1,29 @@
+name: Напоминания о ревью
+
+on:
+  schedule:
+    # 10:00, 15:00, 20:00 по Москве; GitHub может запустить на 5–15 минут позже
+    - cron: '0 7,12,17 * * *'
+  workflow_dispatch:
+    inputs:
+      min_hours:
+        description: Сколько часов ревью должно ждать, чтобы попасть в напоминание
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Напомнить ревьюверам
+        env:
+          GH_TOKEN:  ${{ github.token }}
+          TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT:      ${{ vars.TELEGRAM_CHAT_ID }}
+          TOPIC:     ${{ vars.TELEGRAM_REVIEW_TOPIC_ID || vars.TELEGRAM_TOPIC_ID }}
+          MAP:       ${{ vars.TELEGRAM_USER_MAP }}
+          MIN_HOURS: ${{ inputs.min_hours || '4' }}
+        run: bash scripts/reminders.sh
