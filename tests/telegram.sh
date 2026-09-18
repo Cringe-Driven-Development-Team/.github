@@ -33,7 +33,12 @@ DEFAULTS=(
   ACTOR=YarikMix REPO=Cringe-Driven-Development-Team/react
   NUMBER= TITLE= URL= BRANCH= COMMITS=null COMPARE= FORCED=
   BODY= ASSIGNEES=null CREATED= UPDATED= CHG_BODY=null
+  REVIEWERS=null PR_CREATED=
 )
+
+# когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
+LONG_AGO=$(date -u -d '-10 minutes' +%Y-%m-%dT%H:%M:%SZ)
+JUST_NOW=$(date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%SZ)
 
 PASS=0
 FAIL=0
@@ -135,13 +140,16 @@ silent
 
 # --- pull request и ревью
 
-when "pr opened" \
-  EVENT=pull_request ACTION=opened DRAFT=false BASE=main NUMBER=7 TITLE='WEB-5: Вход' URL=https://github.com/o/r/pull/7
-sent "🔀 Открыт pull request" "WEB-5: Вход" '<a href="tg://user?id=111">YarikMix</a>'
+when "pr opened без ревьюверов: только автор" \
+  EVENT=pull_request ACTION=opened DRAFT=false BASE=main NUMBER=7 TITLE='WEB-5: Вход' URL=https://github.com/o/r/pull/7 \
+  PR_AUTHOR=YarikMix REVIEWERS='[]'
+sent "🔀 Открыт pull request" "WEB-5: Вход" 'автор: <a href="tg://user?id=111">YarikMix</a>' "!ревьювер"
 
-when "pr review requested: упомянут ревьюер" \
-  EVENT=pull_request ACTION=review_requested REVIEWER=blackHATred NUMBER=7 TITLE=t URL=u
-sent "👀 Запрошено ревью" 'tg://user?id=222'
+when "review requested позже: автор и ревьювер" \
+  EVENT=pull_request ACTION=review_requested DRAFT=false REVIEWER=blackHATred PR_AUTHOR=YarikMix \
+  PR_CREATED="$LONG_AGO" NUMBER=7 TITLE=t URL=u
+sent "👀 Запрошено ревью" \
+  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: <a href="tg://user?id=222">blackHATred</a>'
 
 when "pr review requested у команды молчит" \
   EVENT=pull_request ACTION=review_requested REVIEWER= NUMBER=7 TITLE=t URL=u
@@ -164,8 +172,9 @@ when "review commented молчит" \
 silent
 
 when "без карты: логин текстом, сторона — имя репозитория" \
-  EVENT=pull_request ACTION=opened DRAFT=false MAP= REPO=Cringe-Driven-Development-Team/.github NUMBER=1 TITLE=t URL=u
-sent "· .github" "YarikMix" "!tg://user"
+  EVENT=pull_request ACTION=opened DRAFT=false MAP= REPO=Cringe-Driven-Development-Team/.github NUMBER=1 TITLE=t URL=u \
+  PR_AUTHOR=YarikMix
+sent "· .github" "автор: YarikMix" "!tg://user"
 
 # --- правки при переносе в .github
 
@@ -196,6 +205,30 @@ error "TELEGRAM_BOT_TOKEN"
 
 when "нет чата" CHAT= EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u
 error "TELEGRAM_CHAT_ID"
+
+# --- ревьюверы в сообщениях о PR
+
+when "pr opened с ревьюверами из формы" \
+  EVENT=pull_request ACTION=opened DRAFT=false NUMBER=7 TITLE=t URL=u PR_AUTHOR=YarikMix \
+  REVIEWERS='[{"login":"blackHATred"},{"login":"iRedTea"}]'
+sent "🔀 Открыт pull request" \
+  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: <a href="tg://user?id=222">blackHATred</a>, iRedTea'
+
+when "ready: ревьюверы, выбранные в черновике" \
+  EVENT=pull_request ACTION=ready_for_review DRAFT=false NUMBER=7 TITLE=t URL=u ACTOR=iRedTea \
+  PR_AUTHOR=YarikMix REVIEWERS='[{"login":"blackHATred"}]'
+sent "🔀 Открыт pull request" \
+  'автор: <a href="tg://user?id=111">YarikMix</a> · ревьювер: <a href="tg://user?id=222">blackHATred</a>'
+
+when "review requested у черновика молчит" \
+  EVENT=pull_request ACTION=review_requested DRAFT=true REVIEWER=blackHATred PR_AUTHOR=YarikMix \
+  PR_CREATED="$LONG_AGO" NUMBER=7 TITLE=t URL=u
+silent
+
+when "review requested из формы создания молчит" \
+  EVENT=pull_request ACTION=review_requested DRAFT=false REVIEWER=blackHATred PR_AUTHOR=YarikMix \
+  PR_CREATED="$JUST_NOW" NUMBER=7 TITLE=t URL=u
+silent
 
 echo
 echo "итого: $PASS ok, $FAIL fail"
