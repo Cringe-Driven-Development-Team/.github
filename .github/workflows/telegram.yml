@@ -41,6 +41,8 @@ jobs:
           CHG_BODY:  ${{ toJSON(github.event.changes.body) }}
           REVIEWERS: ${{ toJSON(github.event.pull_request.requested_reviewers) }}
           PR_CREATED: ${{ github.event.pull_request.created_at }}
+          HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN:  ${{ github.token }}
         run: |
           # без токена или чата Telegram ответит невнятной ошибкой — называем, чего не хватает
           [ -n "$TOKEN" ] || { echo "::error::Не задан секрет TELEGRAM_BOT_TOKEN"; exit 1; }
@@ -55,6 +57,8 @@ jobs:
           # opened — открытие PR, requested — запрос ревью: вместо одного логина автор и ревьюверы
           KIND=""
           REVS=""
+          # у повторного запроса ревью — что изменилось с прошлого ревью
+          AFTER=""
 
           esc () { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
@@ -68,6 +72,19 @@ jobs:
                    *)     printf 'коммитов' ;;
                  esac ;;
             esac
+          }
+
+          # LAST="<состояние>\t<коммит>" последнего отправленного ревью REVIEWER на этом PR, пусто — не ревьюил;
+          # API недоступен — пусто и предупреждение в лог: лучше обычный запрос, чем упавший job
+          last_review () {
+            ERR="${RUNNER_TEMP:-/tmp}/gh-reviews.err"
+            if LAST=$(gh api "repos/$REPO/pulls/$NUMBER/reviews" --paginate \
+                --jq ".[] | select(.user.login == \"$REVIEWER\" and .state != \"PENDING\") | [.state, .commit_id] | @tsv" 2>"$ERR"); then
+              LAST=$(printf '%s\n' "$LAST" | tail -n 1)
+            else
+              LAST=""
+              echo "::warning::Не прочитал ревью PR, считаю запрос первым: $(head -c 200 "$ERR")"
+            fi
           }
 
           case "$EVENT:$ACTION" in
@@ -111,7 +128,31 @@ jobs:
               REVS="$REVIEWER"
               KIND=requested
               DEST="$RTOPIC"
-              HEAD="👀 Запрошено ревью" ;;
+              HEAD="👀 Запрошено ревью"
+              # ревьювер уже ревьюил PR — автор внёс правки и просит посмотреть снова
+              last_review
+              if [ -n "$LAST" ]; then
+                IFS=$'\t' read -r STATE SHA <<< "$LAST"
+                case "$STATE" in
+                  CHANGES_REQUESTED) VERDICT="✋ правки" ;;
+                  APPROVED)          VERDICT="👍 апрув" ;;
+                  DISMISSED)         VERDICT="ревью снято" ;;
+                  *)                 VERDICT="💬 комментарии" ;;
+                esac
+                HEAD="🔁 Повторное ревью"
+                AFTER="после твоего ревью ($VERDICT)"
+                # после force-push коммита ревью может уже не быть — тогда без числа и кнопки
+                if AHEAD=$(gh api "repos/$REPO/compare/$SHA...$HEAD_SHA" --jq .ahead_by 2>/dev/null) &&
+                  [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
+                  if [ "$AHEAD" -eq 0 ]; then
+                    AFTER="$AFTER: новых коммитов нет"
+                  else
+                    AFTER="$AFTER: $AHEAD $(plural "$AHEAD")"
+                    MARKUP=$(printf '{"inline_keyboard":[[{"text":"Что изменилось","url":"https://github.com/%s/pull/%s/files/%s..%s"}]]}' \
+                      "$REPO" "$NUMBER" "$SHA" "$HEAD_SHA")
+                  fi
+                fi
+              fi ;;
             pull_request:closed)
               if [ "$MERGED" = "true" ]; then
                 HEAD="🎉 Влито в $(esc "$BASE")"
@@ -215,7 +256,9 @@ jobs:
                 opened)
                   LINE="автор: $(mention "$PR_AUTHOR")"
                   [ -n "$REVS" ] && LINE="$LINE · ревьювер: $(mentions "$REVS" plain)" ;;
-                requested) LINE=$(asked) ;;
+                requested)
+                  LINE=$(asked)
+                  [ -n "$AFTER" ] && LINE=$(printf '%s\n%s' "$LINE" "$AFTER") ;;
                 *)         LINE=$(mention "$WHO") ;;
               esac
             fi
