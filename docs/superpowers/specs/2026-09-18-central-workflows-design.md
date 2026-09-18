@@ -1,7 +1,7 @@
 # Общие workflow в репозитории `.github`
 
 Дата: 2026-09-18
-Статус: в работе — docs/superpowers/plans/2026-09-18-central-workflows.md
+Статус: реализовано 2026-09-18
 
 ## Зачем
 
