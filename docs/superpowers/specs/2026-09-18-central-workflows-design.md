@@ -38,7 +38,12 @@
 ```
 Cringe-Driven-Development-Team/.github   (публичный)
 ├── README.md                — что здесь, как подключить репозиторий, как вносить правки
-├── docs/superpowers/specs/  — эта спека
+├── .gitattributes           — LF в рабочей копии: bash и awk не работают с CRLF
+├── docs/superpowers/        — спека и план
+├── tests/
+│   ├── telegram.sh          — скрипт уведомлений на подставных событиях, curl — заглушка
+│   ├── lint.sh              — actionlint + shellcheck
+│   └── extract-run.awk      — достаёт скрипт из блока run: |
 └── .github/workflows/
     ├── telegram.yml         — on: workflow_call
     ├── add-to-project.yml   — on: workflow_call
@@ -143,7 +148,7 @@ jobs:
 
 ## Проверка
 
-**Локально, до пуша:** `actionlint` по всем новым и изменённым YAML (синтаксис, контексты `${{ }}`, bash внутри `run:` через `shellcheck`, если установлен).
+**Локально, до пуша:** `bash tests/telegram.sh` — скрипт уведомлений на подставных событиях с заглушкой `curl`; `bash tests/lint.sh` — `actionlint` (синтаксис, контексты `${{ }}`, вызовы reusable workflow) и `shellcheck -S warning` по скриптам из `run: |`. shellcheck запускается отдельно от actionlint: встроенный вызов на Windows зависает.
 
 **На событиях.** Каждое событие — хотя бы один раз:
 
