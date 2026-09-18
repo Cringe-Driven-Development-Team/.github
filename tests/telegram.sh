@@ -167,6 +167,36 @@ when "без карты: логин текстом, сторона — имя р
   EVENT=pull_request ACTION=opened DRAFT=false MAP= REPO=Cringe-Driven-Development-Team/.github NUMBER=1 TITLE=t URL=u
 sent "· .github" "YarikMix" "!tg://user"
 
+# --- правки при переносе в .github
+
+when "draft pr opened молчит" \
+  EVENT=pull_request ACTION=opened DRAFT=true BASE=main NUMBER=7 TITLE=t URL=u
+silent
+
+when "draft переведён в ready" \
+  EVENT=pull_request ACTION=ready_for_review DRAFT=false BASE=main NUMBER=7 TITLE='WEB-5: Вход' URL=u
+sent "🔀 Открыт pull request" "WEB-5: Вход"
+
+when "push: коммиты из main не показываются" \
+  EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=false \
+  COMMITS='[{"id":"ddddddd4444","message":"Merge branch main into web-5","distinct":true},{"id":"bbbbbbb2222","message":"fix: из main","distinct":false}]'
+sent "⚒️ 1 коммит" "• ddddddd Merge branch main into web-5" "!bbbbbbb"
+
+when "push: только чужие коммиты молчит" \
+  EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=false \
+  COMMITS='[{"id":"bbbbbbb2222","message":"fix: из main","distinct":false}]'
+silent
+
+when "pr влит не в main, имя ветки экранировано" \
+  EVENT=pull_request ACTION=closed MERGED=true BASE='exp<1>' NUMBER=7 TITLE=t URL=u
+sent "🎉 Влито в exp&lt;1&gt;" "!Влито в main"
+
+when "нет токена" TOKEN= EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u
+error "TELEGRAM_BOT_TOKEN"
+
+when "нет чата" CHAT= EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u
+error "TELEGRAM_CHAT_ID"
+
 echo
 echo "итого: $PASS ok, $FAIL fail"
 [ "$FAIL" -eq 0 ]

@@ -19,6 +19,8 @@ jobs:
           EVENT:     ${{ github.event_name }}
           ACTION:    ${{ github.event.action }}
           MERGED:    ${{ github.event.pull_request.merged }}
+          DRAFT:     ${{ github.event.pull_request.draft }}
+          BASE:      ${{ github.event.pull_request.base.ref }}
           REVIEW:    ${{ github.event.review.state }}
           REVIEWER:  ${{ github.event.requested_reviewer.login }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -37,6 +39,10 @@ jobs:
           UPDATED:   ${{ github.event.issue.updated_at }}
           CHG_BODY:  ${{ toJSON(github.event.changes.body) }}
         run: |
+          # без токена или чата Telegram ответит невнятной ошибкой — называем, чего не хватает
+          [ -n "$TOKEN" ] || { echo "::error::Не задан секрет TELEGRAM_BOT_TOKEN"; exit 1; }
+          [ -n "$CHAT" ] || { echo "::error::Не задана переменная TELEGRAM_CHAT_ID"; exit 1; }
+
           WHO="$ACTOR"
           EXTRA=""
           MARKUP='{"inline_keyboard":[]}'
@@ -57,6 +63,8 @@ jobs:
 
           case "$EVENT:$ACTION" in
             push:)
+              # коммиты, которые уже были в других ветках (подтянутые из main), — не новость
+              COMMITS=$(printf '%s' "$COMMITS" | jq -c 'map(select(.distinct))')
               COUNT=$(printf '%s' "$COMMITS" | jq 'length')
               # создание и удаление ветки, пуш тега — событие есть, коммитов нет
               [ "$COUNT" -eq 0 ] && exit 0
@@ -76,7 +84,9 @@ jobs:
               [ "$AGE" -lt 600 ] && exit 0
               HEAD="✏️ Описание изменено" ;;
             pull_request:opened|pull_request:ready_for_review)
-                             HEAD="🔀 Открыт pull request" ;;
+              # о черновике сообщим, когда его переведут в ready_for_review
+              [ "$ACTION" = "opened" ] && [ "$DRAFT" = "true" ] && exit 0
+              HEAD="🔀 Открыт pull request" ;;
             pull_request:review_requested)
               # ревью может быть запрошено у команды — тогда упоминать некого
               [ -z "$REVIEWER" ] && exit 0
@@ -84,7 +94,7 @@ jobs:
               WHO="$REVIEWER" ;;
             pull_request:closed)
               if [ "$MERGED" = "true" ]; then
-                HEAD="🎉 Влито в main"
+                HEAD="🎉 Влито в $(esc "$BASE")"
               else
                 HEAD="🚫 PR закрыт без мержа"
               fi ;;
