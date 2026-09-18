@@ -38,6 +38,8 @@ jobs:
           CREATED:   ${{ github.event.issue.created_at }}
           UPDATED:   ${{ github.event.issue.updated_at }}
           CHG_BODY:  ${{ toJSON(github.event.changes.body) }}
+          REVIEWERS: ${{ toJSON(github.event.pull_request.requested_reviewers) }}
+          PR_CREATED: ${{ github.event.pull_request.created_at }}
         run: |
           # без токена или чата Telegram ответит невнятной ошибкой — называем, чего не хватает
           [ -n "$TOKEN" ] || { echo "::error::Не задан секрет TELEGRAM_BOT_TOKEN"; exit 1; }
@@ -46,6 +48,9 @@ jobs:
           WHO="$ACTOR"
           EXTRA=""
           MARKUP='{"inline_keyboard":[]}'
+          # у открытия PR и запроса ревью вместо одного логина — автор и ревьюверы
+          ROLES=""
+          REVS=""
 
           esc () { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
@@ -86,12 +91,22 @@ jobs:
             pull_request:opened|pull_request:ready_for_review)
               # о черновике сообщим, когда его переведут в ready_for_review
               [ "$ACTION" = "opened" ] && [ "$DRAFT" = "true" ] && exit 0
+              # ревьюверы из формы создания и из черновика — в этом же сообщении
+              REVS=$(printf '%s' "$REVIEWERS" | jq -r '[.[]?.login] | join(" ")')
+              ROLES=1
               HEAD="🔀 Открыт pull request" ;;
             pull_request:review_requested)
               # ревью может быть запрошено у команды — тогда упоминать некого
               [ -z "$REVIEWER" ] && exit 0
-              HEAD="👀 Запрошено ревью"
-              WHO="$REVIEWER" ;;
+              # у черновика ревьювер попадёт в сообщение на ready_for_review
+              [ "$DRAFT" = "true" ] && exit 0
+              # ревьювера выбрали в форме создания: GitHub шлёт запрос сразу после opened,
+              # а в сообщении об открытии он уже есть
+              AGE=$(( $(date +%s) - $(date -d "$PR_CREATED" +%s) ))
+              [ "$AGE" -lt 60 ] && exit 0
+              REVS="$REVIEWER"
+              ROLES=1
+              HEAD="👀 Запрошено ревью" ;;
             pull_request:closed)
               if [ "$MERGED" = "true" ]; then
                 HEAD="🎉 Влито в $(esc "$BASE")"
@@ -126,6 +141,16 @@ jobs:
             fi
           }
 
+          # "a b" → упоминания через запятую
+          mentions () {
+            ML=""
+            for N in $1; do
+              [ -n "$ML" ] && ML="$ML, "
+              ML="$ML$(mention "$N")"
+            done
+            printf '%s' "$ML"
+          }
+
           if [ "$EVENT" = "push" ]; then
             # у Telegram лимит 4096 символов — длинный пуш иначе отвалится молча
             LIST=$(printf '%s' "$COMMITS" | jq -r '.[0:10][] | "• \(.id[0:7]) \(.message | split("\n")[0])"' | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
@@ -142,19 +167,16 @@ jobs:
               REF="#$NUMBER "
               LINE="автор: $(mention "$WHO")"
               NAMES=$(printf '%s' "$ASSIGNEES" | jq -r '[.[].login] | join(" ")' 2>/dev/null || true)
-              if [ -n "$NAMES" ]; then
-                ML=""
-                for N in $NAMES; do
-                  [ -n "$ML" ] && ML="$ML, "
-                  ML="$ML$(mention "$N")"
-                done
-                LINE="$LINE · исполнитель: $ML"
-              fi
+              [ -n "$NAMES" ] && LINE="$LINE · исполнитель: $(mentions "$NAMES")"
               # описание показываем при создании и правке, на закрытии это шум
               if { [ "$ACTION" = "opened" ] || [ "$ACTION" = "edited" ]; } && [ -n "$BODY" ]; then
                 Q=$(printf '%s' "$BODY" | perl -CS -0777 -pe 's/<!--.*?-->//gs; s/\r//g; s/^#+[ \t]*//gm; s/\n{3,}/\n\n/g; s/^\s+|\s+$//g; $_ = substr($_,0,700) . "…" if length > 700; s/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g;')
                 [ -n "$Q" ] && EXTRA=$(printf '\n<blockquote expandable>%s</blockquote>' "$Q")
               fi
+            elif [ -n "$ROLES" ]; then
+              REF=""
+              LINE="автор: $(mention "$PR_AUTHOR")"
+              [ -n "$REVS" ] && LINE="$LINE · ревьювер: $(mentions "$REVS")"
             else
               REF=""
               LINE=$(mention "$WHO")
