@@ -21,6 +21,12 @@ permissions:
   contents: read
   actions: read
 
+# ручной запуск (sprint=true), наложившийся на утренний по расписанию, не должен постить смену
+# спринта дважды — общая группа на весь workflow не даёт им выполняться параллельно
+concurrency:
+  group: reminders
+  cancel-in-progress: false
+
 jobs:
   remind:
     runs-on: ubuntu-latest
@@ -34,6 +40,9 @@ jobs:
           CHAT:  ${{ vars.TELEGRAM_CHAT_ID }}
           TOPIC: ${{ vars.TELEGRAM_TOPIC_ID }}
           MAP:   ${{ vars.TELEGRAM_USER_MAP }}
+          # «всё сделано» на первый день без хвостов — только из планового утреннего запуска,
+          # первой попытки: ручной прогон и повтор той же попытки не должны постить его заново
+          ANNOUNCE_EMPTY: ${{ github.event.schedule == '0 7 * * *' && github.run_attempt == '1' }}
         run: bash scripts/sprint.sh
       - name: Напомнить о ревью и проверить уведомления
         if: ${{ !cancelled() }}

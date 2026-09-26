@@ -88,8 +88,7 @@ BOARD=$(printf '%s' "$PAGES" | jq -sc '
 ' | tr -d '\r')
 [ "$BOARD" != "null" ] && [ -n "$BOARD" ] || { echo "::error::Не прочитал доску"; exit 1; }
 
-# общие jq-определения для чтения доски и сборки сообщения; $failed нужен только на втором проходе,
-# но передаём его всегда, чтобы не заводить две почти одинаковые обвязки
+# общие jq-определения для чтения доски и сборки сообщения
 DEFS='
   def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
   def who: if $map[.] then "<a href=\"tg://user?id=\($map[.])\">\(esc)</a>" else esc end;
@@ -101,20 +100,19 @@ DEFS='
     or (.content.__typename == "PullRequest" and (.content.state == "CLOSED" or .content.state == "MERGED"));
   def valid: (.isArchived | not) and (.content != null);
   def rank: (.status.name // "") as $s | ($order | index($s)) // ($order | length);
-  def isfailed: (.id as $x | ($failed | any(. == $x)));
   def tailline:
     (if .isDraft then "черновик · \(.title | esc)"
      else "\(.side) #\(.number) <a href=\"\(.url)\">\(.title | esc)</a>" end)
     + " · " + (if .status == "" then "без статуса" else (.status | esc) end)
-    + " · " + (if (.assignees | length) == 0 then "без исполнителя" else (.assignees | map(who) | join(", ")) end)
-    + (if isfailed then " ⚠️ не перенесена" else "" end);
-  def planitems: .curExisting + [ .tails[] | select(isfailed | not) | {assignees} ];
+    + " · " + (if (.assignees | length) == 0 then "без исполнителя" else (.assignees | map(who) | join(", ")) end);
+  # план считает так, будто перенесутся все хвосты: сообщение уходит раньше мутаций (см. «Перенос»)
+  def planitems: .curExisting + [ .tails[] | {assignees} ];
 '
-# J <json> <filter> — общий раннер: $today/$done/$map/$order/$limit/$failed доступны всегда
+# J <json> <filter> — общий раннер: $today/$done/$map/$order/$limit доступны всегда
 J () {
   printf '%s' "$1" | jq -rc --arg today "$TODAY" --arg "done" "$DONE_STATUS" \
     --argjson map "$MAP" --argjson order "$ORDER" --argjson limit "$LIMIT" \
-    --argjson failed "${FAILED_JSON:-[]}" "$DEFS $2" | tr -d '\r'
+    "$DEFS $2" | tr -d '\r'
 }
 
 # ---------- решение: прошлая/текущая итерация, хвосты, «сделано», план
@@ -171,35 +169,29 @@ if [ "$(J "$STATE" '.firstDay')" != "true" ] && [ "$TAILS_COUNT" -eq 0 ]; then
   exit 0
 fi
 
-# ---------- перенос: одна мутация на хвост, сбой одной не останавливает остальные
+# первый день без хвостов — «всё сделано» шлём только по ANNOUNCE_EMPTY: иначе ручной прогон
+# (sprint=true) или повтор той же утренней попытки постил бы один и тот же итог заново
+if [ "$TAILS_COUNT" -eq 0 ] && [ "${ANNOUNCE_EMPTY:-}" != "true" ]; then
+  exit 0
+fi
+
+# ---------- сообщение: план и список хвостов строятся заранее, как будто перенесутся все —
+# сначала уходит сообщение, и только потом начинается перенос (см. «Перенос» в спеке): если
+# Telegram отклонит текст, доска ещё не тронута ни одной мутацией
 
 PROJECT_ID=$(J "$BOARD" '.id')
 FIELD_ID=$(J "$BOARD" '.field')
 CUR_ID=$(J "$STATE" '.curId')
-
-FAILED=()
-if [ "$TAILS_COUNT" -gt 0 ]; then
-  while IFS= read -r ROW; do
-    ITEM_ID=$(jq -r '.id' <<<"$ROW")
-    MUTATION='mutation($project: ID!, $item: ID!, $field: ID!, $iteration: String!) {
-      updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {iterationId: $iteration}}) { projectV2Item { id } } }'
-    if GH_TOKEN="$PAT" gh api graphql -f query="$MUTATION" -f project="$PROJECT_ID" -f item="$ITEM_ID" \
-        -f field="$FIELD_ID" -f iteration="$CUR_ID" >/dev/null; then
-      :
-    else
-      if [ "$(jq -r '.isDraft' <<<"$ROW")" = "true" ]; then
-        LABEL="черновик $(jq -r '.title' <<<"$ROW")"
-      else
-        LABEL="$(jq -r '.side' <<<"$ROW") #$(jq -r '.number' <<<"$ROW")"
-      fi
-      echo "::warning::Не перенёс $LABEL"
-      FAILED+=("$ITEM_ID")
-    fi
-  done < <(jq -c '.tails[]' <<<"$STATE")
-fi
-FAILED_JSON=$(printf '%s\n' "${FAILED[@]:-}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-
-# ---------- сообщение: итоги прошлого спринта + план текущего
+CUR_TITLE=$(J "$STATE" '.curTitle')
+CUR_START=$(J "$STATE" '.curStart')
+CUR_END=$(J "$STATE" '.curEnd')
+PAST_TITLE=$(J "$STATE" '.pastTitle')
+PAST_START=$(J "$STATE" '.pastStart')
+PAST_END=$(J "$STATE" '.pastEnd')
+DONE_COUNT=$(J "$STATE" '.doneCount')
+TOTAL_COUNT=$(J "$STATE" '.totalCount')
+PROJECT_URL=$(J "$BOARD" '.url')
+MARKUP=$(jq -nc --arg u "$PROJECT_URL" '{inline_keyboard: [[{text: "Открыть доску", url: $u}]]}')
 
 TAILS_BLOCK=$(J "$STATE" '
   (.tails) as $t
@@ -217,15 +209,6 @@ BREAKDOWN=$(J "$STATE" '
       | map("\(.login | esc) \(.n)")) as $named
   | ($named + (if $none > 0 then ["без исполнителя \($none)"] else [] end)) | join(" · ")
 ')
-DONE_COUNT=$(J "$STATE" '.doneCount')
-TOTAL_COUNT=$(J "$STATE" '.totalCount')
-PAST_TITLE=$(J "$STATE" '.pastTitle')
-PAST_START=$(J "$STATE" '.pastStart')
-PAST_END=$(J "$STATE" '.pastEnd')
-CUR_TITLE=$(J "$STATE" '.curTitle')
-CUR_START=$(J "$STATE" '.curStart')
-CUR_END=$(J "$STATE" '.curEnd')
-PROJECT_URL=$(J "$BOARD" '.url')
 
 # пустой план — без висячего двоеточия («0 задач», а не «0 задач: »)
 PLAN_LINE=$(tasks "$PLAN_COUNT")
@@ -238,5 +221,36 @@ TEXT=$(printf '<b>🏁 %s закрыт · %s–%s</b>\nсделано %s из %s
   "$(esc "$CUR_TITLE")" "$(dm "$CUR_START")" "$(dm "$CUR_END")" \
   "$PLAN_LINE")
 
-MARKUP=$(jq -nc --arg u "$PROJECT_URL" '{inline_keyboard: [[{text: "Открыть доску", url: $u}]]}')
 send "$TOPIC" "$TEXT" "$MARKUP"
+
+# ---------- перенос: одна мутация на хвост, сбой одной не останавливает остальные
+
+FAILED_ROWS=()
+if [ "$TAILS_COUNT" -gt 0 ]; then
+  while IFS= read -r ROW; do
+    ITEM_ID=$(jq -r '.id' <<<"$ROW")
+    MUTATION='mutation($project: ID!, $item: ID!, $field: ID!, $iteration: String!) {
+      updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: {iterationId: $iteration}}) { projectV2Item { id } } }'
+    if GH_TOKEN="$PAT" gh api graphql -f query="$MUTATION" -f project="$PROJECT_ID" -f item="$ITEM_ID" \
+        -f field="$FIELD_ID" -f iteration="$CUR_ID" >/dev/null; then
+      :
+    else
+      if [ "$(jq -r '.isDraft' <<<"$ROW")" = "true" ]; then
+        LABEL="черновик $(jq -r '.title' <<<"$ROW")"
+      else
+        LABEL="$(jq -r '.side' <<<"$ROW") #$(jq -r '.number' <<<"$ROW")"
+      fi
+      echo "::warning::Не перенёс $LABEL"
+      FAILED_ROWS+=("$ROW")
+    fi
+  done < <(jq -c '.tails[]' <<<"$STATE")
+fi
+
+# сбой части мутаций не валит job — сообщение уже ушло, доска почти вся переехала; тем,
+# что не переехало, — отдельное короткое сообщение с просьбой перенести руками
+if [ "${#FAILED_ROWS[@]}" -gt 0 ]; then
+  FAILED_JSON=$(printf '%s\n' "${FAILED_ROWS[@]}" | jq -s -c '.')
+  FAILED_LINES=$(J "$FAILED_JSON" '[.[] | "• " + tailline] | join("\n")')
+  FOLLOWUP=$(printf '<b>⚠️ Не перенесены в %s</b> — перенесите руками:\n%s' "$(esc "$CUR_TITLE")" "$FAILED_LINES")
+  send "$TOPIC" "$FOLLOWUP" "$MARKUP"
+fi

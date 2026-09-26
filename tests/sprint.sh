@@ -11,16 +11,20 @@ SCRIPT="$ROOT/scripts/sprint.sh"
 
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
-# заглушка gh: мутация Sprint (query=mutation...) — пишет "item iteration" в $MOVES,
-# для itemId из MOVE_FAIL (через пробел) отвечает отказом; иначе это чтение доски —
-# GH_FAIL валит запрос, иначе отдаёт $FIXTURE как есть (одна или несколько "страниц" подряд)
+# заглушка gh: мутация Sprint (query=mutation...) — пишет "item iteration project field token" в
+# $MOVES (token — значение GH_TOKEN, которым скрипт вызвал gh), для itemId из MOVE_FAIL (через
+# пробел) отвечает отказом; иначе это чтение доски — GH_FAIL валит запрос, без --paginate отдаётся
+# только первая "страница" фикстуры (ловит потерю флага пагинации), с --paginate — все подряд
 args=("$@")
-QUERY="" ITEM="" ITERATION=""
+QUERY="" ITEM="" ITERATION="" PROJECT="" FIELD="" PAGINATE=""
 for a in "${args[@]}"; do
   case "$a" in
     query=*) QUERY=${a#query=} ;;
     item=*) ITEM=${a#item=} ;;
     iteration=*) ITERATION=${a#iteration=} ;;
+    project=*) PROJECT=${a#project=} ;;
+    field=*) FIELD=${a#field=} ;;
+    --paginate) PAGINATE=1 ;;
   esac
 done
 case "$QUERY" in
@@ -28,11 +32,11 @@ case "$QUERY" in
     case " ${MOVE_FAIL:-} " in
       *" $ITEM "*) echo "gh: HTTP 502" >&2; exit 1 ;;
     esac
-    printf '%s %s\n' "$ITEM" "$ITERATION" >> "$MOVES"
+    printf '%s %s %s %s %s\n' "$ITEM" "$ITERATION" "$PROJECT" "$FIELD" "${GH_TOKEN:-}" >> "$MOVES"
     echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"'"$ITEM"'"}}}}' ;;
   *)
     [ -z "${GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
-    cat "$FIXTURE" ;;
+    if [ -n "$PAGINATE" ]; then cat "$FIXTURE"; else head -n 1 "$FIXTURE"; fi ;;
 esac
 STUB
 chmod +x "$TMP/bin/gh"
@@ -41,7 +45,7 @@ FIXTURE="$TMP/fixture.json"
 MOVES="$TMP/moves"
 DEFAULTS=(
   TOKEN=test-token CHAT=-100 TOPIC=26 MAP='{"YarikMix":"111","blackHATred":"222"}'
-  PAT=test-pat TODAY=2026-09-28 GH_FAIL= MOVE_FAIL=
+  PAT=test-pat TODAY=2026-09-28 GH_FAIL= MOVE_FAIL= ANNOUNCE_EMPTY=true
   FIXTURE="$FIXTURE" MOVES="$MOVES"
 )
 
@@ -133,8 +137,9 @@ sent_to 1 26 "🏁 Sprint 2 закрыт · 21.09–27.09" "сделано 2 и�
 before "In review" "In progress"
 before "In progress" "Backlog"
 only 1
-if [ "$(sort "$TMP/moves")" = "$(printf 't1 s3\nt2 s3\nt3 s3\n' | sort)" ]; then pass
-else fail "журнал мутаций: $(cat "$TMP/moves" 2>/dev/null)"; fi
+if [ "$(sort "$TMP/moves")" = "$(printf 't1 s3 PVT_test PVTIF_test test-pat\nt2 s3 PVT_test PVTIF_test test-pat\nt3 s3 PVT_test PVTIF_test test-pat\n' | sort)" ]
+then pass
+else fail "журнал мутаций (item iteration project field token): $(cat "$TMP/moves" 2>/dev/null)"; fi
 
 # --- 2. первый день, хвостов нет
 
@@ -144,6 +149,14 @@ fixture "$D1" "$D2"
 w "2. первый день, хвостов нет — «всё сделано»; план пуст — без висячего двоеточия"
 sent "всё сделано 🎉" "сделано 2 из 2" "🚀 Sprint 3 · 28.09–04.10" "0 задач" "!0 задач:"
 only 1
+[ -s "$TMP/moves" ] && fail "были мутации" || pass
+
+# --- 2b. первый день, хвостов нет, но ANNOUNCE_EMPTY=false (ручной прогон/повтор) — тишина,
+#         чтобы не постить одно и то же «всё сделано» по новой
+
+fixture "$D1" "$D2"
+w "2b. первый день, хвостов нет, ANNOUNCE_EMPTY=false — тишина" ANNOUNCE_EMPTY=false
+silent
 [ -s "$TMP/moves" ] && fail "были мутации" || pass
 
 # --- 3. закрытая задача не в Done и смерженный PR — сделаны, не хвосты
@@ -170,7 +183,7 @@ DR=$(item dr1 s2 Ready draft - - - "Придумать название")
 fixture "$DR"
 w "5. черновик — хвост без ссылки, но переносится"
 sent "черновик · Придумать название" "!<a href=\""
-if grep -qxF "dr1 s3" "$TMP/moves"; then pass; else fail "черновик не перенесён"; fi
+if grep -q "^dr1 s3 " "$TMP/moves"; then pass; else fail "черновик не перенесён"; fi
 
 # --- 6. второй день, хвост остался
 
@@ -178,7 +191,7 @@ T1=$(item t1b s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Develop
 fixture "$T1"
 w "6. второй день, хвост остался — перенос всё равно происходит" TODAY=2026-09-29
 sent "перенесено в Sprint 3 — 1:" "Late tail"
-if grep -qxF "t1b s3" "$TMP/moves"; then pass; else fail "нет переноса"; fi
+if grep -q "^t1b s3 " "$TMP/moves"; then pass; else fail "нет переноса"; fi
 
 # --- 7. второй день, хвостов нет
 
@@ -187,9 +200,11 @@ w "7. второй день, хвостов нет — тишина" TODAY=2026-
 silent
 [ -s "$TMP/moves" ] && fail "мутации были" || pass
 
-# --- 8. последний день текущего спринта (не первый), без хвостов из прошлого — тишина
+# --- 8. последний день текущего спринта (не первый), без хвостов из прошлого — тишина;
+#        незакрытая задача текущего (ещё не прошлого) спринта — не хвост и не переносится
 
-fixture
+X1=$(item x1 s2 "In progress" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 200 "Last day sprint2 item")
+fixture "$X1"
 w "8. последний день спринта — не первый день, хвостов из прошлого нет" TODAY=2026-09-27
 silent
 [ -s "$TMP/moves" ] && fail "мутации были" || pass
@@ -211,17 +226,29 @@ fixture
 w "10. нет прошлой итерации — тишина" TODAY=2026-09-14
 silent
 
-# --- 11. сбой одной мутации не останавливает перенос остальных
+# --- 11a. Telegram отклонил сообщение — сначала шлём, потом переносим: отказ валит job
+#          до единой мутации, доска остаётся нетронутой
+
+T1=$(item tr1 s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 82 "Reject tail")
+fixture "$T1"
+w "11a. Telegram отклонил сообщение — код 1, ни одна мутация не прошла" TG_REJECT='🏁'
+error "Telegram отклонил"
+[ -s "$TMP/moves" ] && fail "мутации прошли при отклонённом сообщении" || pass
+
+# --- 11b. сбой одной мутации не останавливает перенос остальных: основное сообщение перечисляет
+#          все хвосты как если бы перенос удался (без инлайн-пометки), непереехавшим — отдельное
+#          сообщение-напоминание с кнопкой на доску
 
 T1=$(item ta s2 "In review" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 80 "Tail A" GrayMouse9)
 T2=$(item tb s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 81 "Tail B" GrayMouse9)
 fixture "$T1" "$T2"
-w "11. сбой одной мутации: остальные перенесены, у неё пометка" MOVE_FAIL=tb
+w "11b. сбой одной мутации: остальные перенесены, доп. сообщение с непереехавшими" MOVE_FAIL=tb
 if [ "$CODE" -eq 0 ]; then pass; else fail "код $CODE"; fi
-if grep -qxF "ta s3" "$TMP/moves" && ! grep -q '^tb ' "$TMP/moves"; then pass
+if grep -q "^ta s3 " "$TMP/moves" && ! grep -q '^tb ' "$TMP/moves"; then pass
 else fail "журнал мутаций: $(cat "$TMP/moves" 2>/dev/null)"; fi
-if grep -q "Tail B.*⚠️ не перенесена" "$TMP/sent/1" && ! grep -q "Tail A.*⚠️ не перенесена" "$TMP/sent/1"; then pass
-else fail "пометка не на той строке"; fi
+sent_to 1 26 "Tail A" "Tail B" "!⚠️ не перенесена"
+sent_to 2 26 "⚠️ Не перенесены в Sprint 3" "перенесите руками" "Tail B" "!Tail A"
+only 2
 if grep -qF "::warning::Не перенёс" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
 
 # --- 12. больше 20 хвостов
