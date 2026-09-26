@@ -93,6 +93,11 @@ when "описание: картинки — ссылками, блочные т
 sent '<a href="https://github.com/user-attachments/assets/9bee">🖼 картинка</a>' \
   '<a href="https://i.io/p.png">🖼 картинка</a>' $'Ещё\nвнутри' "!<img" "!width=" "!<details"
 
+when "описание: комментарий HTML внутри кода не вырезается" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'текст <!-- скрыто -->\n```html\n<!-- keep -->\ncode\n```'
+sent "<pre>&lt;!-- keep --&gt;" "!скрыто"
+
 LONG=$(printf 'сущ%.0s' $(seq 1 300))
 when "описание длиннее 700 символов — многоточие без мусора" \
   EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY="$LONG"
