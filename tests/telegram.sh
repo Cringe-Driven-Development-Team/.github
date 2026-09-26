@@ -20,6 +20,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$path" in
+  # сравнение без SHA — ошибка в скрипте, а не ответ GitHub
+  */compare/*"..."|*/compare/*"...?"*) echo "gh: в сравнении нет SHA: $path" >&2; exit 1 ;;
   */reviews)   body=${GH_REVIEWS-}; fail=${GH_REVIEWS_FAIL-} ;;
   # сравнение со старой версией ветки (force-push) — отдельный ответ
   */compare/*"...${BEFORE:-none}"*) body=${GH_COMPARE_BEFORE-}; fail=${GH_COMPARE_BEFORE_FAIL-} ;;
