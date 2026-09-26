@@ -3,12 +3,16 @@ name: Напоминания о ревью
 on:
   schedule:
     # 10:00, 15:00, 20:00 по Москве; GitHub может запустить на 5–15 минут позже.
-    # Утренний запуск отдельной строкой: по ней job узнаёт, что пора разослать дайджест ревью
-    # и проверить срок токена доски; в 15:00 и 20:00 — только сбои и новые репозитории
+    # Утренний запуск отдельной строкой: по ней job узнаёт, что пора разослать дайджест ревью,
+    # проверить срок токена доски и смену спринта; в 15:00 и 20:00 — только сбои и новые репозитории
     - cron: '0 7 * * *'
     - cron: '0 12,17 * * *'
   workflow_dispatch:
     inputs:
+      sprint:
+        description: Проверить смену спринта (перенос хвостов и сообщение), как в утреннем запуске
+        type: boolean
+        default: false
       min_hours:
         description: Сколько часов ревью или апрув должны ждать, чтобы попасть в напоминание
         default: '4'
@@ -17,12 +21,31 @@ permissions:
   contents: read
   actions: read
 
+# ручной запуск (sprint=true), наложившийся на утренний по расписанию, не должен постить смену
+# спринта дважды — общая группа на весь workflow не даёт им выполняться параллельно
+concurrency:
+  group: reminders
+  cancel-in-progress: false
+
 jobs:
   remind:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Смена спринта
+        if: ${{ !cancelled() && (github.event.schedule == '0 7 * * *' || inputs.sprint) }}
+        env:
+          PAT:   ${{ secrets.ADD_TO_PROJECT_PAT }}
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT:  ${{ vars.TELEGRAM_CHAT_ID }}
+          TOPIC: ${{ vars.TELEGRAM_TOPIC_ID }}
+          MAP:   ${{ vars.TELEGRAM_USER_MAP }}
+          # «всё сделано» на первый день без хвостов — только из планового утреннего запуска,
+          # первой попытки: ручной прогон и повтор той же попытки не должны постить его заново
+          ANNOUNCE_EMPTY: ${{ github.event.schedule == '0 7 * * *' && github.run_attempt == '1' }}
+        run: bash scripts/sprint.sh
       - name: Напомнить о ревью и проверить уведомления
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN:  ${{ github.token }}
           TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
