@@ -48,6 +48,8 @@ jobs:
           BEFORE:    ${{ github.event.before }}
           AFTER:     ${{ github.event.after }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # в payload пуша — эпоха в секундах; сверяем с closed_at, чтобы не спутать корректирующий force-push со старым закрытием
+          PUSHED_AT: ${{ github.event.repository.pushed_at }}
           BODY:      ${{ github.event.issue.body }}
           ASSIGNEES: ${{ toJSON(github.event.issue.assignees) }}
           CREATED:   ${{ github.event.issue.created_at }}
@@ -113,7 +115,10 @@ jobs:
               s{($code)|<img\b[^>]*?\bsrc="([^"]+)"[^>]*>}{$1 // "[🖼 картинка]($2)"}gie;
               s{($code)|!\[[^\]\n]*\]\(([^)\s]+)[^)\n]*\)}{$1 // "[🖼 картинка]($2)"}ge;
               s{($code)|<br\s*/?>|</(?:p|div|summary|details|li|tr|h\d)>}{$1 // "\n"}gie;
-              s{($code)|</?[A-Za-z][^<>]*>}{$1 // ""}ge;
+              # автоссылка и адрес в <...> — не тег, оставляем ссылкой/текстом до общей зачистки тегов
+              s{($code)|<(https?://[^<>\s]+)>}{$1 // "[$2]($2)"}ge;
+              s{($code)|<([^<>\s@]+@[^<>\s]+)>}{$1 // $2}ge;
+              s{($code)|</?[A-Za-z][^<>\n]*>}{$1 // ""}ge;
               s/[ \t]+$//gm; s/\n{3,}/\n\n/g; s/^\s+|\s+$//g;
               $_ = substr($_, 0, 700) . "…" if length > 700;
               s/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g;
@@ -122,7 +127,8 @@ jobs:
               s/\A(.*)^```[^\n]*\n?/$1/sm if $fences % 2;
               s{^```[^\n]*\n(.*?)\n?^```[ \t]*$}{push @k, "<pre>$1</pre>"; "\x00$#k\x00"}gems;
               s{`([^`\n]+)`}{push @k, "<code>$1</code>"; "\x00$#k\x00"}ge;
-              s{^#{1,6}[ \t]+(.+?)[ \t#]*$}{<b>$1</b>}gm;
+              # ** внутри заголовка снимаем — иначе жирный текст в заголовке даёт <b><b>x</b></b>
+              s{^#{1,6}[ \t]+(.+?)[ \t#]*$}{my $h = $1; $h =~ s/\*\*//g; "<b>$h</b>"}gme;
               s{\*\*(?=\S)(.+?)(?<=\S)\*\*}{<b>$1</b>}g;
               s{~~(?=\S)(.+?)(?<=\S)~~}{<s>$1</s>}g;
               s{\[([^\]\n]+)\]\((https?://[^)\s"]+)\)}{<a href="$2">$1</a>}g;
@@ -495,8 +501,16 @@ jobs:
             fi
             while IFS=$'\t' read -r N AT PURL AUTHOR PTITLE; do
               [ -n "$N" ] || continue
-              # закрыт давно — не этим пушем
-              [ $(( $(date +%s) - $(date -d "$AT" +%s) )) -lt 300 ] || continue
+              AT_EPOCH=$(date -d "$AT" +%s)
+              if [[ "$PUSHED_AT" =~ ^[0-9]+$ ]]; then
+                # PUSHED_AT есть — сверяем закрытие с этим пушем в упор: второй, корректирующий
+                # force-push в те же 5 минут не должен снова взять вину на себя
+                DIFF=$(( AT_EPOCH - PUSHED_AT ))
+                [ "${DIFF#-}" -le 10 ] || continue
+              else
+                # PUSHED_AT недоступен — старое окно: закрыт давно — не этим пушем
+                [ $(( $(date +%s) - AT_EPOCH )) -lt 300 ] || continue
+              fi
               if ! EV=$(gh api "repos/$REPO/issues/$N/events?per_page=100" --paginate \
                   --jq '.[] | select(.event == "closed" or .event == "head_ref_force_pushed") | "\(.event) \(.created_at)"' 2>"$ERR"); then
                 echo "::warning::Не прочитал события PR #$N: $(head -c 200 "$ERR")"

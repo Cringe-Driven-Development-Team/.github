@@ -49,7 +49,7 @@ DEFAULTS=(
   REVIEWERS=null PR_CREATED= HEAD_SHA= GH_TOKEN=test-gh
   GH_REVIEWS='[]' GH_REVIEWS_FAIL= GH_COMPARE= GH_COMPARE_FAIL=
   REVIEW_BY= REVIEW_BY_TYPE=User REVIEW_URL= REVIEW_WAIT=0 GH_COMMENTS='[]' GH_COMMENTS_FAIL=
-  DELETED=false BEFORE= AFTER= DEFAULT_BRANCH=main GH_COMPARE_BEFORE= GH_COMPARE_BEFORE_FAIL=
+  DELETED=false BEFORE= AFTER= DEFAULT_BRANCH=main GH_COMPARE_BEFORE= GH_COMPARE_BEFORE_FAIL= PUSHED_AT=
   OWNER=Cringe-Driven-Development-Team GH_CLOSED='[]' GH_CLOSED_FAIL= GH_EVENTS='[]' GH_EVENTS_FAIL=
   CALLS="$TMP/calls"
   COMMENT_BODY= COMMENT_URL= COMMENT_BY= COMMENT_BY_TYPE=User ISSUE_AUTHOR= IS_PR=false GH_PR='{}' GH_PR_FAIL=
@@ -109,6 +109,20 @@ when "описание: комментарий HTML внутри кода не �
   EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
   BODY=$'текст <!-- скрыто -->\n```html\n<!-- keep -->\ncode\n```'
 sent "<pre>&lt;!-- keep --&gt;" "!скрыто"
+
+when "описание: автоссылка и адрес в угловых скобках не вырезаются" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY='Пиши на <user@mail.ru> или <https://x.io>'
+sent 'Пиши на user@mail.ru или <a href="https://x.io">https://x.io</a>'
+
+when "описание: тег не схлопывает текст между < и > на разных строках" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'if x<y and\nmore text y>z end'
+sent "if x&lt;y and" "more text y&gt;z end"
+
+when "описание: заголовок с жирным текстом — без вложенного <b>" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY='## **Зачем**'
+sent "<b>Зачем</b>" "!<b><b>"
 
 LONG=$(printf 'сущ%.0s' $(seq 1 300))
 when "описание длиннее 700 символов — многоточие без мусора" \
@@ -228,6 +242,19 @@ sent_to 2 26 "<b>🚫 PR закрыт без мержа</b> · infra" '<a href="
 only 2
 if grep -qF "repos/$INFRA/pulls?state=closed&head=Cringe-Driven-Development-Team:task-infra-1&" "$TMP/calls"; then
   pass; else fail "закрытые PR искали не по ветке"; fi
+
+when "PUSHED_AT совпадает с моментом закрытия — второе сообщение всё равно уходит" "${FP[@]}" \
+  GH_COMPARE_FAIL="$NO_ANCESTOR" GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" \
+  GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")" \
+  PUSHED_AT="$(date -d "$CLOSED_AT" +%s)"
+sent_to 2 26 "🚫 PR закрыт без мержа"
+only 2
+
+when "PUSHED_AT от более позднего исправляющего пуша — второго сообщения нет" "${FP[@]}" \
+  GH_COMPARE_FAIL="$NO_ANCESTOR" GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" \
+  GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")" \
+  PUSHED_AT="$(( $(date -d "$CLOSED_AT" +%s) + 60 ))"
+only 1
 
 when "PR закрыл человек незадолго до пуша — второго сообщения нет" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
   GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "closed@$CLOSED_AT" "head_ref_force_pushed@$JUST_NOW")"
@@ -406,15 +433,15 @@ when "повторное после снятого ревью" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred DISMISSED aaa111)]" GH_COMPARE='{"ahead_by":2}'
 sent "после твоего ревью (ревью снято): 2 коммита"
 
-when "новых коммитов нет — без кнопки" "${RE[@]}" \
+when "новых коммитов нет — без «Что изменилось»" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE='{"ahead_by":0}'
 sent "после твоего ревью (✋ правки): новых коммитов нет" "!Что изменилось"
 
-when "force-push: коммита ревью больше нет — только вердикт" "${RE[@]}" \
+when "force-push: коммита ревью больше нет — вердикт без числа коммитов" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE_FAIL="HTTP 404: Not Found"
 sent "🔁 Повторное ревью" "после твоего ревью (✋ правки)" "!правки):" "!Что изменилось"
 
-when "сравнение без числа — только вердикт, без падения" "${RE[@]}" \
+when "сравнение без числа — вердикт без числа коммитов, без падения" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE='{}'
 sent "🔁 Повторное ревью" "после твоего ревью (✋ правки)" "!правки):" "!Что изменилось"
 
