@@ -10,7 +10,8 @@ SCRIPT="$ROOT/scripts/reminders.sh"
 
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
-# заглушка gh api: GraphQL — фикстура; запуски workflow — из RUNS и PREV_RUN; rate_limit — заголовки из PAT_HEADERS
+# заглушка gh api: GraphQL — фикстура; запуски workflow — из RUNS и PREV_RUN; rate_limit — заголовки из PAT_HEADERS;
+# репозитории организации — из ORG_REPOS, NO_AUTOMATION — где нет automation.yml
 printf '%s\t%s\n' "${GH_TOKEN:-}" "$*" >> "$CALLS"
 filter="."
 args=("$@")
@@ -38,6 +39,14 @@ case "$*" in
     printf '%s' "${RUNS:-{\}}" | jq --arg k "$key" '.[$k] // 0
       | {total_count: ., workflow_runs: (if . > 0 then [{html_url: "https://github.com/\($k | sub(":.*"; ""))/actions/runs/1"}] else [] end)}' \
       | jq -r "$filter" ;;
+  *"orgs/Cringe-Driven-Development-Team/repos"*)
+    [ -z "${ORG_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+    printf '%s' "${ORG_REPOS:-[]}" | jq -r "$filter" ;;
+  *"/contents/.github/workflows/automation.yml"*)
+    key=${2#repos/}
+    key=${key%%/contents*}
+    case " ${NO_AUTOMATION:-} " in *" $key "*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;; esac
+    printf '{"name":"automation.yml"}' | jq -r "$filter" ;;
   *) echo "неожиданный запрос: $*" >&2; exit 1 ;;
 esac
 STUB
@@ -53,6 +62,7 @@ DEFAULTS=(
   FIXTURE="$TMP/fixture.json" QUERY_FILE="$TMP/query" CALLS="$TMP/calls"
   GH_TOKEN=test-gh PAT=test-pat DAILY=true PAT_HEADERS="$OK_HEADERS"
   RUNS='{}' RUNS_404= RUNS_FAIL= PREV_RUN=2026-09-20T07:00:00Z
+  ORG_REPOS='[]' ORG_FAIL= NO_AUTOMATION=
 )
 
 SELF=Cringe-Driven-Development-Team/.github
@@ -293,6 +303,56 @@ only 1
 
 when "утренний запуск — дайджест есть" DAILY=true
 sent_to 1 77 "⏰ Ждут ревью"
+
+# --- новые репозитории
+
+# repo <имя> <создан> [описание] — репозиторий в ответе GET /orgs/…/repos
+repo() {
+  jq -nc --arg n "$1" --arg at "$2" --arg d "${3-}" \
+    '{full_name: "Cringe-Driven-Development-Team/\($n)", html_url: "https://github.com/Cringe-Driven-Development-Team/\($n)",
+      created_at: $at, description: (if $d == "" then null else $d end)}'
+}
+ORG_URL=https://github.com/Cringe-Driven-Development-Team
+
+fixture
+when "новый неподключённый репозиторий — сообщение в общий топик с кнопкой" DAILY=false \
+  ORG_REPOS="[$(repo claude-plugins 2026-09-20T09:00:00Z 'Плагины <Claude> & ко'),$(repo infra 2026-09-17T08:13:10Z)]" \
+  NO_AUTOMATION=Cringe-Driven-Development-Team/claude-plugins
+sent_to 1 26 "<b>🆕 Новый репозиторий</b> · <a href=\"$ORG_URL/claude-plugins\">claude-plugins</a>" \
+  "Плагины &lt;Claude&gt; &amp; ко" "⚠️ не подключён: нет automation.yml, нет в REPOS (scripts/reminders.sh)" \
+  "\"text\":\"Открыть репозиторий\",\"url\":\"$ORG_URL/claude-plugins\"" "!infra"
+only 1
+
+when "есть automation.yml, но нет в REPOS" DAILY=false ORG_REPOS="[$(repo claude-plugins 2026-09-20T09:00:00Z)]"
+sent "⚠️ не подключён: нет в REPOS (scripts/reminders.sh)" "!automation.yml"
+
+when "новый подключённый репозиторий — без предупреждения" DAILY=false ORG_REPOS="[$(repo figma 2026-09-20T09:00:00Z)]"
+sent "🆕 Новый репозиторий" "figma" "!не подключён"
+
+when "два новых репозитория — два сообщения" DAILY=false \
+  ORG_REPOS="[$(repo a 2026-09-20T09:00:00Z),$(repo b 2026-09-20T10:00:00Z)]"
+sent_to 1 26 ">a</a>"
+sent_to 2 26 ">b</a>"
+only 2
+
+when "успешных запусков ещё не было — новые за последние 24 часа" DAILY=false PREV_RUN= \
+  ORG_REPOS="[$(repo claude-plugins 2026-09-19T13:00:00Z),$(repo infra 2026-09-17T08:13:10Z)]"
+sent "claude-plugins" "!infra"
+only 1
+
+when "созданные до прошлого запуска — тишина" DAILY=false ORG_REPOS="[$(repo claude-plugins 2026-09-20T06:59:59Z)]"
+silent
+
+when "список репозиториев недоступен — предупреждение в лог" DAILY=false ORG_FAIL=1
+silent
+if grep -qF "::warning::Не проверил новые репозитории Cringe-Driven-Development-Team" "$TMP/out"; then
+  pass; else fail "нет ::warning::"; fi
+
+fixture "$(pr "$BACK" "API-3: PR" 2026-09-18T12:00:00Z false wait:blackHATred)"
+when "новый репозиторий и дайджест — отдельные сообщения" ORG_REPOS="[$(repo figma 2026-09-20T09:00:00Z)]"
+sent_to 1 26 "🆕 Новый репозиторий"
+sent_to 2 77 "⏰ Ждут ревью"
+only 2
 
 # --- срок токена доски
 

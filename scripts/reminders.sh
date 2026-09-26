@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Три раза в день следит за самими уведомлениями — упавшие запуски;
+# Три раза в день следит за самими уведомлениями — упавшие запуски, новые репозитории организации;
 # раз в день, утром, — ещё и срок токена доски и дайджест: ревьюверам о PR, которые ждут ответа,
 # авторам — об одобренных, но не влитых.
 # Env: GH_TOKEN, TOKEN (бот), CHAT, TOPIC (топик ревью), OPS_TOPIC (общий топик), MAP (github-логин → telegram id),
@@ -58,13 +58,17 @@ side () {
   esac
 }
 
-# send <топик> <текст> — отправить в Telegram; отказ валит job
+esc () { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+# send <топик> <текст> [<кнопки: reply_markup>] — отправить в Telegram; отказ валит job
 send () {
+  local markup=${3:-'{"inline_keyboard":[]}'}
   RESP=$(curl -sS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
     -d chat_id="$CHAT" \
     -d message_thread_id="$1" \
     -d parse_mode=HTML \
     -d disable_web_page_preview=true \
+    --data-urlencode reply_markup="$markup" \
     --data-urlencode text="$2")
   echo "$RESP"
   case "$RESP" in
@@ -132,6 +136,33 @@ if [ -n "$OPS" ]; then
   PING=$(jq -rn --argjson map "$MAP" --arg u "$OPS_PING" \
     'if $map[$u] then "<a href=\"tg://user?id=\($map[$u])\">\($u)</a>" else $u end' | tr -d '\r')
   send "$OPS_TOPIC" "$(printf '<b>🚨 Сбои уведомлений</b> · %s%s' "$PING" "$OPS")"
+fi
+
+# новые репозитории организации — созданные после предыдущего успешного запуска: их нужно подключить
+# к уведомлениям. Для каждого — отдельное сообщение и чего не хватает для подключения
+ORG=${SELF%%/*}
+if NEW=$(gh api "orgs/$ORG/repos?per_page=100" --paginate \
+    --jq ".[] | select(.created_at > \"$SINCE\") | [.full_name, .html_url, (.description // \"\")] | @tsv" 2>/dev/null); then
+  while IFS=$'\t' read -r FULL HTML DESC; do
+    [ -n "$FULL" ] || continue
+    MISSING=""
+    if ! ERRMSG=$(gh api "repos/$FULL/contents/.github/workflows/automation.yml" --jq .name 2>&1 >/dev/null); then
+      case "$ERRMSG" in
+        *"HTTP 404"*) MISSING="нет automation.yml" ;;
+        *) echo "::warning::Не проверил automation.yml в $FULL" ;;
+      esac
+    fi
+    case " ${REPOS[*]} " in
+      *" $FULL "*) ;;
+      *) MISSING="${MISSING:+$MISSING, }нет в REPOS (scripts/reminders.sh)" ;;
+    esac
+    TEXT=$(printf '<b>🆕 Новый репозиторий</b> · <a href="%s">%s</a>' "$HTML" "$(esc "${FULL#*/}")")
+    [ -z "$DESC" ] || TEXT=$(printf '%s\n%s' "$TEXT" "$(esc "$DESC")")
+    [ -z "$MISSING" ] || TEXT=$(printf '%s\n⚠️ не подключён: %s' "$TEXT" "$MISSING")
+    send "$OPS_TOPIC" "$TEXT" "$(jq -nc --arg u "$HTML" '{inline_keyboard: [[{text: "Открыть репозиторий", url: $u}]]}')"
+  done <<< "${NEW//$'\r'/}"
+else
+  echo "::warning::Не проверил новые репозитории $ORG"
 fi
 
 # ---------- дайджест ревью — раз в день, утром: чаще ментор просил не напоминать
