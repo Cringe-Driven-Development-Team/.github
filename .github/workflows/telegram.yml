@@ -36,6 +36,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           ACTOR:     ${{ github.actor }}
           REPO:      ${{ github.repository }}
+          OWNER:     ${{ github.repository_owner }}
           NUMBER:    ${{ github.event.issue.number || github.event.pull_request.number }}
           TITLE:     ${{ github.event.issue.title || github.event.pull_request.title }}
           URL:       ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
@@ -436,4 +437,38 @@ jobs:
           if [ "$KIND" = "opened" ] && [ -n "$REVS" ]; then
             button "Начать ревью" "$URL/files"
             send "$RTOPIC" "$(card "👀 Запрошено ревью" "$(asked)")"
+          fi
+
+          # после force-push, который оставил ветку без изменений или без общей истории с main,
+          # GitHub сам закрывает её PR — и события pull_request об этом не шлёт.
+          # Узнаём такой PR по закрытию в ту же секунду, что и force-push; закрытый человеком
+          # уже получил своё сообщение. API недоступен — предупреждение в лог, пуш уже отправлен
+          if [ "$EVENT" = "push" ] && [ "$FORCED" = "true" ]; then
+            ERR="${RUNNER_TEMP:-/tmp}/gh-closed.err"
+            if ! PRS=$(gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$BR&sort=updated&direction=desc&per_page=5" \
+                --jq '.[] | select(.merged_at == null) | [.number, .closed_at, .html_url, .user.login, .title] | @tsv' 2>"$ERR"); then
+              echo "::warning::Не проверил, закрыл ли GitHub PR ветки: $(head -c 200 "$ERR")"
+              PRS=""
+            fi
+            while IFS=$'\t' read -r N AT PURL AUTHOR PTITLE; do
+              [ -n "$N" ] || continue
+              # закрыт давно — не этим пушем
+              [ $(( $(date +%s) - $(date -d "$AT" +%s) )) -lt 300 ] || continue
+              if ! EV=$(gh api "repos/$REPO/issues/$N/events?per_page=100" --paginate \
+                  --jq '.[] | select(.event == "closed" or .event == "head_ref_force_pushed") | "\(.event) \(.created_at)"' 2>"$ERR"); then
+                echo "::warning::Не прочитал события PR #$N: $(head -c 200 "$ERR")"
+                continue
+              fi
+              EV=$(printf '%s' "$EV" | tr -d '\r')
+              if grep -qxF "closed $AT" <<< "$EV" && grep -qxF "head_ref_force_pushed $AT" <<< "$EV"; then
+                URL="$PURL"
+                TITLE="$PTITLE"
+                REF=""
+                EXTRA=""
+                button "Открыть PR" "$PURL"
+                LINE=$(printf 'автор: %s\nGitHub закрыл PR после force-push: у ветки не осталось изменений или общей истории с %s' \
+                  "$(mention "$AUTHOR")" "$(esc "$BASE_BR")")
+                send "$TOPIC" "$(card "🚫 PR закрыт без мержа" "$LINE")"
+              fi
+            done <<< "$(printf '%s' "$PRS" | tr -d '\r')"
           fi
