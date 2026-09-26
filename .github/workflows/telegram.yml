@@ -86,6 +86,9 @@ jobs:
           }
           commits () { plural "$1" коммит коммита коммитов; }
 
+          # button <текст> <ссылка> — кнопка-ссылка под сообщением
+          button () { MARKUP=$(jq -nc --arg t "$1" --arg u "$2" '{inline_keyboard: [[{text: $t, url: $u}]]}'); }
+
           # quote <текст> — описание или комментарий из GitHub → HTML Telegram: без HTML-тегов и комментариев,
           # картинки ссылками, markdown — разметкой, не длиннее 700 символов. Код (`…`, ```…```) не трогаем.
           # -Mutf8: без него «…» в коде — три байта, и в сообщение попадает «â¦»
@@ -189,6 +192,7 @@ jobs:
               [ "$ACTION" = "opened" ] && [ "$DRAFT" = "true" ] && exit 0
               # ревьюверы из формы создания и из черновика — в этом же сообщении
               REVS=$(printf '%s' "$REVIEWERS" | jq -r '[.[]?.login] | join(" ")')
+              button "Открыть PR" "$URL"
               KIND=opened
               HEAD="🔀 Открыт pull request" ;;
             pull_request:review_requested)
@@ -201,6 +205,7 @@ jobs:
               AGE=$(( $(date +%s) - $(date -d "$PR_CREATED" +%s) ))
               [ "$AGE" -lt 60 ] && exit 0
               REVS="$REVIEWER"
+              button "Начать ревью" "$URL/files"
               KIND=requested
               DEST="$RTOPIC"
               HEAD="👀 Запрошено ревью"
@@ -223,12 +228,12 @@ jobs:
                     AFTER="$AFTER: новых коммитов нет"
                   else
                     AFTER="$AFTER: $AHEAD $(commits "$AHEAD")"
-                    MARKUP=$(printf '{"inline_keyboard":[[{"text":"Что изменилось","url":"https://github.com/%s/pull/%s/files/%s..%s"}]]}' \
-                      "$REPO" "$NUMBER" "$SHA" "$HEAD_SHA")
+                    button "Что изменилось" "https://github.com/$REPO/pull/$NUMBER/files/$SHA..$HEAD_SHA"
                   fi
                 fi
               fi ;;
             pull_request:closed)
+              button "Открыть PR" "$URL"
               if [ "$MERGED" = "true" ]; then
                 HEAD="🎉 Влито в $(esc "$BASE")"
               else
@@ -252,7 +257,7 @@ jobs:
               KIND=reviewed
               series
               if [ -n "$FIRST_URL" ] && { [ "$REVIEW" = "commented" ] || [ "${NOTES:-0}" -gt 0 ]; }; then
-                MARKUP=$(printf '{"inline_keyboard":[[{"text":"Открыть ревью","url":"%s"}]]}' "$FIRST_URL")
+                button "Открыть ревью" "$FIRST_URL"
               fi ;;
             *) exit 0 ;;
           esac
@@ -328,12 +333,13 @@ jobs:
             BR="${BRANCH#refs/heads/}"
             TEXT=$(printf '<b>%s</b> · %s · <a href="https://github.com/%s/tree/%s">%s</a>\n%s\n%s' \
               "$HEAD" "$SIDE" "$REPO" "$BR" "$(esc "$BR")" "$LIST" "$(mention "$WHO")")
-            MARKUP=$(printf '{"inline_keyboard":[[{"text":"Открыть изменения","url":"%s"}]]}' "$COMPARE")
+            button "Открыть изменения" "$COMPARE"
           else
             # у issue номер — единственный идентификатор,
             # у PR он уже есть в заголовке вида "WEB-11: ..."
             if [ "$EVENT" = "issues" ]; then
               REF="#$NUMBER "
+              button "Открыть задачу" "$URL"
               LINE="автор: $(mention "$WHO")"
               NAMES=$(printf '%s' "$ASSIGNEES" | jq -r '[.[].login] | join(" ")' 2>/dev/null || true)
               [ -n "$NAMES" ] && LINE="$LINE · исполнитель: $(mentions "$NAMES")"
@@ -371,5 +377,6 @@ jobs:
 
           # ревьюверы, выбранные при создании PR или в черновике, — запрос ревью в топик ревью
           if [ "$KIND" = "opened" ] && [ -n "$REVS" ]; then
+            button "Начать ревью" "$URL/files"
             send "$RTOPIC" "$(card "👀 Запрошено ревью" "$(asked)")"
           fi

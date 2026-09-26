@@ -315,6 +315,39 @@ when "API не отдал ревью — обычный запрос и пред
 sent_to 1 77 "👀 Запрошено ревью" "!🔁"
 if grep -qF "::warning::" "$TMP/out" && grep -qF "HTTP 403" "$TMP/out"; then pass; else fail "нет ::warning:: с причиной"; fi
 
+# --- кнопки
+
+for A in opened closed reopened; do
+  when "кнопка у задачи: $A" EVENT=issues ACTION=$A NUMBER=5 TITLE=t URL=https://github.com/o/r/issues/5 ASSIGNEES='[]'
+  sent '"text":"Открыть задачу","url":"https://github.com/o/r/issues/5"'
+done
+
+when "кнопка у правки описания" \
+  EVENT=issues ACTION=edited NUMBER=5 TITLE=t URL=https://github.com/o/r/issues/5 BODY=новое CHG_BODY='{"from":"старое"}' \
+  ASSIGNEES='[]' CREATED=2026-09-17T10:00:00Z UPDATED=2026-09-17T11:00:00Z
+sent '"text":"Открыть задачу"'
+
+when "открыт PR с ревьювером: «Открыть PR» в общем топике, «Начать ревью» в ревью" \
+  EVENT=pull_request ACTION=opened DRAFT=false NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7 PR_AUTHOR=YarikMix \
+  REVIEWERS='[{"login":"blackHATred"}]'
+sent_to 1 26 '"text":"Открыть PR","url":"https://github.com/o/r/pull/7"'
+sent_to 2 77 '"text":"Начать ревью","url":"https://github.com/o/r/pull/7/files"'
+
+when "кнопка у влитого PR" EVENT=pull_request ACTION=closed MERGED=true BASE=main NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7
+sent '"text":"Открыть PR","url":"https://github.com/o/r/pull/7"'
+
+when "кнопка у PR, закрытого без мержа" EVENT=pull_request ACTION=closed MERGED=false BASE=main NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7
+sent '"text":"Открыть PR"'
+
+when "кнопка у запроса ревью" \
+  EVENT=pull_request ACTION=review_requested DRAFT=false REVIEWER=blackHATred PR_AUTHOR=YarikMix \
+  PR_CREATED="$LONG_AGO" NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7
+sent '"text":"Начать ревью","url":"https://github.com/o/r/pull/7/files"'
+
+when "повторное ревью без новых коммитов — «Начать ревью»" "${RE[@]}" \
+  GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE='{"ahead_by":0}'
+sent "🔁 Повторное ревью" '"text":"Начать ревью"' "!Что изменилось"
+
 # --- ревью с комментариями
 
 # rv <id> <логин> <состояние> <время> [общий текст] — ревью в ответе GET /pulls/N/reviews
