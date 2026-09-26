@@ -4,7 +4,7 @@
 
 | Файл | Что делает |
 |---|---|
-| `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, PR и ревью |
+| `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, комментарии, PR и ревью |
 | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску |
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
 | `.github/workflows/reminders.yml` | в 10:00, 15:00 и 20:00 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува, и сообщает о сбоях самих уведомлений |
@@ -25,6 +25,8 @@ on:
     branches-ignore: [main]
   issues:
     types: [opened, closed, reopened, edited]
+  issue_comment:
+    types: [created]
   pull_request:
     types: [opened, ready_for_review, closed, review_requested]
   pull_request_review:
@@ -64,7 +66,7 @@ jobs:
    ```
    Нужны `bash`, `jq`, `perl`, GNU `date` и `awk` (всё, кроме `jq`, есть в Git Bash), а также `shellcheck` и `actionlint`.
 2. Открыть PR. Этот репозиторий вызывает свои workflow из той же ветки: открытие PR, пуши и ревью сразу проходят через новую версию, сообщения приходят в боевой топик.
-3. События `issues` всегда берут workflow из `main` — их видно только после мержа.
+3. События `issues` и `issue_comment` всегда берут workflow из `main` — их видно только после мержа.
 
 Если после мержа что-то сломалось — revert здесь, исправление сразу дойдёт до всех.
 
