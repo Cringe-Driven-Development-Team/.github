@@ -12,17 +12,25 @@ awk -f "$ROOT/tests/extract-run.awk" "$ROOT/.github/workflows/telegram.yml" > "$
 
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
-# заглушка gh api: берёт ответ из env и применяет к нему --jq, как настоящий gh
+# заглушка gh api: берёт ответ из env и применяет к нему --jq, как настоящий gh; пути запросов — в $CALLS
 path=$2
+printf '%s\n' "$path" >> "$CALLS"
 filter="."
 while [ $# -gt 0 ]; do
   [ "$1" = "--jq" ] && filter=$2
   shift
 done
 case "$path" in
+  # сравнение без SHA — ошибка в скрипте, а не ответ GitHub
+  */compare/*"..."|*/compare/*"...?"*) echo "gh: в сравнении нет SHA: $path" >&2; exit 1 ;;
   */reviews)   body=${GH_REVIEWS-}; fail=${GH_REVIEWS_FAIL-} ;;
+  # сравнение со старой версией ветки (force-push) — отдельный ответ
+  */compare/*"...${BEFORE:-none}"*) body=${GH_COMPARE_BEFORE-}; fail=${GH_COMPARE_BEFORE_FAIL-} ;;
   */compare/*) body=${GH_COMPARE-}; fail=${GH_COMPARE_FAIL-} ;;
   */comments)  body=${GH_COMMENTS-}; fail=${GH_COMMENTS_FAIL-} ;;
+  *"/pulls?"*) body=${GH_CLOSED-}; fail=${GH_CLOSED_FAIL-} ;;
+  */events*)   body=${GH_EVENTS-}; fail=${GH_EVENTS_FAIL-} ;;
+  */pulls/*)   body=${GH_PR-}; fail=${GH_PR_FAIL-} ;;
   *) echo "неожиданный запрос $path" >&2; exit 1 ;;
 esac
 [ -z "$fail" ] || { echo "$fail" >&2; exit 1; }
@@ -41,6 +49,10 @@ DEFAULTS=(
   REVIEWERS=null PR_CREATED= HEAD_SHA= GH_TOKEN=test-gh
   GH_REVIEWS='[]' GH_REVIEWS_FAIL= GH_COMPARE= GH_COMPARE_FAIL=
   REVIEW_BY= REVIEW_BY_TYPE=User REVIEW_URL= REVIEW_WAIT=0 GH_COMMENTS='[]' GH_COMMENTS_FAIL=
+  DELETED=false BEFORE= AFTER= DEFAULT_BRANCH=main GH_COMPARE_BEFORE= GH_COMPARE_BEFORE_FAIL= PUSHED_AT=
+  OWNER=Cringe-Driven-Development-Team GH_CLOSED='[]' GH_CLOSED_FAIL= GH_EVENTS='[]' GH_EVENTS_FAIL=
+  CALLS="$TMP/calls"
+  COMMENT_BODY= COMMENT_URL= COMMENT_BY= COMMENT_BY_TYPE=User ISSUE_AUTHOR= IS_PR=false GH_PR='{}' GH_PR_FAIL=
 )
 
 # когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
@@ -56,7 +68,7 @@ when "issue opened: заголовок, автор, исполнитель, оп
 sent "🆕 Новая задача" "#5 Починить &lt;b&gt;вход&lt;/b&gt;" \
   'автор: <a href="tg://user?id=111">YarikMix</a>' \
   'исполнитель: <a href="tg://user?id=222">blackHATred</a>' \
-  "<blockquote expandable>Что сделать" "&amp; записать" "!скрыто"
+  "<blockquote expandable><b>Что сделать</b>" "&amp; записать" "!скрыто"
 
 when "issue closed: без описания" \
   EVENT=issues ACTION=closed NUMBER=5 TITLE=Задача URL=u BODY=текст ASSIGNEES='[]' \
@@ -78,6 +90,67 @@ when "issue edited: поздняя правка описания" \
   ASSIGNEES='[]' CREATED=2026-09-17T10:00:00Z UPDATED=2026-09-17T11:00:00Z
 sent "✏️ Описание изменено" "новое"
 
+# --- описание: разметка
+
+when "описание: markdown — разметкой Telegram, HTML-теги сняты, код не тронут" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'**Зачем**\n\nСтейт `pulumi/<id>` и <b>тег</b>, a < b\n- [ ] Создан\n- [x] Готово\n- пункт\n~~старое~~ snake_case __init__\n[док](https://x.io/a?b=1&c=2)\n```bash\necho <x> **нет**\n```'
+sent "<blockquote expandable><b>Зачем</b>" "<code>pulumi/&lt;id&gt;</code>" "и тег, a &lt; b" \
+  "☐ Создан" "☑ Готово" "• пункт" "<s>старое</s>" "snake_case __init__" \
+  '<a href="https://x.io/a?b=1&amp;c=2">док</a>' "<pre>echo &lt;x&gt; **нет**</pre>" "!**Зачем**" "!<b>тег"
+
+when "описание: картинки — ссылками, блочные теги — переводом строки" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'<img width="3192" alt="Image" src="https://github.com/user-attachments/assets/9bee" />\n![скрин](https://i.io/p.png "t")\n<details><summary>Ещё</summary>внутри</details>'
+sent '<a href="https://github.com/user-attachments/assets/9bee">🖼 картинка</a>' \
+  '<a href="https://i.io/p.png">🖼 картинка</a>' $'Ещё\nвнутри' "!<img" "!width=" "!<details"
+
+when "описание: комментарий HTML внутри кода не вырезается" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'текст <!-- скрыто -->\n```html\n<!-- keep -->\ncode\n```'
+sent "<pre>&lt;!-- keep --&gt;" "!скрыто"
+
+when "описание: автоссылка и адрес в угловых скобках не вырезаются" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY='Пиши на <user@mail.ru> или <https://x.io>'
+sent 'Пиши на user@mail.ru или <a href="https://x.io">https://x.io</a>'
+
+when "описание: тег не схлопывает текст между < и > на разных строках" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'if x<y and\nmore text y>z end'
+sent "if x&lt;y and" "more text y&gt;z end"
+
+when "описание: заголовок с жирным текстом — без вложенного <b>" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY='## **Зачем**'
+sent "<b>Зачем</b>" "!<b><b>"
+
+LONG=$(printf 'сущ%.0s' $(seq 1 300))
+when "описание длиннее 700 символов — многоточие без мусора" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY="$LONG"
+sent "…</blockquote>" "!â"
+
+when "описание: блок кода, обрезанный на середине, — без <pre>" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY=$'```go\n'"$LONG"
+sent "<blockquote expandable>сущ" "!<pre>" '!```'
+
+when "описание из одного комментария HTML — без цитаты" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY=$'<!-- шаблон -->\n  '
+sent "🆕 Новая задача" "!blockquote"
+
+when "Telegram не разобрал разметку цитаты — отправлено без неё" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY='**жирный**' TG_REJECT='<blockquote'
+sent "🆕 Новая задача" "!blockquote" "!жирный"
+only 1
+if grep -qF "::warning::Telegram не разобрал разметку" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "Telegram отклонил сообщение без цитаты — job падает" \
+  EVENT=issues ACTION=closed NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' TG_REJECT='закрыта'
+error "Telegram отклонил сообщение"
+
+when "описание: ссылка не на http(s) не становится кликабельной" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY='[жми](javascript:alert(1)) и [сайт](https://x.io)'
+sent '[жми](javascript:alert(1))' '<a href="https://x.io">сайт</a>' '!href="javascript'
+
 # --- пуши
 
 when "push: коммиты ветки" \
@@ -86,14 +159,136 @@ when "push: коммиты ветки" \
   COMMITS='[{"id":"aaaaaaa1111","message":"feat: первое\n\nтело","distinct":true},{"id":"ccccccc3333","message":"fix: второе","distinct":true}]'
 sent "⚒️ 2 коммита" "· frontend ·" "• aaaaaaa feat: первое" "• ccccccc fix: второе" "!тело"
 
-when "push: force-push помечен" \
-  EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=true \
-  COMMITS='[{"id":"aaaaaaa1111","message":"feat: первое","distinct":true}]'
-sent "⚠️ 1 коммит (force-push)"
-
 when "push: без коммитов (создание ветки) молчит" \
   EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=false COMMITS='[]'
 silent
+
+# --- force-push
+
+# cmp <sha>:<заголовок>… — ответ GET /compare: коммиты ветки поверх main
+cmp() {
+  printf '%s\n' "$@" | jq -Rsc '{commits: [split("\n")[] | select(length > 0)
+    | capture("^(?<sha>[^:]+):(?<m>.*)$") | {sha, commit: {message: .m}}]}'
+}
+INFRA=Cringe-Driven-Development-Team/infra
+# в событии — то, что GitHub кладёт в payload force-push: переписанная ветка вместе с коммитом из main
+FP=(EVENT=push BRANCH=refs/heads/task-infra-1 FORCED=true REPO="$INFRA" ACTOR=iRedTea
+    COMPARE=https://github.com/o/r/compare/old111...new222 BEFORE=old111 AFTER=new222
+    COMMITS='[{"id":"0000000aaaa","message":"Merge pull request #2 from main","distinct":true}]')
+
+when "force-push после rebase: считаем ветку, перечисляем только новые" "${FP[@]}" \
+  GH_COMPARE="$(cmp 'aaaaaaa1:chore: начало' 'bbbbbbb2:feat: VPS' 'ccccccc3:fix: замечания ревью')" \
+  GH_COMPARE_BEFORE="$(cmp 'ddddddd4:chore: начало' 'eeeeeee5:feat: VPS')"
+sent_to 1 26 "<b>⚠️ force-push</b> · infra · " "ветка переписана: 3 коммита поверх main, новых — 1" \
+  "• ccccccc fix: замечания ревью" "!aaaaaaa" "!Merge pull request" \
+  "\"text\":\"Ветка целиком\",\"url\":\"https://github.com/$INFRA/compare/main...task-infra-1\""
+before "ветка переписана" "• ccccccc"
+only 1
+
+when "чистый rebase — «новых коммитов нет», без списка" "${FP[@]}" \
+  GH_COMPARE="$(cmp 'aaaaaaa1:chore: начало' 'bbbbbbb2:feat: VPS')" \
+  GH_COMPARE_BEFORE="$(cmp 'ddddddd4:chore: начало' 'eeeeeee5:feat: VPS')"
+sent "ветка переписана: 2 коммита поверх main, новых коммитов нет" "!• "
+
+when "ветка сброшена до main" "${FP[@]}" GH_COMPARE='{"commits":[]}'
+sent "<b>⚠️ force-push</b>" "ветка сброшена до main" "!• " "Ветка целиком"
+
+when "старой версии ветки нет — перечисляем всю ветку" "${FP[@]}" \
+  GH_COMPARE="$(cmp 'aaaaaaa1:chore: начало' 'bbbbbbb2:feat: VPS')" GH_COMPARE_BEFORE_FAIL="HTTP 404: Not Found"
+sent "ветка переписана: 2 коммита поверх main" "!новых" "• aaaaaaa chore: начало" "• bbbbbbb feat: VPS"
+
+when "у ветки нет общей истории с main — коммиты из события" "${FP[@]}" \
+  GH_COMPARE_FAIL="gh: No common ancestor between main and new222. (HTTP 404)"
+sent "<b>⚠️ force-push</b>" "у ветки нет общей истории с main" "• 0000000 Merge pull request #2 from main" \
+  '"text":"Открыть изменения","url":"https://github.com/o/r/compare/old111...new222"'
+
+when "сравнение недоступно — как раньше, предупреждение в лог" "${FP[@]}" GH_COMPARE_FAIL="HTTP 502: Bad Gateway"
+sent "⚠️ 1 коммит (force-push)" "!ветка" "Открыть изменения"
+if grep -qF "::warning::Не сравнил ветку с main" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "сравнение недоступно и в событии нет новых коммитов — молчим" "${FP[@]}" \
+  GH_COMPARE_FAIL="HTTP 502: Bad Gateway" COMMITS='[{"id":"0000000aaaa","message":"m","distinct":false}]'
+silent
+
+when "другая ветка по умолчанию" "${FP[@]}" DEFAULT_BRANCH=develop GH_COMPARE='{"commits":[]}'
+sent "ветка сброшена до develop" "/compare/develop...task-infra-1"
+
+when "ветка со слешем в имени" "${FP[@]}" BRANCH=refs/heads/feature/web-5 GH_COMPARE='{"commits":[]}'
+sent "<a href=\"https://github.com/$INFRA/tree/feature/web-5\">feature/web-5</a>" \
+  "\"url\":\"https://github.com/$INFRA/compare/main...feature/web-5\""
+
+when "удаление ветки молчит" "${FP[@]}" DELETED=true COMMITS='[]'
+silent
+
+# --- PR, закрытый GitHub после force-push
+
+# closed <номер> <когда закрыт> [<когда влит>] — закрытый PR ветки в ответе GET /pulls?state=closed
+closed() {
+  jq -nc --argjson n "$1" --arg at "$2" --arg merged "${3-}" \
+    '{number: $n, closed_at: $at, merged_at: (if $merged == "" then null else $merged end),
+      html_url: "https://github.com/o/r/pull/\($n)", user: {login: "iRedTea"}, title: "Task infra 1: pulumi ready"}'
+}
+# ev <событие>@<время>… — ответ GET /issues/N/events
+ev() { printf '%s\n' "$@" | jq -Rsc '[split("\n")[] | select(length > 0) | split("@") | {event: .[0], created_at: .[1]}]'; }
+CLOSED_AT=$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)
+NO_ANCESTOR="gh: No common ancestor between main and new222. (HTTP 404)"
+
+when "GitHub закрыл PR после force-push — второе сообщение" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
+  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")"
+sent_to 1 26 "⚠️ force-push"
+sent_to 2 26 "<b>🚫 PR закрыт без мержа</b> · infra" '<a href="https://github.com/o/r/pull/3">Task infra 1: pulumi ready</a>' \
+  "автор: iRedTea" "GitHub закрыл PR после force-push: у ветки не осталось изменений или общей истории с main" \
+  '"text":"Открыть PR","url":"https://github.com/o/r/pull/3"'
+only 2
+if grep -qF "repos/$INFRA/pulls?state=closed&head=Cringe-Driven-Development-Team:task-infra-1&" "$TMP/calls"; then
+  pass; else fail "закрытые PR искали не по ветке"; fi
+
+when "PUSHED_AT совпадает с моментом закрытия — второе сообщение всё равно уходит" "${FP[@]}" \
+  GH_COMPARE_FAIL="$NO_ANCESTOR" GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" \
+  GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")" \
+  PUSHED_AT="$(date -d "$CLOSED_AT" +%s)"
+sent_to 2 26 "🚫 PR закрыт без мержа"
+only 2
+
+when "PUSHED_AT от более позднего исправляющего пуша — второго сообщения нет" "${FP[@]}" \
+  GH_COMPARE_FAIL="$NO_ANCESTOR" GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" \
+  GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")" \
+  PUSHED_AT="$(( $(date -d "$CLOSED_AT" +%s) + 60 ))"
+only 1
+
+when "PR закрыл человек незадолго до пуша — второго сообщения нет" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
+  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "closed@$CLOSED_AT" "head_ref_force_pushed@$JUST_NOW")"
+only 1
+
+when "PR закрыт давно — не этим пушем" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
+  GH_CLOSED="[$(closed 3 "$LONG_AGO")]" GH_EVENTS="$(ev "head_ref_force_pushed@$LONG_AGO" "closed@$LONG_AGO")"
+only 1
+
+when "влитый PR не считается" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
+  GH_CLOSED="[$(closed 3 "$CLOSED_AT" "$CLOSED_AT")]" GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")"
+only 1
+
+when "список закрытых PR недоступен — пуш отправлен, предупреждение" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
+  GH_CLOSED_FAIL="HTTP 502: Bad Gateway"
+sent "⚠️ force-push"
+only 1
+if grep -qF "::warning::Не проверил, закрыл ли GitHub PR ветки" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "события PR недоступны — пуш отправлен, предупреждение" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
+  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS_FAIL="HTTP 502: Bad Gateway"
+only 1
+if grep -qF "::warning::Не прочитал события PR #3" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "ветка со слешем — закрытые PR ищутся по полному имени" "${FP[@]}" BRANCH=refs/heads/feature/web-5 \
+  GH_COMPARE_FAIL="$NO_ANCESTOR"
+if grep -qF "pulls?state=closed&head=Cringe-Driven-Development-Team:feature/web-5&" "$TMP/calls"; then
+  pass; else fail "закрытые PR искали не по ветке feature/web-5"; fi
+
+when "обычный пуш закрытые PR не проверяет" \
+  EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=false \
+  COMMITS='[{"id":"aaaaaaa1111","message":"feat: первое","distinct":true}]' \
+  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")"
+only 1
 
 # --- pull request и ревью
 
@@ -238,15 +433,15 @@ when "повторное после снятого ревью" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred DISMISSED aaa111)]" GH_COMPARE='{"ahead_by":2}'
 sent "после твоего ревью (ревью снято): 2 коммита"
 
-when "новых коммитов нет — без кнопки" "${RE[@]}" \
+when "новых коммитов нет — без «Что изменилось»" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE='{"ahead_by":0}'
 sent "после твоего ревью (✋ правки): новых коммитов нет" "!Что изменилось"
 
-when "force-push: коммита ревью больше нет — только вердикт" "${RE[@]}" \
+when "force-push: коммита ревью больше нет — вердикт без числа коммитов" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE_FAIL="HTTP 404: Not Found"
 sent "🔁 Повторное ревью" "после твоего ревью (✋ правки)" "!правки):" "!Что изменилось"
 
-when "сравнение без числа — только вердикт, без падения" "${RE[@]}" \
+when "сравнение без числа — вердикт без числа коммитов, без падения" "${RE[@]}" \
   GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE='{}'
 sent "🔁 Повторное ревью" "после твоего ревью (✋ правки)" "!правки):" "!Что изменилось"
 
@@ -267,6 +462,39 @@ when "API не отдал ревью — обычный запрос и пред
   GH_REVIEWS_FAIL="HTTP 403: Resource not accessible by integration"
 sent_to 1 77 "👀 Запрошено ревью" "!🔁"
 if grep -qF "::warning::" "$TMP/out" && grep -qF "HTTP 403" "$TMP/out"; then pass; else fail "нет ::warning:: с причиной"; fi
+
+# --- кнопки
+
+for A in opened closed reopened; do
+  when "кнопка у задачи: $A" EVENT=issues ACTION=$A NUMBER=5 TITLE=t URL=https://github.com/o/r/issues/5 ASSIGNEES='[]'
+  sent '"text":"Открыть задачу","url":"https://github.com/o/r/issues/5"'
+done
+
+when "кнопка у правки описания" \
+  EVENT=issues ACTION=edited NUMBER=5 TITLE=t URL=https://github.com/o/r/issues/5 BODY=новое CHG_BODY='{"from":"старое"}' \
+  ASSIGNEES='[]' CREATED=2026-09-17T10:00:00Z UPDATED=2026-09-17T11:00:00Z
+sent '"text":"Открыть задачу"'
+
+when "открыт PR с ревьювером: «Открыть PR» в общем топике, «Начать ревью» в ревью" \
+  EVENT=pull_request ACTION=opened DRAFT=false NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7 PR_AUTHOR=YarikMix \
+  REVIEWERS='[{"login":"blackHATred"}]'
+sent_to 1 26 '"text":"Открыть PR","url":"https://github.com/o/r/pull/7"'
+sent_to 2 77 '"text":"Начать ревью","url":"https://github.com/o/r/pull/7/files"'
+
+when "кнопка у влитого PR" EVENT=pull_request ACTION=closed MERGED=true BASE=main NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7
+sent '"text":"Открыть PR","url":"https://github.com/o/r/pull/7"'
+
+when "кнопка у PR, закрытого без мержа" EVENT=pull_request ACTION=closed MERGED=false BASE=main NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7
+sent '"text":"Открыть PR"'
+
+when "кнопка у запроса ревью" \
+  EVENT=pull_request ACTION=review_requested DRAFT=false REVIEWER=blackHATred PR_AUTHOR=YarikMix \
+  PR_CREATED="$LONG_AGO" NUMBER=7 TITLE=t URL=https://github.com/o/r/pull/7
+sent '"text":"Начать ревью","url":"https://github.com/o/r/pull/7/files"'
+
+when "повторное ревью без новых коммитов — «Начать ревью»" "${RE[@]}" \
+  GH_REVIEWS="[$(review blackHATred CHANGES_REQUESTED aaa111)]" GH_COMPARE='{"ahead_by":0}'
+sent "🔁 Повторное ревью" '"text":"Начать ревью"' "!Что изменилось"
 
 # --- ревью с комментариями
 
@@ -335,5 +563,61 @@ if grep -qF "::warning::" "$TMP/out"; then pass; else fail "нет ::warning::";
 when "API не отдал inline-комментарии — сообщение без числа" "${CM[@]}" \
   GH_REVIEWS="[$(rv 9 YarikMix COMMENTED 2026-09-20T10:00:00Z)]" GH_COMMENTS_FAIL="HTTP 502"
 sent "💬 Комментарии к PR" "!комментари"
+
+# --- комментарии под задачами и в обсуждении PR
+
+IC=(EVENT=issue_comment ACTION=created NUMBER=5 TITLE='Bootstrap-стек' URL=https://github.com/o/r/issues/5
+    REPO=Cringe-Driven-Development-Team/infra IS_PR=false ISSUE_AUTHOR=YarikMix
+    COMMENT_URL=https://github.com/o/r/issues/5#issuecomment-1)
+
+when "комментарий под задачей: общий топик, пинг исполнителя и автора, цитата, кнопка" "${IC[@]}" \
+  COMMENT_BY=iRedTea ASSIGNEES='[{"login":"blackHATred"}]' COMMENT_BODY='Сделал **бакет**'
+sent_to 1 26 "<b>💬 Комментарий</b> · infra" '<a href="https://github.com/o/r/issues/5#issuecomment-1">#5 Bootstrap-стек</a>' \
+  'от: iRedTea · для: <a href="tg://user?id=222">blackHATred</a>, <a href="tg://user?id=111">YarikMix</a>' \
+  "<blockquote expandable>Сделал <b>бакет</b></blockquote>" \
+  '"text":"Открыть комментарий","url":"https://github.com/o/r/issues/5#issuecomment-1"'
+only 1
+
+when "исполнитель пишет под задачей — пинг только автора" "${IC[@]}" \
+  COMMENT_BY=blackHATred ASSIGNEES='[{"login":"blackHATred"}]' COMMENT_BODY=готово
+sent 'от: blackHATred · для: <a href="tg://user?id=111">YarikMix</a>' "!id=222"
+
+when "пишет единственный участник задачи — без «для»" "${IC[@]}" \
+  COMMENT_BY=YarikMix ASSIGNEES='[{"login":"YarikMix"}]' COMMENT_BODY=заметка
+sent "от: YarikMix" "!для:" "!tg://user"
+
+when "комментарий бота молчит" "${IC[@]}" COMMENT_BY='github-actions[bot]' COMMENT_BY_TYPE=Bot COMMENT_BODY=отчёт
+silent
+
+when "комментарий-картинка — ссылкой" "${IC[@]}" COMMENT_BY=iRedTea COMMENT_BODY='![скрин](https://i.io/p.png)'
+sent '<a href="https://i.io/p.png">🖼 картинка</a>'
+
+PC=(EVENT=issue_comment ACTION=created NUMBER=23 TITLE='API-16: Ручки' URL=https://github.com/o/r/pull/23
+    REPO="$BACK" IS_PR=true ISSUE_AUTHOR=YarikMix COMMENT_URL=https://github.com/o/r/pull/23#issuecomment-2)
+
+when "комментарий ревьювера в PR: топик ревью, пинг автора PR" "${PC[@]}" COMMENT_BY=blackHATred COMMENT_BODY='Глянь'
+sent_to 1 77 "<b>💬 Комментарий к PR</b> · backend" '<a href="https://github.com/o/r/pull/23#issuecomment-2">API-16: Ручки</a>' \
+  'от: blackHATred · для: <a href="tg://user?id=111">YarikMix</a>' "!#23" '"text":"Открыть комментарий"'
+only 1
+
+when "автор PR отвечает — пинг запрошенных ревьюверов" "${PC[@]}" COMMENT_BY=YarikMix COMMENT_BODY='Поправил' \
+  GH_PR='{"requested_reviewers":[{"login":"blackHATred"},{"login":"iRedTea"}]}'
+sent_to 1 77 'от: YarikMix · для: <a href="tg://user?id=222">blackHATred</a>, iRedTea'
+
+when "автор PR отвечает, ревьюверов нет — без «для»" "${PC[@]}" COMMENT_BY=YarikMix COMMENT_BODY=ок \
+  GH_PR='{"requested_reviewers":[]}'
+sent "от: YarikMix" "!для:"
+
+when "API не отдал PR — без пинга, предупреждение в лог" "${PC[@]}" COMMENT_BY=YarikMix COMMENT_BODY=ок \
+  GH_PR_FAIL="HTTP 502: Bad Gateway"
+sent "от: YarikMix" "!для:"
+if grep -qF "::warning::Не прочитал ревьюверов PR" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "комментарий из одного шаблона — без пустой цитаты" "${IC[@]}" COMMENT_BY=iRedTea COMMENT_BODY='<!-- ответ -->'
+sent "💬 Комментарий" "!blockquote"
+
+when "без TELEGRAM_REVIEW_TOPIC_ID комментарий в PR — в обычный топик" "${PC[@]}" REVIEW_TOPIC= \
+  COMMENT_BY=blackHATred COMMENT_BODY=ок
+sent_to 1 26 "💬 Комментарий к PR"
 
 summary

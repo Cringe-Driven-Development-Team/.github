@@ -1,0 +1,81 @@
+diff --git a/tests/telegram.sh b/tests/telegram.sh
+index 323f8a0..61197bb 100644
+--- a/tests/telegram.sh
++++ b/tests/telegram.sh
+@@ -28,6 +28,7 @@ case "$path" in
+   */comments)  body=${GH_COMMENTS-}; fail=${GH_COMMENTS_FAIL-} ;;
+   *"/pulls?"*) body=${GH_CLOSED-}; fail=${GH_CLOSED_FAIL-} ;;
+   */events*)   body=${GH_EVENTS-}; fail=${GH_EVENTS_FAIL-} ;;
++  */pulls/*)   body=${GH_PR-}; fail=${GH_PR_FAIL-} ;;
+   *) echo "неожиданный запрос $path" >&2; exit 1 ;;
+ esac
+ [ -z "$fail" ] || { echo "$fail" >&2; exit 1; }
+@@ -49,6 +50,7 @@ DEFAULTS=(
+   DELETED=false BEFORE= AFTER= DEFAULT_BRANCH=main GH_COMPARE_BEFORE= GH_COMPARE_BEFORE_FAIL=
+   OWNER=Cringe-Driven-Development-Team GH_CLOSED='[]' GH_CLOSED_FAIL= GH_EVENTS='[]' GH_EVENTS_FAIL=
+   CALLS="$TMP/calls"
++  COMMENT_BODY= COMMENT_URL= COMMENT_BY= COMMENT_BY_TYPE=User ISSUE_AUTHOR= IS_PR=false GH_PR='{}' GH_PR_FAIL=
+ )
+ 
+ # когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
+@@ -528,4 +530,60 @@ when "API не отдал inline-комментарии — сообщение 
+   GH_REVIEWS="[$(rv 9 YarikMix COMMENTED 2026-09-20T10:00:00Z)]" GH_COMMENTS_FAIL="HTTP 502"
+ sent "💬 Комментарии к PR" "!комментари"
+ 
++# --- комментарии под задачами и в обсуждении PR
++
++IC=(EVENT=issue_comment ACTION=created NUMBER=5 TITLE='Bootstrap-стек' URL=https://github.com/o/r/issues/5
++    REPO=Cringe-Driven-Development-Team/infra IS_PR=false ISSUE_AUTHOR=YarikMix
++    COMMENT_URL=https://github.com/o/r/issues/5#issuecomment-1)
++
++when "комментарий под задачей: общий топик, пинг исполнителя и автора, цитата, кнопка" "${IC[@]}" \
++  COMMENT_BY=iRedTea ASSIGNEES='[{"login":"blackHATred"}]' COMMENT_BODY='Сделал **бакет**'
++sent_to 1 26 "<b>💬 Комментарий</b> · infra" '<a href="https://github.com/o/r/issues/5#issuecomment-1">#5 Bootstrap-стек</a>' \
++  'от: iRedTea · для: <a href="tg://user?id=222">blackHATred</a>, <a href="tg://user?id=111">YarikMix</a>' \
++  "<blockquote expandable>Сделал <b>бакет</b></blockquote>" \
++  '"text":"Открыть комментарий","url":"https://github.com/o/r/issues/5#issuecomment-1"'
++only 1
++
++when "исполнитель пишет под задачей — пинг только автора" "${IC[@]}" \
++  COMMENT_BY=blackHATred ASSIGNEES='[{"login":"blackHATred"}]' COMMENT_BODY=готово
++sent 'от: blackHATred · для: <a href="tg://user?id=111">YarikMix</a>' "!id=222"
++
++when "пишет единственный участник задачи — без «для»" "${IC[@]}" \
++  COMMENT_BY=YarikMix ASSIGNEES='[{"login":"YarikMix"}]' COMMENT_BODY=заметка
++sent "от: YarikMix" "!для:" "!tg://user"
++
++when "комментарий бота молчит" "${IC[@]}" COMMENT_BY='github-actions[bot]' COMMENT_BY_TYPE=Bot COMMENT_BODY=отчёт
++silent
++
++when "комментарий-картинка — ссылкой" "${IC[@]}" COMMENT_BY=iRedTea COMMENT_BODY='![скрин](https://i.io/p.png)'
++sent '<a href="https://i.io/p.png">🖼 картинка</a>'
++
++PC=(EVENT=issue_comment ACTION=created NUMBER=23 TITLE='API-16: Ручки' URL=https://github.com/o/r/pull/23
++    REPO="$BACK" IS_PR=true ISSUE_AUTHOR=YarikMix COMMENT_URL=https://github.com/o/r/pull/23#issuecomment-2)
++
++when "комментарий ревьювера в PR: топик ревью, пинг автора PR" "${PC[@]}" COMMENT_BY=blackHATred COMMENT_BODY='Глянь'
++sent_to 1 77 "<b>💬 Комментарий к PR</b> · backend" '<a href="https://github.com/o/r/pull/23#issuecomment-2">API-16: Ручки</a>' \
++  'от: blackHATred · для: <a href="tg://user?id=111">YarikMix</a>' "!#23" '"text":"Открыть комментарий"'
++only 1
++
++when "автор PR отвечает — пинг запрошенных ревьюверов" "${PC[@]}" COMMENT_BY=YarikMix COMMENT_BODY='Поправил' \
++  GH_PR='{"requested_reviewers":[{"login":"blackHATred"},{"login":"iRedTea"}]}'
++sent_to 1 77 'от: YarikMix · для: <a href="tg://user?id=222">blackHATred</a>, iRedTea'
++
++when "автор PR отвечает, ревьюверов нет — без «для»" "${PC[@]}" COMMENT_BY=YarikMix COMMENT_BODY=ок \
++  GH_PR='{"requested_reviewers":[]}'
++sent "от: YarikMix" "!для:"
++
++when "API не отдал PR — без пинга, предупреждение в лог" "${PC[@]}" COMMENT_BY=YarikMix COMMENT_BODY=ок \
++  GH_PR_FAIL="HTTP 502: Bad Gateway"
++sent "от: YarikMix" "!для:"
++if grep -qF "::warning::Не прочитал ревьюверов PR" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
++
++when "комментарий из одного шаблона — без пустой цитаты" "${IC[@]}" COMMENT_BY=iRedTea COMMENT_BODY='<!-- ответ -->'
++sent "💬 Комментарий" "!blockquote"
++
++when "без TELEGRAM_REVIEW_TOPIC_ID комментарий в PR — в обычный топик" "${PC[@]}" REVIEW_TOPIC= \
++  COMMENT_BY=blackHATred COMMENT_BODY=ок
++sent_to 1 26 "💬 Комментарий к PR"
++
+ summary

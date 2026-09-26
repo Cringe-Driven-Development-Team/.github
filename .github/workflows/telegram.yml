@@ -36,6 +36,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           ACTOR:     ${{ github.actor }}
           REPO:      ${{ github.repository }}
+          OWNER:     ${{ github.repository_owner }}
           NUMBER:    ${{ github.event.issue.number || github.event.pull_request.number }}
           TITLE:     ${{ github.event.issue.title || github.event.pull_request.title }}
           URL:       ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
@@ -43,11 +44,24 @@ jobs:
           COMMITS:   ${{ toJSON(github.event.commits) }}
           COMPARE:   ${{ github.event.compare }}
           FORCED:    ${{ github.event.forced }}
+          DELETED:   ${{ github.event.deleted }}
+          BEFORE:    ${{ github.event.before }}
+          AFTER:     ${{ github.event.after }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # в payload пуша — эпоха в секундах; сверяем с closed_at, чтобы не спутать корректирующий force-push со старым закрытием
+          PUSHED_AT: ${{ github.event.repository.pushed_at }}
           BODY:      ${{ github.event.issue.body }}
           ASSIGNEES: ${{ toJSON(github.event.issue.assignees) }}
           CREATED:   ${{ github.event.issue.created_at }}
           UPDATED:   ${{ github.event.issue.updated_at }}
           CHG_BODY:  ${{ toJSON(github.event.changes.body) }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          COMMENT_BY: ${{ github.event.comment.user.login }}
+          COMMENT_BY_TYPE: ${{ github.event.comment.user.type }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          # комментарий в обсуждении PR приходит как комментарий к issue с полем pull_request
+          IS_PR:     ${{ github.event.issue.pull_request != null }}
           REVIEWERS: ${{ toJSON(github.event.pull_request.requested_reviewers) }}
           PR_CREATED: ${{ github.event.pull_request.created_at }}
           HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
@@ -67,7 +81,11 @@ jobs:
           KIND=""
           REVS=""
           # у повторного запроса ревью — что изменилось с прошлого ревью
-          AFTER=""
+          REVIEW_DELTA=""
+          # сообщение без цитаты — если Telegram не разберёт её разметку
+          BARE=""
+          # строка под заголовком пуша: что стало с веткой после force-push
+          NOTE=""
 
           esc () { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
@@ -83,6 +101,43 @@ jobs:
             esac
           }
           commits () { plural "$1" коммит коммита коммитов; }
+
+          # button <текст> <ссылка> — кнопка-ссылка под сообщением
+          button () { MARKUP=$(jq -nc --arg t "$1" --arg u "$2" '{inline_keyboard: [[{text: $t, url: $u}]]}'); }
+
+          # quote <текст> — описание или комментарий из GitHub → HTML Telegram: без HTML-тегов и комментариев,
+          # картинки ссылками, markdown — разметкой, не длиннее 700 символов. Код (`…`, ```…```) не трогаем.
+          # -Mutf8: без него «…» в коде — три байта, и в сообщение попадает «â¦»
+          quote () {
+            printf '%s' "$1" | perl -CS -Mutf8 -0777 -pe '
+              my $code = qr/```.*?```|`[^`\n]+`/s;
+              s/\r//g; s{($code)|<!--.*?-->}{$1 // ""}gse;
+              s{($code)|<img\b[^>]*?\bsrc="([^"]+)"[^>]*>}{$1 // "[🖼 картинка]($2)"}gie;
+              s{($code)|!\[[^\]\n]*\]\(([^)\s]+)[^)\n]*\)}{$1 // "[🖼 картинка]($2)"}ge;
+              s{($code)|<br\s*/?>|</(?:p|div|summary|details|li|tr|h\d)>}{$1 // "\n"}gie;
+              # автоссылка и адрес в <...> — не тег, оставляем ссылкой/текстом до общей зачистки тегов
+              s{($code)|<(https?://[^<>\s]+)>}{$1 // "[$2]($2)"}ge;
+              s{($code)|<([^<>\s@]+@[^<>\s]+)>}{$1 // $2}ge;
+              s{($code)|</?[A-Za-z][^<>\n]*>}{$1 // ""}ge;
+              s/[ \t]+$//gm; s/\n{3,}/\n\n/g; s/^\s+|\s+$//g;
+              $_ = substr($_, 0, 700) . "…" if length > 700;
+              s/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g;
+              my @k;
+              my $fences = () = /^```/mg;
+              s/\A(.*)^```[^\n]*\n?/$1/sm if $fences % 2;
+              s{^```[^\n]*\n(.*?)\n?^```[ \t]*$}{push @k, "<pre>$1</pre>"; "\x00$#k\x00"}gems;
+              s{`([^`\n]+)`}{push @k, "<code>$1</code>"; "\x00$#k\x00"}ge;
+              # ** внутри заголовка снимаем — иначе жирный текст в заголовке даёт <b><b>x</b></b>
+              s{^#{1,6}[ \t]+(.+?)[ \t#]*$}{my $h = $1; $h =~ s/\*\*//g; "<b>$h</b>"}gme;
+              s{\*\*(?=\S)(.+?)(?<=\S)\*\*}{<b>$1</b>}g;
+              s{~~(?=\S)(.+?)(?<=\S)~~}{<s>$1</s>}g;
+              s{\[([^\]\n]+)\]\((https?://[^)\s"]+)\)}{<a href="$2">$1</a>}g;
+              s/^([ \t]*)[-*+][ \t]+\[ \][ \t]+/$1☐ /gm;
+              s/^([ \t]*)[-*+][ \t]+\[[xX]\][ \t]+/$1☑ /gm;
+              s/^([ \t]*)[-*+][ \t]+/$1• /gm;
+              s/\x00(\d+)\x00/$k[$1]/g;
+            '
+          }
 
           # LAST="<состояние>\t<коммит>" последнего отправленного ревью REVIEWER на этом PR, пусто — не ревьюил;
           # API недоступен — пусто и предупреждение в лог: лучше обычный запрос, чем упавший job
@@ -130,16 +185,66 @@ jobs:
                 + ($s | map(select(.body)) | length)')
           }
 
+          # rewritten — force-push: коммиты ветки берём из сравнения с веткой по умолчанию, а не из события —
+          # там до 20 коммитов и вся переписанная ветка, включая подтянутое из main. Новые — чьих заголовков
+          # не было в ветке до пуша. Ставит HEAD, NOTE, COMMITS и COUNT (что перечислить) и кнопку
+          rewritten () {
+            BASE_BR="${DEFAULT_BRANCH:-main}"
+            ERR="${RUNNER_TEMP:-/tmp}/gh-compare.err"
+            if ! NOW_LIST=$(gh api "repos/$REPO/compare/$BASE_BR...$AFTER?per_page=100" --paginate \
+                --jq '.commits[] | {id: .sha, message: .commit.message}' 2>"$ERR"); then
+              if grep -qF "No common ancestor" "$ERR"; then
+                HEAD="⚠️ force-push"
+                NOTE="у ветки нет общей истории с $(esc "$BASE_BR")"
+              else
+                echo "::warning::Не сравнил ветку с $BASE_BR, коммиты из события: $(head -c 200 "$ERR")"
+                [ "$COUNT" -eq 0 ] && exit 0
+                HEAD="⚠️ $COUNT $(commits "$COUNT") (force-push)"
+              fi
+              return 0
+            fi
+            ALL=$(printf '%s' "$NOW_LIST" | jq -sc '.')
+            TOTAL=$(printf '%s' "$ALL" | jq 'length')
+            HEAD="⚠️ force-push"
+            button "Ветка целиком" "https://github.com/$REPO/compare/$BASE_BR...$BR"
+            if [ "$TOTAL" -eq 0 ]; then
+              NOTE="ветка сброшена до $(esc "$BASE_BR")"
+              COMMITS='[]'
+              COUNT=0
+              return 0
+            fi
+            NOTE="ветка переписана: $TOTAL $(commits "$TOTAL") поверх $(esc "$BASE_BR")"
+            # старой версии ветки может уже не быть — тогда все коммиты ветки
+            if OLD=$(gh api "repos/$REPO/compare/$BASE_BR...$BEFORE?per_page=100" --paginate \
+                --jq '.commits[].commit.message | split("\n")[0]' 2>/dev/null); then
+              COMMITS=$(printf '%s' "$ALL" | jq -c --arg old "$(printf '%s' "$OLD" | tr -d '\r')" '
+                ($old | split("\n")) as $o | map(select((.message | split("\n")[0]) as $t | $o | any(. == $t) | not))')
+              COUNT=$(printf '%s' "$COMMITS" | jq 'length')
+              if [ "$COUNT" -eq 0 ]; then
+                NOTE="$NOTE, новых коммитов нет"
+              else
+                NOTE="$NOTE, новых — $COUNT"
+              fi
+            else
+              COMMITS="$ALL"
+              COUNT="$TOTAL"
+            fi
+          }
+
           case "$EVENT:$ACTION" in
             push:)
+              # удаление ветки — событие есть, новостей нет
+              [ "$DELETED" = "true" ] && exit 0
               # коммиты, которые уже были в других ветках (подтянутые из main), — не новость
               COMMITS=$(printf '%s' "$COMMITS" | jq -c 'map(select(.distinct))')
               COUNT=$(printf '%s' "$COMMITS" | jq 'length')
-              # создание и удаление ветки, пуш тега — событие есть, коммитов нет
-              [ "$COUNT" -eq 0 ] && exit 0
+              BR="${BRANCH#refs/heads/}"
+              button "Открыть изменения" "$COMPARE"
               if [ "$FORCED" = "true" ]; then
-                HEAD="⚠️ $COUNT $(commits "$COUNT") (force-push)"
+                rewritten
               else
+                # создание ветки, пуш тега — событие есть, коммитов нет
+                [ "$COUNT" -eq 0 ] && exit 0
                 HEAD="⚒️ $COUNT $(commits "$COUNT")"
               fi ;;
             issues:opened)   HEAD="🆕 Новая задача" ;;
@@ -157,6 +262,7 @@ jobs:
               [ "$ACTION" = "opened" ] && [ "$DRAFT" = "true" ] && exit 0
               # ревьюверы из формы создания и из черновика — в этом же сообщении
               REVS=$(printf '%s' "$REVIEWERS" | jq -r '[.[]?.login] | join(" ")')
+              button "Открыть PR" "$URL"
               KIND=opened
               HEAD="🔀 Открыт pull request" ;;
             pull_request:review_requested)
@@ -169,6 +275,7 @@ jobs:
               AGE=$(( $(date +%s) - $(date -d "$PR_CREATED" +%s) ))
               [ "$AGE" -lt 60 ] && exit 0
               REVS="$REVIEWER"
+              button "Начать ревью" "$URL/files"
               KIND=requested
               DEST="$RTOPIC"
               HEAD="👀 Запрошено ревью"
@@ -183,20 +290,20 @@ jobs:
                   *)                 VERDICT="💬 комментарии" ;;
                 esac
                 HEAD="🔁 Повторное ревью"
-                AFTER="после твоего ревью ($VERDICT)"
+                REVIEW_DELTA="после твоего ревью ($VERDICT)"
                 # после force-push коммита ревью может уже не быть — тогда без числа и кнопки
                 if AHEAD=$(gh api "repos/$REPO/compare/$SHA...$HEAD_SHA" --jq .ahead_by 2>/dev/null) &&
                   [[ "$AHEAD" =~ ^[0-9]+$ ]]; then
                   if [ "$AHEAD" -eq 0 ]; then
-                    AFTER="$AFTER: новых коммитов нет"
+                    REVIEW_DELTA="$REVIEW_DELTA: новых коммитов нет"
                   else
-                    AFTER="$AFTER: $AHEAD $(commits "$AHEAD")"
-                    MARKUP=$(printf '{"inline_keyboard":[[{"text":"Что изменилось","url":"https://github.com/%s/pull/%s/files/%s..%s"}]]}' \
-                      "$REPO" "$NUMBER" "$SHA" "$HEAD_SHA")
+                    REVIEW_DELTA="$REVIEW_DELTA: $AHEAD $(commits "$AHEAD")"
+                    button "Что изменилось" "https://github.com/$REPO/pull/$NUMBER/files/$SHA..$HEAD_SHA"
                   fi
                 fi
               fi ;;
             pull_request:closed)
+              button "Открыть PR" "$URL"
               if [ "$MERGED" = "true" ]; then
                 HEAD="🎉 Влито в $(esc "$BASE")"
               else
@@ -220,8 +327,35 @@ jobs:
               KIND=reviewed
               series
               if [ -n "$FIRST_URL" ] && { [ "$REVIEW" = "commented" ] || [ "${NOTES:-0}" -gt 0 ]; }; then
-                MARKUP=$(printf '{"inline_keyboard":[[{"text":"Открыть ревью","url":"%s"}]]}' "$FIRST_URL")
+                button "Открыть ревью" "$FIRST_URL"
               fi ;;
+            issue_comment:created)
+              # комментарии ботов — не новость
+              [ "$COMMENT_BY_TYPE" = "Bot" ] && exit 0
+              KIND=comment
+              button "Открыть комментарий" "$COMMENT_URL"
+              if [ "$IS_PR" = "true" ]; then
+                # обсуждение PR — в топик ревью: пишет не автор — действовать автору,
+                # автор отвечает — ревьюверам
+                DEST="$RTOPIC"
+                HEAD="💬 Комментарий к PR"
+                if [ "$COMMENT_BY" = "$ISSUE_AUTHOR" ]; then
+                  ERR="${RUNNER_TEMP:-/tmp}/gh-pr.err"
+                  if ! PING=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '[.requested_reviewers[].login] | join(" ")' 2>"$ERR"); then
+                    echo "::warning::Не прочитал ревьюверов PR, комментарий без пинга: $(head -c 200 "$ERR")"
+                    PING=""
+                  fi
+                else
+                  PING="$ISSUE_AUTHOR"
+                fi
+              else
+                # под задачей — исполнителям и автору задачи, кроме того, кто пишет
+                HEAD="💬 Комментарий"
+                PING=$(printf '%s' "$ASSIGNEES" | jq -r --arg me "$COMMENT_BY" --arg author "$ISSUE_AUTHOR" '
+                  [(.[]?.login), $author] | map(select(. != "" and . != $me))
+                  | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end) | join(" ")')
+              fi
+              PING=$(printf '%s' "$PING" | tr -d '\r') ;;
             *) exit 0 ;;
           esac
 
@@ -267,7 +401,8 @@ jobs:
               "$1" "$SIDE" "$URL" "$REF" "$(esc "$TITLE")" "$2" "$EXTRA"
           }
 
-          # send <топик> <текст> — отправить в Telegram; отказ валит job
+          # send <топик> <текст> [<текст без цитаты>] — отправить в Telegram; отказ валит job.
+          # Разметку цитаты из описания или комментария Telegram может не разобрать — тогда шлём без цитаты
           send () {
             RESP=$(curl -sS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
               -d chat_id="$CHAT" \
@@ -279,6 +414,10 @@ jobs:
             echo "$RESP"
             case "$RESP" in
               *'"ok":true'*) ;;
+              *"can't parse entities"*)
+                [ -n "${3:-}" ] || { echo "::error::Telegram отклонил сообщение"; exit 1; }
+                echo "::warning::Telegram не разобрал разметку цитаты, отправляю без неё"
+                send "$1" "$3" ;;
               *) echo "::error::Telegram отклонил сообщение"; exit 1 ;;
             esac
           }
@@ -288,21 +427,32 @@ jobs:
             LIST=$(printf '%s' "$COMMITS" | jq -r '.[0:10][] | "• \(.id[0:7]) \(.message | split("\n")[0])"' | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
             [ "$COUNT" -gt 10 ] && LIST=$(printf '%s\n…и ещё %s' "$LIST" "$((COUNT - 10))")
 
-            BR="${BRANCH#refs/heads/}"
-            TEXT=$(printf '<b>%s</b> · %s · <a href="https://github.com/%s/tree/%s">%s</a>\n%s\n%s' \
-              "$HEAD" "$SIDE" "$REPO" "$BR" "$(esc "$BR")" "$LIST" "$(mention "$WHO")")
-            MARKUP=$(printf '{"inline_keyboard":[[{"text":"Открыть изменения","url":"%s"}]]}' "$COMPARE")
+            TEXT=$(printf '<b>%s</b> · %s · <a href="https://github.com/%s/tree/%s">%s</a>' \
+              "$HEAD" "$SIDE" "$REPO" "$BR" "$(esc "$BR")")
+            for L in "$NOTE" "$LIST" "$(mention "$WHO")"; do
+              if [ -n "$L" ]; then TEXT="$TEXT"$'\n'"$L"; fi
+            done
           else
             # у issue номер — единственный идентификатор,
             # у PR он уже есть в заголовке вида "WEB-11: ..."
-            if [ "$EVENT" = "issues" ]; then
+            if [ "$KIND" = "comment" ]; then
+              # ссылка в заголовке — сразу на комментарий
+              URL="$COMMENT_URL"
+              REF=""
+              [ "$IS_PR" = "true" ] || REF="#$NUMBER "
+              LINE="от: $(esc "$COMMENT_BY")"
+              [ -n "$PING" ] && LINE="$LINE · для: $(mentions "$PING")"
+              Q=$(quote "$COMMENT_BODY")
+              [ -n "$Q" ] && EXTRA=$(printf '\n<blockquote expandable>%s</blockquote>' "$Q")
+            elif [ "$EVENT" = "issues" ]; then
               REF="#$NUMBER "
+              button "Открыть задачу" "$URL"
               LINE="автор: $(mention "$WHO")"
               NAMES=$(printf '%s' "$ASSIGNEES" | jq -r '[.[].login] | join(" ")' 2>/dev/null || true)
               [ -n "$NAMES" ] && LINE="$LINE · исполнитель: $(mentions "$NAMES")"
               # описание показываем при создании и правке, на закрытии это шум
               if { [ "$ACTION" = "opened" ] || [ "$ACTION" = "edited" ]; } && [ -n "$BODY" ]; then
-                Q=$(printf '%s' "$BODY" | perl -CS -0777 -pe 's/<!--.*?-->//gs; s/\r//g; s/^#+[ \t]*//gm; s/\n{3,}/\n\n/g; s/^\s+|\s+$//g; $_ = substr($_,0,700) . "…" if length > 700; s/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g;')
+                Q=$(quote "$BODY")
                 [ -n "$Q" ] && EXTRA=$(printf '\n<blockquote expandable>%s</blockquote>' "$Q")
               fi
             else
@@ -314,7 +464,7 @@ jobs:
                   [ -n "$REVS" ] && LINE="$LINE · ревьювер: $(mentions "$REVS" plain)" ;;
                 requested)
                   LINE=$(asked)
-                  [ -n "$AFTER" ] && LINE=$(printf '%s\n%s' "$LINE" "$AFTER") ;;
+                  [ -n "$REVIEW_DELTA" ] && LINE=$(printf '%s\n%s' "$LINE" "$REVIEW_DELTA") ;;
                 # ревью оставлено: действовать автору — пингуем его, ревьювер текстом
                 reviewed)
                   LINE="автор: $(mention "$PR_AUTHOR") · ревьювер: $(esc "$REVIEW_BY")"
@@ -326,11 +476,56 @@ jobs:
             fi
 
             TEXT=$(card "$HEAD" "$LINE")
+            # запасной вариант на случай, если Telegram не разберёт разметку цитаты
+            if [ -n "$EXTRA" ]; then BARE=$(EXTRA=""; card "$HEAD" "$LINE"); fi
           fi
 
-          send "$DEST" "$TEXT"
+          send "$DEST" "$TEXT" "$BARE"
 
           # ревьюверы, выбранные при создании PR или в черновике, — запрос ревью в топик ревью
           if [ "$KIND" = "opened" ] && [ -n "$REVS" ]; then
+            button "Начать ревью" "$URL/files"
             send "$RTOPIC" "$(card "👀 Запрошено ревью" "$(asked)")"
+          fi
+
+          # после force-push, который оставил ветку без изменений или без общей истории с main,
+          # GitHub сам закрывает её PR — и события pull_request об этом не шлёт.
+          # Узнаём такой PR по закрытию в ту же секунду, что и force-push; закрытый человеком
+          # уже получил своё сообщение. API недоступен — предупреждение в лог, пуш уже отправлен
+          if [ "$EVENT" = "push" ] && [ "$FORCED" = "true" ]; then
+            ERR="${RUNNER_TEMP:-/tmp}/gh-closed.err"
+            if ! PRS=$(gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$BR&sort=updated&direction=desc&per_page=5" \
+                --jq '.[] | select(.merged_at == null) | [.number, .closed_at, .html_url, .user.login, .title] | @tsv' 2>"$ERR"); then
+              echo "::warning::Не проверил, закрыл ли GitHub PR ветки: $(head -c 200 "$ERR")"
+              PRS=""
+            fi
+            while IFS=$'\t' read -r N AT PURL AUTHOR PTITLE; do
+              [ -n "$N" ] || continue
+              AT_EPOCH=$(date -d "$AT" +%s)
+              if [[ "$PUSHED_AT" =~ ^[0-9]+$ ]]; then
+                # PUSHED_AT есть — сверяем закрытие с этим пушем в упор: второй, корректирующий
+                # force-push в те же 5 минут не должен снова взять вину на себя
+                DIFF=$(( AT_EPOCH - PUSHED_AT ))
+                [ "${DIFF#-}" -le 10 ] || continue
+              else
+                # PUSHED_AT недоступен — старое окно: закрыт давно — не этим пушем
+                [ $(( $(date +%s) - AT_EPOCH )) -lt 300 ] || continue
+              fi
+              if ! EV=$(gh api "repos/$REPO/issues/$N/events?per_page=100" --paginate \
+                  --jq '.[] | select(.event == "closed" or .event == "head_ref_force_pushed") | "\(.event) \(.created_at)"' 2>"$ERR"); then
+                echo "::warning::Не прочитал события PR #$N: $(head -c 200 "$ERR")"
+                continue
+              fi
+              EV=$(printf '%s' "$EV" | tr -d '\r')
+              if grep -qxF "closed $AT" <<< "$EV" && grep -qxF "head_ref_force_pushed $AT" <<< "$EV"; then
+                URL="$PURL"
+                TITLE="$PTITLE"
+                REF=""
+                EXTRA=""
+                button "Открыть PR" "$PURL"
+                LINE=$(printf 'автор: %s\nGitHub закрыл PR после force-push: у ветки не осталось изменений или общей истории с %s' \
+                  "$(mention "$AUTHOR")" "$(esc "$BASE_BR")")
+                send "$TOPIC" "$(card "🚫 PR закрыт без мержа" "$LINE")"
+              fi
+            done <<< "$(printf '%s' "$PRS" | tr -d '\r')"
           fi
