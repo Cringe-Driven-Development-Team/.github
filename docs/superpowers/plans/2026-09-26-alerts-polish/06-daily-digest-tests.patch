@@ -1,0 +1,47 @@
+diff --git a/tests/reminders.sh b/tests/reminders.sh
+index 60fca9a..f109e38 100644
+--- a/tests/reminders.sh
++++ b/tests/reminders.sh
+@@ -51,7 +51,7 @@ DEFAULTS=(
+   TOKEN=test-token CHAT=-100 TOPIC=77 OPS_TOPIC=26 MAP='{"YarikMix":"111","blackHATred":"222"}'
+   MIN_HOURS=4 NOW="$(date -u -d 2026-09-20T12:00:00Z +%s)" LAST_COMMIT=2026-09-19T12:00:00Z
+   FIXTURE="$TMP/fixture.json" QUERY_FILE="$TMP/query" CALLS="$TMP/calls"
+-  GH_TOKEN=test-gh PAT=test-pat DAILY=false PAT_HEADERS="$OK_HEADERS"
++  GH_TOKEN=test-gh PAT=test-pat DAILY=true PAT_HEADERS="$OK_HEADERS"
+   RUNS='{}' RUNS_404= RUNS_FAIL= PREV_RUN=2026-09-20T07:00:00Z
+ )
+ 
+@@ -242,7 +242,7 @@ sent "✅ Одобрены" "…и ещё 2"
+ # --- служебные алерты
+ 
+ fixture
+-when "сбоев нет, токен не проверяется — тишина"
++when "сбоев нет, токен не проверяется — тишина" DAILY=false
+ silent
+ 
+ when "упавшие запуски: отдельное сообщение в общий топик, пинг владельца" \
+@@ -280,8 +280,24 @@ fixture
+ when "дайджест упал — о сбоях уже сообщили" GH_FAIL=1 RUNS="{\"$FRONT:automation.yml\": 1}"
+ if [ "$CODE" -ne 0 ] && [ "$(sent_count)" -eq 1 ] && grep -qF "🚨" "$TMP/sent/1"; then pass; else fail "код $CODE, сообщений $(sent_count)"; fi
+ 
++# --- дайджест раз в день
++
++fixture "$(pr "$BACK" "API-3: PR" 2026-09-18T12:00:00Z false wait:blackHATred)"
++when "дневной запуск — дайджеста нет" DAILY=false
++silent
++if grep -qF "api graphql" "$TMP/calls"; then fail "дайджест запрашивался"; else pass; fi
++
++when "дневной запуск — сбои всё равно проверяются" DAILY=false RUNS="{\"$FRONT:automation.yml\": 1}"
++sent_to 1 26 "🚨 Сбои уведомлений"
++only 1
++
++when "утренний запуск — дайджест есть" DAILY=true
++sent_to 1 77 "⏰ Ждут ревью"
++
+ # --- срок токена доски
+ 
++fixture
++
+ exp() { printf 'HTTP/2.0 200 OK\nGithub-Authentication-Token-Expiration: %s\nContent-Type: application/json' "$1"; }
+ 
+ when "токен истекает через 5 дней — предупреждение с датой" DAILY=true PAT_HEADERS="$(exp "2026-09-25 18:00:00 UTC")"

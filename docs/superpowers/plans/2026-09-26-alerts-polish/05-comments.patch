@@ -1,0 +1,114 @@
+diff --git a/.github/workflows/automation.yml b/.github/workflows/automation.yml
+index 68fae25..391b286 100644
+--- a/.github/workflows/automation.yml
++++ b/.github/workflows/automation.yml
+@@ -5,6 +5,8 @@ on:
+     branches-ignore: [main]
+   issues:
+     types: [opened, closed, reopened, edited]
++  issue_comment:
++    types: [created]
+   pull_request:
+     types: [opened, ready_for_review, closed, review_requested]
+   pull_request_review:
+diff --git a/.github/workflows/telegram.yml b/.github/workflows/telegram.yml
+index 073d806..cd98231 100644
+--- a/.github/workflows/telegram.yml
++++ b/.github/workflows/telegram.yml
+@@ -53,6 +53,13 @@ jobs:
+           CREATED:   ${{ github.event.issue.created_at }}
+           UPDATED:   ${{ github.event.issue.updated_at }}
+           CHG_BODY:  ${{ toJSON(github.event.changes.body) }}
++          COMMENT_BODY: ${{ github.event.comment.body }}
++          COMMENT_URL: ${{ github.event.comment.html_url }}
++          COMMENT_BY: ${{ github.event.comment.user.login }}
++          COMMENT_BY_TYPE: ${{ github.event.comment.user.type }}
++          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
++          # комментарий в обсуждении PR приходит как комментарий к issue с полем pull_request
++          IS_PR:     ${{ github.event.issue.pull_request != null }}
+           REVIEWERS: ${{ toJSON(github.event.pull_request.requested_reviewers) }}
+           PR_CREATED: ${{ github.event.pull_request.created_at }}
+           HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
+@@ -316,6 +323,33 @@ jobs:
+               if [ -n "$FIRST_URL" ] && { [ "$REVIEW" = "commented" ] || [ "${NOTES:-0}" -gt 0 ]; }; then
+                 button "Открыть ревью" "$FIRST_URL"
+               fi ;;
++            issue_comment:created)
++              # комментарии ботов — не новость
++              [ "$COMMENT_BY_TYPE" = "Bot" ] && exit 0
++              KIND=comment
++              button "Открыть комментарий" "$COMMENT_URL"
++              if [ "$IS_PR" = "true" ]; then
++                # обсуждение PR — в топик ревью: пишет не автор — действовать автору,
++                # автор отвечает — ревьюверам
++                DEST="$RTOPIC"
++                HEAD="💬 Комментарий к PR"
++                if [ "$COMMENT_BY" = "$ISSUE_AUTHOR" ]; then
++                  ERR="${RUNNER_TEMP:-/tmp}/gh-pr.err"
++                  if ! PING=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '[.requested_reviewers[].login] | join(" ")' 2>"$ERR"); then
++                    echo "::warning::Не прочитал ревьюверов PR, комментарий без пинга: $(head -c 200 "$ERR")"
++                    PING=""
++                  fi
++                else
++                  PING="$ISSUE_AUTHOR"
++                fi
++              else
++                # под задачей — исполнителям и автору задачи, кроме того, кто пишет
++                HEAD="💬 Комментарий"
++                PING=$(printf '%s' "$ASSIGNEES" | jq -r --arg me "$COMMENT_BY" --arg author "$ISSUE_AUTHOR" '
++                  [(.[]?.login), $author] | map(select(. != "" and . != $me))
++                  | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end) | join(" ")')
++              fi
++              PING=$(printf '%s' "$PING" | tr -d '\r') ;;
+             *) exit 0 ;;
+           esac
+ 
+@@ -395,7 +429,16 @@ jobs:
+           else
+             # у issue номер — единственный идентификатор,
+             # у PR он уже есть в заголовке вида "WEB-11: ..."
+-            if [ "$EVENT" = "issues" ]; then
++            if [ "$KIND" = "comment" ]; then
++              # ссылка в заголовке — сразу на комментарий
++              URL="$COMMENT_URL"
++              REF=""
++              [ "$IS_PR" = "true" ] || REF="#$NUMBER "
++              LINE="от: $(esc "$COMMENT_BY")"
++              [ -n "$PING" ] && LINE="$LINE · для: $(mentions "$PING")"
++              Q=$(quote "$COMMENT_BODY")
++              [ -n "$Q" ] && EXTRA=$(printf '\n<blockquote expandable>%s</blockquote>' "$Q")
++            elif [ "$EVENT" = "issues" ]; then
+               REF="#$NUMBER "
+               button "Открыть задачу" "$URL"
+               LINE="автор: $(mention "$WHO")"
+diff --git a/README.md b/README.md
+index e831aa0..0bb7c5e 100644
+--- a/README.md
++++ b/README.md
+@@ -4,7 +4,7 @@
+ 
+ | Файл | Что делает |
+ |---|---|
+-| `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, PR и ревью |
++| `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, комментарии, PR и ревью |
+ | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску |
+ | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
+ | `.github/workflows/reminders.yml` | в 10:00, 15:00 и 20:00 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува, и сообщает о сбоях самих уведомлений |
+@@ -25,6 +25,8 @@ on:
+     branches-ignore: [main]
+   issues:
+     types: [opened, closed, reopened, edited]
++  issue_comment:
++    types: [created]
+   pull_request:
+     types: [opened, ready_for_review, closed, review_requested]
+   pull_request_review:
+@@ -64,7 +66,7 @@ jobs:
+    ```
+    Нужны `bash`, `jq`, `perl`, GNU `date` и `awk` (всё, кроме `jq`, есть в Git Bash), а также `shellcheck` и `actionlint`.
+ 2. Открыть PR. Этот репозиторий вызывает свои workflow из той же ветки: открытие PR, пуши и ревью сразу проходят через новую версию, сообщения приходят в боевой топик.
+-3. События `issues` всегда берут workflow из `main` — их видно только после мержа.
++3. События `issues` и `issue_comment` всегда берут workflow из `main` — их видно только после мержа.
+ 
+ Если после мержа что-то сломалось — revert здесь, исправление сразу дойдёт до всех.
+ 

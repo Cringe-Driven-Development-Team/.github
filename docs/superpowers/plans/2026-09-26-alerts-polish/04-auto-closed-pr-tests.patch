@@ -1,0 +1,97 @@
+diff --git a/tests/telegram.sh b/tests/telegram.sh
+index bf8fa16..323f8a0 100644
+--- a/tests/telegram.sh
++++ b/tests/telegram.sh
+@@ -12,8 +12,9 @@ awk -f "$ROOT/tests/extract-run.awk" "$ROOT/.github/workflows/telegram.yml" > "$
+ 
+ cat > "$TMP/bin/gh" <<'STUB'
+ #!/usr/bin/env bash
+-# заглушка gh api: берёт ответ из env и применяет к нему --jq, как настоящий gh
++# заглушка gh api: берёт ответ из env и применяет к нему --jq, как настоящий gh; пути запросов — в $CALLS
+ path=$2
++printf '%s\n' "$path" >> "$CALLS"
+ filter="."
+ while [ $# -gt 0 ]; do
+   [ "$1" = "--jq" ] && filter=$2
+@@ -25,6 +26,8 @@ case "$path" in
+   */compare/*"...${BEFORE:-none}"*) body=${GH_COMPARE_BEFORE-}; fail=${GH_COMPARE_BEFORE_FAIL-} ;;
+   */compare/*) body=${GH_COMPARE-}; fail=${GH_COMPARE_FAIL-} ;;
+   */comments)  body=${GH_COMMENTS-}; fail=${GH_COMMENTS_FAIL-} ;;
++  *"/pulls?"*) body=${GH_CLOSED-}; fail=${GH_CLOSED_FAIL-} ;;
++  */events*)   body=${GH_EVENTS-}; fail=${GH_EVENTS_FAIL-} ;;
+   *) echo "неожиданный запрос $path" >&2; exit 1 ;;
+ esac
+ [ -z "$fail" ] || { echo "$fail" >&2; exit 1; }
+@@ -44,6 +47,8 @@ DEFAULTS=(
+   GH_REVIEWS='[]' GH_REVIEWS_FAIL= GH_COMPARE= GH_COMPARE_FAIL=
+   REVIEW_BY= REVIEW_BY_TYPE=User REVIEW_URL= REVIEW_WAIT=0 GH_COMMENTS='[]' GH_COMMENTS_FAIL=
+   DELETED=false BEFORE= AFTER= DEFAULT_BRANCH=main GH_COMPARE_BEFORE= GH_COMPARE_BEFORE_FAIL=
++  OWNER=Cringe-Driven-Development-Team GH_CLOSED='[]' GH_CLOSED_FAIL= GH_EVENTS='[]' GH_EVENTS_FAIL=
++  CALLS="$TMP/calls"
+ )
+ 
+ # когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
+@@ -192,6 +197,63 @@ sent "<a href=\"https://github.com/$INFRA/tree/feature/web-5\">feature/web-5</a>
+ when "удаление ветки молчит" "${FP[@]}" DELETED=true COMMITS='[]'
+ silent
+ 
++# --- PR, закрытый GitHub после force-push
++
++# closed <номер> <когда закрыт> [<когда влит>] — закрытый PR ветки в ответе GET /pulls?state=closed
++closed() {
++  jq -nc --argjson n "$1" --arg at "$2" --arg merged "${3-}" \
++    '{number: $n, closed_at: $at, merged_at: (if $merged == "" then null else $merged end),
++      html_url: "https://github.com/o/r/pull/\($n)", user: {login: "iRedTea"}, title: "Task infra 1: pulumi ready"}'
++}
++# ev <событие>@<время>… — ответ GET /issues/N/events
++ev() { printf '%s\n' "$@" | jq -Rsc '[split("\n")[] | select(length > 0) | split("@") | {event: .[0], created_at: .[1]}]'; }
++CLOSED_AT=$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)
++NO_ANCESTOR="gh: No common ancestor between main and new222. (HTTP 404)"
++
++when "GitHub закрыл PR после force-push — второе сообщение" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
++  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")"
++sent_to 1 26 "⚠️ force-push"
++sent_to 2 26 "<b>🚫 PR закрыт без мержа</b> · infra" '<a href="https://github.com/o/r/pull/3">Task infra 1: pulumi ready</a>' \
++  "автор: iRedTea" "GitHub закрыл PR после force-push: у ветки не осталось изменений или общей истории с main" \
++  '"text":"Открыть PR","url":"https://github.com/o/r/pull/3"'
++only 2
++if grep -qF "repos/$INFRA/pulls?state=closed&head=Cringe-Driven-Development-Team:task-infra-1&" "$TMP/calls"; then
++  pass; else fail "закрытые PR искали не по ветке"; fi
++
++when "PR закрыл человек незадолго до пуша — второго сообщения нет" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
++  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "closed@$CLOSED_AT" "head_ref_force_pushed@$JUST_NOW")"
++only 1
++
++when "PR закрыт давно — не этим пушем" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
++  GH_CLOSED="[$(closed 3 "$LONG_AGO")]" GH_EVENTS="$(ev "head_ref_force_pushed@$LONG_AGO" "closed@$LONG_AGO")"
++only 1
++
++when "влитый PR не считается" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
++  GH_CLOSED="[$(closed 3 "$CLOSED_AT" "$CLOSED_AT")]" GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")"
++only 1
++
++when "список закрытых PR недоступен — пуш отправлен, предупреждение" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
++  GH_CLOSED_FAIL="HTTP 502: Bad Gateway"
++sent "⚠️ force-push"
++only 1
++if grep -qF "::warning::Не проверил, закрыл ли GitHub PR ветки" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
++
++when "события PR недоступны — пуш отправлен, предупреждение" "${FP[@]}" GH_COMPARE_FAIL="$NO_ANCESTOR" \
++  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS_FAIL="HTTP 502: Bad Gateway"
++only 1
++if grep -qF "::warning::Не прочитал события PR #3" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
++
++when "ветка со слешем — закрытые PR ищутся по полному имени" "${FP[@]}" BRANCH=refs/heads/feature/web-5 \
++  GH_COMPARE_FAIL="$NO_ANCESTOR"
++if grep -qF "pulls?state=closed&head=Cringe-Driven-Development-Team:feature/web-5&" "$TMP/calls"; then
++  pass; else fail "закрытые PR искали не по ветке feature/web-5"; fi
++
++when "обычный пуш закрытые PR не проверяет" \
++  EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=false \
++  COMMITS='[{"id":"aaaaaaa1111","message":"feat: первое","distinct":true}]' \
++  GH_CLOSED="[$(closed 3 "$CLOSED_AT")]" GH_EVENTS="$(ev "head_ref_force_pushed@$CLOSED_AT" "closed@$CLOSED_AT")"
++only 1
++
+ # --- pull request и ревью
+ 
+ when "pr opened без ревьюверов: только автор" \
