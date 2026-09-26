@@ -21,6 +21,8 @@ while [ $# -gt 0 ]; do
 done
 case "$path" in
   */reviews)   body=${GH_REVIEWS-}; fail=${GH_REVIEWS_FAIL-} ;;
+  # сравнение со старой версией ветки (force-push) — отдельный ответ
+  */compare/*"...${BEFORE:-none}"*) body=${GH_COMPARE_BEFORE-}; fail=${GH_COMPARE_BEFORE_FAIL-} ;;
   */compare/*) body=${GH_COMPARE-}; fail=${GH_COMPARE_FAIL-} ;;
   */comments)  body=${GH_COMMENTS-}; fail=${GH_COMMENTS_FAIL-} ;;
   *) echo "неожиданный запрос $path" >&2; exit 1 ;;
@@ -41,6 +43,7 @@ DEFAULTS=(
   REVIEWERS=null PR_CREATED= HEAD_SHA= GH_TOKEN=test-gh
   GH_REVIEWS='[]' GH_REVIEWS_FAIL= GH_COMPARE= GH_COMPARE_FAIL=
   REVIEW_BY= REVIEW_BY_TYPE=User REVIEW_URL= REVIEW_WAIT=0 GH_COMMENTS='[]' GH_COMMENTS_FAIL=
+  DELETED=false BEFORE= AFTER= DEFAULT_BRANCH=main GH_COMPARE_BEFORE= GH_COMPARE_BEFORE_FAIL=
 )
 
 # когда создан PR: ревьювер из формы создания приходит отдельным событием сразу после opened
@@ -133,13 +136,65 @@ when "push: коммиты ветки" \
   COMMITS='[{"id":"aaaaaaa1111","message":"feat: первое\n\nтело","distinct":true},{"id":"ccccccc3333","message":"fix: второе","distinct":true}]'
 sent "⚒️ 2 коммита" "· frontend ·" "• aaaaaaa feat: первое" "• ccccccc fix: второе" "!тело"
 
-when "push: force-push помечен" \
-  EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=true \
-  COMMITS='[{"id":"aaaaaaa1111","message":"feat: первое","distinct":true}]'
-sent "⚠️ 1 коммит (force-push)"
-
 when "push: без коммитов (создание ветки) молчит" \
   EVENT=push BRANCH=refs/heads/web-5 COMPARE=c FORCED=false COMMITS='[]'
+silent
+
+# --- force-push
+
+# cmp <sha>:<заголовок>… — ответ GET /compare: коммиты ветки поверх main
+cmp() {
+  printf '%s\n' "$@" | jq -Rsc '{commits: [split("\n")[] | select(length > 0)
+    | capture("^(?<sha>[^:]+):(?<m>.*)$") | {sha, commit: {message: .m}}]}'
+}
+INFRA=Cringe-Driven-Development-Team/infra
+# в событии — то, что GitHub кладёт в payload force-push: переписанная ветка вместе с коммитом из main
+FP=(EVENT=push BRANCH=refs/heads/task-infra-1 FORCED=true REPO="$INFRA" ACTOR=iRedTea
+    COMPARE=https://github.com/o/r/compare/old111...new222 BEFORE=old111 AFTER=new222
+    COMMITS='[{"id":"0000000aaaa","message":"Merge pull request #2 from main","distinct":true}]')
+
+when "force-push после rebase: считаем ветку, перечисляем только новые" "${FP[@]}" \
+  GH_COMPARE="$(cmp 'aaaaaaa1:chore: начало' 'bbbbbbb2:feat: VPS' 'ccccccc3:fix: замечания ревью')" \
+  GH_COMPARE_BEFORE="$(cmp 'ddddddd4:chore: начало' 'eeeeeee5:feat: VPS')"
+sent_to 1 26 "<b>⚠️ force-push</b> · infra · " "ветка переписана: 3 коммита поверх main, новых — 1" \
+  "• ccccccc fix: замечания ревью" "!aaaaaaa" "!Merge pull request" \
+  "\"text\":\"Ветка целиком\",\"url\":\"https://github.com/$INFRA/compare/main...task-infra-1\""
+before "ветка переписана" "• ccccccc"
+only 1
+
+when "чистый rebase — «новых коммитов нет», без списка" "${FP[@]}" \
+  GH_COMPARE="$(cmp 'aaaaaaa1:chore: начало' 'bbbbbbb2:feat: VPS')" \
+  GH_COMPARE_BEFORE="$(cmp 'ddddddd4:chore: начало' 'eeeeeee5:feat: VPS')"
+sent "ветка переписана: 2 коммита поверх main, новых коммитов нет" "!• "
+
+when "ветка сброшена до main" "${FP[@]}" GH_COMPARE='{"commits":[]}'
+sent "<b>⚠️ force-push</b>" "ветка сброшена до main" "!• " "Ветка целиком"
+
+when "старой версии ветки нет — перечисляем всю ветку" "${FP[@]}" \
+  GH_COMPARE="$(cmp 'aaaaaaa1:chore: начало' 'bbbbbbb2:feat: VPS')" GH_COMPARE_BEFORE_FAIL="HTTP 404: Not Found"
+sent "ветка переписана: 2 коммита поверх main" "!новых" "• aaaaaaa chore: начало" "• bbbbbbb feat: VPS"
+
+when "у ветки нет общей истории с main — коммиты из события" "${FP[@]}" \
+  GH_COMPARE_FAIL="gh: No common ancestor between main and new222. (HTTP 404)"
+sent "<b>⚠️ force-push</b>" "у ветки нет общей истории с main" "• 0000000 Merge pull request #2 from main" \
+  '"text":"Открыть изменения","url":"https://github.com/o/r/compare/old111...new222"'
+
+when "сравнение недоступно — как раньше, предупреждение в лог" "${FP[@]}" GH_COMPARE_FAIL="HTTP 502: Bad Gateway"
+sent "⚠️ 1 коммит (force-push)" "!ветка" "Открыть изменения"
+if grep -qF "::warning::Не сравнил ветку с main" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "сравнение недоступно и в событии нет новых коммитов — молчим" "${FP[@]}" \
+  GH_COMPARE_FAIL="HTTP 502: Bad Gateway" COMMITS='[{"id":"0000000aaaa","message":"m","distinct":false}]'
+silent
+
+when "другая ветка по умолчанию" "${FP[@]}" DEFAULT_BRANCH=develop GH_COMPARE='{"commits":[]}'
+sent "ветка сброшена до develop" "/compare/develop...task-infra-1"
+
+when "ветка со слешем в имени" "${FP[@]}" BRANCH=refs/heads/feature/web-5 GH_COMPARE='{"commits":[]}'
+sent "<a href=\"https://github.com/$INFRA/tree/feature/web-5\">feature/web-5</a>" \
+  "\"url\":\"https://github.com/$INFRA/compare/main...feature/web-5\""
+
+when "удаление ветки молчит" "${FP[@]}" DELETED=true COMMITS='[]'
 silent
 
 # --- pull request и ревью
