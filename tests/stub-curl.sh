@@ -16,6 +16,11 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+# TG_REJECT — кусок текста, на котором Telegram «не разберёт разметку»: такое сообщение не сохраняется
+if [ -n "${TG_REJECT:-}" ] && [[ "$text" == *"$TG_REJECT"* ]]; then
+  echo '{"ok":false,"error_code":400,"description":"Bad Request: can'"'"'t parse entities: Unsupported start tag"}'
+  exit 0
+fi
 n=$(( $(find "$SENT" -type f | wc -l) + 1 ))
 printf 'topic=%s\nmarkup=%s\n%s' "$topic" "$markup" "$text" > "$SENT/$n"
 echo '{"ok":true}'

@@ -56,7 +56,7 @@ when "issue opened: заголовок, автор, исполнитель, оп
 sent "🆕 Новая задача" "#5 Починить &lt;b&gt;вход&lt;/b&gt;" \
   'автор: <a href="tg://user?id=111">YarikMix</a>' \
   'исполнитель: <a href="tg://user?id=222">blackHATred</a>' \
-  "<blockquote expandable>Что сделать" "&amp; записать" "!скрыто"
+  "<blockquote expandable><b>Что сделать</b>" "&amp; записать" "!скрыто"
 
 when "issue closed: без описания" \
   EVENT=issues ACTION=closed NUMBER=5 TITLE=Задача URL=u BODY=текст ASSIGNEES='[]' \
@@ -77,6 +77,48 @@ when "issue edited: поздняя правка описания" \
   EVENT=issues ACTION=edited NUMBER=5 TITLE=Задача URL=u BODY=новое CHG_BODY='{"from":"старое"}' \
   ASSIGNEES='[]' CREATED=2026-09-17T10:00:00Z UPDATED=2026-09-17T11:00:00Z
 sent "✏️ Описание изменено" "новое"
+
+# --- описание: разметка
+
+when "описание: markdown — разметкой Telegram, HTML-теги сняты, код не тронут" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'**Зачем**\n\nСтейт `pulumi/<id>` и <b>тег</b>, a < b\n- [ ] Создан\n- [x] Готово\n- пункт\n~~старое~~ snake_case __init__\n[док](https://x.io/a?b=1&c=2)\n```bash\necho <x> **нет**\n```'
+sent "<blockquote expandable><b>Зачем</b>" "<code>pulumi/&lt;id&gt;</code>" "и тег, a &lt; b" \
+  "☐ Создан" "☑ Готово" "• пункт" "<s>старое</s>" "snake_case __init__" \
+  '<a href="https://x.io/a?b=1&amp;c=2">док</a>' "<pre>echo &lt;x&gt; **нет**</pre>" "!**Зачем**" "!<b>тег"
+
+when "описание: картинки — ссылками, блочные теги — переводом строки" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' \
+  BODY=$'<img width="3192" alt="Image" src="https://github.com/user-attachments/assets/9bee" />\n![скрин](https://i.io/p.png "t")\n<details><summary>Ещё</summary>внутри</details>'
+sent '<a href="https://github.com/user-attachments/assets/9bee">🖼 картинка</a>' \
+  '<a href="https://i.io/p.png">🖼 картинка</a>' $'Ещё\nвнутри' "!<img" "!width=" "!<details"
+
+LONG=$(printf 'сущ%.0s' $(seq 1 300))
+when "описание длиннее 700 символов — многоточие без мусора" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY="$LONG"
+sent "…</blockquote>" "!â"
+
+when "описание: блок кода, обрезанный на середине, — без <pre>" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY=$'```go\n'"$LONG"
+sent "<blockquote expandable>сущ" "!<pre>" '!```'
+
+when "описание из одного комментария HTML — без цитаты" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY=$'<!-- шаблон -->\n  '
+sent "🆕 Новая задача" "!blockquote"
+
+when "Telegram не разобрал разметку цитаты — отправлено без неё" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY='**жирный**' TG_REJECT='<blockquote'
+sent "🆕 Новая задача" "!blockquote" "!жирный"
+only 1
+if grep -qF "::warning::Telegram не разобрал разметку" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+when "Telegram отклонил сообщение без цитаты — job падает" \
+  EVENT=issues ACTION=closed NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' TG_REJECT='закрыта'
+error "Telegram отклонил сообщение"
+
+when "описание: ссылка не на http(s) не становится кликабельной" \
+  EVENT=issues ACTION=opened NUMBER=5 TITLE=t URL=u ASSIGNEES='[]' BODY='[жми](javascript:alert(1)) и [сайт](https://x.io)'
+sent '[жми](javascript:alert(1))' '<a href="https://x.io">сайт</a>' '!href="javascript'
 
 # --- пуши
 
