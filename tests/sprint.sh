@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# Прогоняет scripts/sprint.sh на подставных ответах GitHub.
+# gh подменён заглушкой: чтение доски — фикстура, мутация Sprint — запись в $TMP/moves.
+# Нужны bash, jq и GNU date (через jq strptime/mktime, самого date не вызываем).
+# Запуск: bash tests/sprint.sh
+set -u
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+source "$ROOT/tests/lib.sh"
+SCRIPT="$ROOT/scripts/sprint.sh"
+
+cat > "$TMP/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# заглушка gh: мутация Sprint (query=mutation...) — пишет "item iteration" в $MOVES,
+# для itemId из MOVE_FAIL (через пробел) отвечает отказом; иначе это чтение доски —
+# GH_FAIL валит запрос, иначе отдаёт $FIXTURE как есть (одна или несколько "страниц" подряд)
+args=("$@")
+QUERY="" ITEM="" ITERATION=""
+for a in "${args[@]}"; do
+  case "$a" in
+    query=*) QUERY=${a#query=} ;;
+    item=*) ITEM=${a#item=} ;;
+    iteration=*) ITERATION=${a#iteration=} ;;
+  esac
+done
+case "$QUERY" in
+  mutation*)
+    case " ${MOVE_FAIL:-} " in
+      *" $ITEM "*) echo "gh: HTTP 502" >&2; exit 1 ;;
+    esac
+    printf '%s %s\n' "$ITEM" "$ITERATION" >> "$MOVES"
+    echo '{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"'"$ITEM"'"}}}}' ;;
+  *)
+    [ -z "${GH_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+    cat "$FIXTURE" ;;
+esac
+STUB
+chmod +x "$TMP/bin/gh"
+
+FIXTURE="$TMP/fixture.json"
+MOVES="$TMP/moves"
+DEFAULTS=(
+  TOKEN=test-token CHAT=-100 TOPIC=26 MAP='{"YarikMix":"111","blackHATred":"222"}'
+  PAT=test-pat TODAY=2026-09-28 GH_FAIL= MOVE_FAIL=
+  FIXTURE="$FIXTURE" MOVES="$MOVES"
+)
+
+# w "название" ... — как when из lib.sh, но ещё чистит журнал мутаций перед прогоном
+w() { rm -f "$TMP/moves"; when "$@"; }
+
+# iter <id> <title> <start> [duration=7] — итерация поля Sprint
+iter() {
+  jq -nc --arg id "$1" --arg title "$2" --arg start "$3" --argjson duration "${4:-7}" \
+    '{id: $id, title: $title, startDate: $start, duration: $duration}'
+}
+
+# item <id> <sprint-id|-> <status|-> <issue|pr|draft|null> <state> <репозиторий> <номер> <заголовок> [логины…]
+#   kind=null — content: null (задача удалена/недоступна), остальные поля игнорируются;
+#   kind=draft — черновик доски: номер/repo/state не нужны GraphQL-схемой, тоже игнорируются
+item() {
+  local id=$1 sprint=$2 status=$3 kind=$4 state=$5 repo=$6 number=$7 title=$8
+  shift 8
+  jq -nc --arg id "$id" --arg sprint "$sprint" --arg status "$status" --arg kind "$kind" \
+    --arg state "$state" --arg repo "$repo" --arg number "$number" --arg title "$title" '
+    {
+      id: $id,
+      isArchived: false,
+      content: (
+        if $kind == "null" then null
+        elif $kind == "draft" then {__typename: "DraftIssue", title: $title,
+          assignees: {nodes: [$ARGS.positional[] | {login: .}]}}
+        else {
+          __typename: (if $kind == "issue" then "Issue" else "PullRequest" end),
+          number: ($number | tonumber), title: $title,
+          url: "https://github.com/\($repo)/\(if $kind == "issue" then "issues" else "pull" end)/\($number)",
+          state: $state, repository: {nameWithOwner: $repo},
+          assignees: {nodes: [$ARGS.positional[] | {login: .}]}
+        } end
+      ),
+      sprint: (if $sprint == "-" then null else {iterationId: $sprint} end),
+      status: (if $status == "-" then null else {name: $status} end)
+    }' --args "$@"
+}
+archived() { item "$@" | jq -c '.isArchived = true'; }
+
+PROJECT_ID=PVT_test
+PROJECT_URL=https://github.com/orgs/Cringe-Driven-Development-Team/projects/1
+FIELD_ID=PVTIF_test
+
+# итерации фикстуры по умолчанию: Sprint 1..4, понедельник-воскресенье подряд
+S1=$(iter s1 "Sprint 1" 2026-09-14)
+S2=$(iter s2 "Sprint 2" 2026-09-21)
+S3=$(iter s3 "Sprint 3" 2026-09-28)
+S4=$(iter s4 "Sprint 4" 2026-10-05)
+ITERS=("$S1" "$S2" "$S3" "$S4")
+
+# page <hasNextPage> <endCursor|-пусто-> <item>… — одна "страница" ответа GraphQL (итерации — из $ITERS)
+page() {
+  local hasNext=$1 cursor=$2 items iters
+  shift 2
+  items=$(printf '%s\n' "$@" | jq -s '.')
+  iters=$(printf '%s\n' "${ITERS[@]}" | jq -s '.')
+  jq -nc --arg pid "$PROJECT_ID" --arg url "$PROJECT_URL" --arg fid "$FIELD_ID" \
+    --argjson iters "$iters" --argjson items "$items" --argjson hasNext "$hasNext" --arg cursor "$cursor" '
+    {data: {organization: {projectV2: {
+      id: $pid, url: $url,
+      field: {id: $fid, configuration: {iterations: $iters, completedIterations: []}},
+      items: {pageInfo: {hasNextPage: $hasNext, endCursor: (if $cursor == "" then null else $cursor end)}, nodes: $items}
+    }}}}'
+}
+
+# fixture <item>… — ответ доски одной страницей
+fixture() { page false "" "$@" > "$FIXTURE"; }
+
+# --- 1. первый день, три хвоста в разном статусе, в новом спринте уже есть задача
+
+D1=$(item d1 s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 10 "Done issue")
+D2=$(item d2 s2 "In review" pr MERGED frontend-park-mail-ru/2026_2_Cringe_Driven_Development 11 "Merged PR")
+T1=$(item t1 s2 "In review" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 12 "Tail in review" blackHATred)
+T2=$(item t2 s2 "In progress" issue OPEN frontend-park-mail-ru/2026_2_Cringe_Driven_Development 13 "Tail in progress" YarikMix)
+T3=$(item t3 s2 Backlog issue OPEN Cringe-Driven-Development-Team/infra 14 "Tail backlog" SomeoneElse)
+E1=$(item e1 s3 Ready issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 20 "Existing sprint3" MrDuckVC)
+fixture "$D1" "$D2" "$T1" "$T2" "$T3" "$E1"
+w "1. первый день: 2 сделанных, 3 хвоста, итог и план"
+sent_to 1 26 "🏁 Sprint 2 закрыт · 21.09–27.09" "сделано 2 из 5" "перенесено в Sprint 3 — 3:" \
+  '<a href="tg://user?id=222">blackHATred</a>' '<a href="tg://user?id=111">YarikMix</a>' "SomeoneElse" \
+  "🚀 Sprint 3 · 28.09–04.10" "4 задачи:" '"text":"Открыть доску"'
+before "In review" "In progress"
+before "In progress" "Backlog"
+only 1
+if [ "$(sort "$TMP/moves")" = "$(printf 't1 s3\nt2 s3\nt3 s3\n' | sort)" ]; then pass
+else fail "журнал мутаций: $(cat "$TMP/moves" 2>/dev/null)"; fi
+
+# --- 2. первый день, хвостов нет
+
+D1=$(item d1 s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 30 "Done A")
+D2=$(item d2 s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 31 "Done B")
+fixture "$D1" "$D2"
+w "2. первый день, хвостов нет — «всё сделано»"
+sent "всё сделано 🎉" "сделано 2 из 2" "🚀 Sprint 3 · 28.09–04.10"
+only 1
+[ -s "$TMP/moves" ] && fail "были мутации" || pass
+
+# --- 3. закрытая задача не в Done и смерженный PR — сделаны, не хвосты
+
+C1=$(item c1 s2 "In progress" issue CLOSED go-park-mail-ru/2026_2_Cringe_Driven_Development 40 "Closed issue")
+M1=$(item m1 s2 Ready pr MERGED frontend-park-mail-ru/2026_2_Cringe_Driven_Development 41 "Merged PR")
+fixture "$C1" "$M1"
+w "3. закрытая задача и смерженный PR — сделаны без статуса Done"
+sent "сделано 2 из 2" "всё сделано 🎉" "!In progress" "!Ready"
+[ -s "$TMP/moves" ] && fail "были мутации" || pass
+
+# --- 4. архив и content:null — не считаются и не переносятся
+
+A1=$(archived a1 s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 50 "Archived tail")
+N1=$(item n1 s2 Backlog null - - - -)
+fixture "$A1" "$N1"
+w "4. архивная и content:null задачи — не в «из Y», не переносятся"
+sent "всё сделано 🎉" "сделано 0 из 0"
+[ -s "$TMP/moves" ] && fail "были мутации" || pass
+
+# --- 5. черновик-хвост
+
+DR=$(item dr1 s2 Ready draft - - - "Придумать название")
+fixture "$DR"
+w "5. черновик — хвост без ссылки, но переносится"
+sent "черновик · Придумать название" "!<a href=\""
+if grep -qxF "dr1 s3" "$TMP/moves"; then pass; else fail "черновик не перенесён"; fi
+
+# --- 6. второй день, хвост остался
+
+T1=$(item t1b s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 60 "Late tail")
+fixture "$T1"
+w "6. второй день, хвост остался — перенос всё равно происходит" TODAY=2026-09-29
+sent "перенесено в Sprint 3 — 1:" "Late tail"
+if grep -qxF "t1b s3" "$TMP/moves"; then pass; else fail "нет переноса"; fi
+
+# --- 7. второй день, хвостов нет
+
+fixture
+w "7. второй день, хвостов нет — тишина" TODAY=2026-09-29
+silent
+[ -s "$TMP/moves" ] && fail "мутации были" || pass
+
+# --- 8. последний день текущего спринта (не первый), без хвостов из прошлого — тишина
+
+fixture
+w "8. последний день спринта — не первый день, хвостов из прошлого нет" TODAY=2026-09-27
+silent
+[ -s "$TMP/moves" ] && fail "мутации были" || pass
+
+# --- 9. нет текущей итерации, хвосты есть
+
+ITERS=("$S1" "$S2")
+T1=$(item t1c s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 70 "No home tail")
+fixture "$T1"
+w "9. нет текущего спринта, есть хвосты — предупреждение с пингом владельца"
+sent "⚠️ Sprint 2 закончился" "а следующего спринта на доске нет" "не перенесены" "tg://user?id=111"
+[ -s "$TMP/moves" ] && fail "были мутации" || pass
+ITERS=("$S1" "$S2" "$S3" "$S4")
+
+# --- 10. нет прошлой итерации
+
+fixture
+w "10. нет прошлой итерации — тишина" TODAY=2026-09-14
+silent
+
+# --- 11. сбой одной мутации не останавливает перенос остальных
+
+T1=$(item ta s2 "In review" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 80 "Tail A" GrayMouse9)
+T2=$(item tb s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 81 "Tail B" GrayMouse9)
+fixture "$T1" "$T2"
+w "11. сбой одной мутации: остальные перенесены, у неё пометка" MOVE_FAIL=tb
+if [ "$CODE" -eq 0 ]; then pass; else fail "код $CODE"; fi
+if grep -qxF "ta s3" "$TMP/moves" && ! grep -q '^tb ' "$TMP/moves"; then pass
+else fail "журнал мутаций: $(cat "$TMP/moves" 2>/dev/null)"; fi
+if grep -q "Tail B.*⚠️ не перенесена" "$TMP/sent/1" && ! grep -q "Tail A.*⚠️ не перенесена" "$TMP/sent/1"; then pass
+else fail "пометка не на той строке"; fi
+if grep -qF "::warning::Не перенёс" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+# --- 12. больше 20 хвостов
+
+prs=()
+for i in $(seq 1 22); do
+  prs+=("$(item "tail$i" s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development "$((100 + i))" "Tail $i")")
+done
+fixture "${prs[@]}"
+w "12. больше 20 хвостов — обрезка списка и «…и ещё N»"
+sent "…и ещё 2"
+if [ "$(grep -c '^• ' "$TMP/sent/1")" -eq 20 ]; then pass; else fail "строк хвостов не 20"; fi
+if [ "$(wc -l < "$TMP/moves")" -eq 22 ]; then pass; else fail "перенесены не все 22"; fi
+
+# --- 13. PAT недоступен
+
+fixture
+w "13. PAT недоступен — тишина и предупреждение" PAT=
+silent
+if grep -qF "::warning::ADD_TO_PROJECT_PAT недоступен" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+# --- 14. доска недоступна
+
+w "14. доска недоступна — ошибка и код 1" GH_FAIL=1
+error "Не прочитал доску"
+
+# --- 15. экранирование заголовка и логина
+
+T1=$(item tc s2 "In review" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 90 "Фикс <b> & ко" NobodyInMap)
+fixture "$T1"
+w "15. заголовок и логин вне карты экранируются"
+sent "Фикс &lt;b&gt; &amp; ко" "NobodyInMap" "!<b>Фикс" "!tg://user?id"
+
+# --- 16. Review Focus: две страницы пагинации
+
+P1A=$(item pa s2 "In review" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 100 "Page1 tail A" GrayMouse9)
+P1B=$(item pb s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 101 "Page1 done")
+P2A=$(item pc s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 102 "Page2 tail")
+{ page true c1 "$P1A" "$P1B"; page false "" "$P2A"; } > "$FIXTURE"
+w "16. Review Focus: задачи на двух страницах — все учтены"
+sent "сделано 1 из 3" "перенесено в Sprint 3 — 2:" "Page1 tail A" "Page2 tail"
+only 1
+if [ "$(wc -l < "$TMP/moves")" -eq 2 ]; then pass; else fail "перенос не по всем страницам"; fi
+
+# --- 17. Review Focus: два исполнителя у одного хвоста
+
+T1=$(item td s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 110 "Duo tail" blackHATred YarikMix)
+fixture "$T1"
+w "17. Review Focus: хвост с двумя исполнителями — оба пинга и оба +1 в плане"
+sent '<a href="tg://user?id=222">blackHATred</a>' '<a href="tg://user?id=111">YarikMix</a>' \
+  "1 задача:" "YarikMix 1" "blackHATred 1"
+
+# --- 18. Review Focus: спринт длиной 14 дней, середина
+
+ITERS=("$(iter s1b "Sprint 1" 2026-09-07 7)" "$(iter s2b "Sprint 2" 2026-09-14 14)")
+fixture
+w "18. Review Focus: двухнедельный спринт, середина — не первый день, тишина" TODAY=2026-09-21
+silent
+ITERS=("$S1" "$S2" "$S3" "$S4")
+
+summary
