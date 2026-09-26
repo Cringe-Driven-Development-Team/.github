@@ -37,6 +37,8 @@ plural () {
   esac
 }
 tasks () { printf '%s %s' "$1" "$(plural "$1" задача задачи задач)"; }
+# согласование глагола с «задача»/«задачи»/«задач»: 1 — не перенесена, иначе — не перенесены
+notmoved () { plural "$1" "не перенесена" "не перенесены" "не перенесены"; }
 
 # «ДД.ММ» из «ГГГГ-ММ-ДД»
 dm () { printf '%s.%s' "${1:8:2}" "${1:5:2}"; }
@@ -103,7 +105,7 @@ DEFS='
   def tailline:
     (if .isDraft then "черновик · \(.title | esc)"
      else "\(.side) #\(.number) <a href=\"\(.url)\">\(.title | esc)</a>" end)
-    + " · " + (if .status == "" then "без статуса" else .status end)
+    + " · " + (if .status == "" then "без статуса" else (.status | esc) end)
     + " · " + (if (.assignees | length) == 0 then "без исполнителя" else (.assignees | map(who) | join(", ")) end)
     + (if isfailed then " ⚠️ не перенесена" else "" end);
   def planitems: .curExisting + [ .tails[] | select(isfailed | not) | {assignees} ];
@@ -158,8 +160,8 @@ if [ "$(J "$STATE" '.hasCurrent')" != "true" ]; then
   PROJECT_URL=$(J "$BOARD" '.url')
   PING=$(jq -rn --argjson map "$MAP" --arg u "$OPS_PING" \
     'if $map[$u] then "<a href=\"tg://user?id=\($map[$u])\">\($u)</a>" else $u end' | tr -d '\r')
-  TEXT=$(printf '<b>⚠️ %s закончился</b>, а следующего спринта на доске нет: %s не перенесены · %s' \
-    "$(esc "$PAST_TITLE")" "$(tasks "$TAILS_COUNT")" "$PING")
+  TEXT=$(printf '<b>⚠️ %s закончился</b>, а следующего спринта на доске нет: %s %s · %s' \
+    "$(esc "$PAST_TITLE")" "$(tasks "$TAILS_COUNT")" "$(notmoved "$TAILS_COUNT")" "$PING")
   MARKUP=$(jq -nc --arg u "$PROJECT_URL" '{inline_keyboard: [[{text: "Открыть доску", url: $u}]]}')
   send "$TOPIC" "$TEXT" "$MARKUP"
   exit 0
@@ -202,7 +204,7 @@ FAILED_JSON=$(printf '%s\n' "${FAILED[@]:-}" | jq -R -s -c 'split("\n") | map(se
 TAILS_BLOCK=$(J "$STATE" '
   (.tails) as $t
   | if ($t | length) == 0 then "всё сделано 🎉"
-    else "перенесено в \(.curTitle) — \($t | length):\n"
+    else "перенесено в \(.curTitle | esc) — \($t | length):\n"
       + ([$t[0:$limit][] | "• " + tailline] | join("\n"))
       + (if ($t | length) > $limit then "\n…и ещё \($t | length - $limit)" else "" end)
     end
@@ -225,12 +227,16 @@ CUR_START=$(J "$STATE" '.curStart')
 CUR_END=$(J "$STATE" '.curEnd')
 PROJECT_URL=$(J "$BOARD" '.url')
 
-TEXT=$(printf '<b>🏁 %s закрыт · %s–%s</b>\nсделано %s из %s\n%s\n\n<b>🚀 %s · %s–%s</b>\n%s: %s' \
+# пустой план — без висячего двоеточия («0 задач», а не «0 задач: »)
+PLAN_LINE=$(tasks "$PLAN_COUNT")
+[ -z "$BREAKDOWN" ] || PLAN_LINE="$PLAN_LINE: $BREAKDOWN"
+
+TEXT=$(printf '<b>🏁 %s закрыт · %s–%s</b>\nсделано %s из %s\n%s\n\n<b>🚀 %s · %s–%s</b>\n%s' \
   "$(esc "$PAST_TITLE")" "$(dm "$PAST_START")" "$(dm "$PAST_END")" \
   "$DONE_COUNT" "$TOTAL_COUNT" \
   "$TAILS_BLOCK" \
   "$(esc "$CUR_TITLE")" "$(dm "$CUR_START")" "$(dm "$CUR_END")" \
-  "$(tasks "$PLAN_COUNT")" "$BREAKDOWN")
+  "$PLAN_LINE")
 
 MARKUP=$(jq -nc --arg u "$PROJECT_URL" '{inline_keyboard: [[{text: "Открыть доску", url: $u}]]}')
 send "$TOPIC" "$TEXT" "$MARKUP"

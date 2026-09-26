@@ -112,7 +112,8 @@ page() {
 # fixture <item>… — ответ доски одной страницей
 fixture() { page false "" "$@" > "$FIXTURE"; }
 
-# --- 1. первый день, три хвоста в разном статусе, в новом спринте уже есть задача
+# --- 1. первый день, три хвоста в разном статусе, в новом спринте уже есть задача;
+#        плюс задачи вне области переноса (без спринта, в чужом спринте, уже в новом) — доска не «протекает»
 
 D1=$(item d1 s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 10 "Done issue")
 D2=$(item d2 s2 "In review" pr MERGED frontend-park-mail-ru/2026_2_Cringe_Driven_Development 11 "Merged PR")
@@ -120,11 +121,15 @@ T1=$(item t1 s2 "In review" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Deve
 T2=$(item t2 s2 "In progress" issue OPEN frontend-park-mail-ru/2026_2_Cringe_Driven_Development 13 "Tail in progress" YarikMix)
 T3=$(item t3 s2 Backlog issue OPEN Cringe-Driven-Development-Team/infra 14 "Tail backlog" SomeoneElse)
 E1=$(item e1 s3 Ready issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 20 "Existing sprint3" MrDuckVC)
-fixture "$D1" "$D2" "$T1" "$T2" "$T3" "$E1"
-w "1. первый день: 2 сделанных, 3 хвоста, итог и план"
+E2=$(item e2 s3 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 21 "Second sprint3 item" SomeoneNew)
+NS=$(item ns1 - Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 15 "No sprint item" GhostLogin)
+S1X=$(item s1x s1 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 16 "Sprint1 stray item" GhostLogin)
+fixture "$D1" "$D2" "$T1" "$T2" "$T3" "$E1" "$E2" "$NS" "$S1X"
+w "1. первый день: 2 сделанных, 3 хвоста, итог и план; без спринта и в чужом спринте не участвуют"
 sent_to 1 26 "🏁 Sprint 2 закрыт · 21.09–27.09" "сделано 2 из 5" "перенесено в Sprint 3 — 3:" \
   '<a href="tg://user?id=222">blackHATred</a>' '<a href="tg://user?id=111">YarikMix</a>' "SomeoneElse" \
-  "🚀 Sprint 3 · 28.09–04.10" "4 задачи:" '"text":"Открыть доску"'
+  "🚀 Sprint 3 · 28.09–04.10" "5 задач:" "SomeoneNew 1" '"text":"Открыть доску"' \
+  "!GhostLogin" "!No sprint item" "!Sprint1 stray item"
 before "In review" "In progress"
 before "In progress" "Backlog"
 only 1
@@ -136,8 +141,8 @@ else fail "журнал мутаций: $(cat "$TMP/moves" 2>/dev/null)"; fi
 D1=$(item d1 s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 30 "Done A")
 D2=$(item d2 s2 Done issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 31 "Done B")
 fixture "$D1" "$D2"
-w "2. первый день, хвостов нет — «всё сделано»"
-sent "всё сделано 🎉" "сделано 2 из 2" "🚀 Sprint 3 · 28.09–04.10"
+w "2. первый день, хвостов нет — «всё сделано»; план пуст — без висячего двоеточия"
+sent "всё сделано 🎉" "сделано 2 из 2" "🚀 Sprint 3 · 28.09–04.10" "0 задач" "!0 задач:"
 only 1
 [ -s "$TMP/moves" ] && fail "были мутации" || pass
 
@@ -194,8 +199,9 @@ silent
 ITERS=("$S1" "$S2")
 T1=$(item t1c s2 Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 70 "No home tail")
 fixture "$T1"
-w "9. нет текущего спринта, есть хвосты — предупреждение с пингом владельца"
-sent "⚠️ Sprint 2 закончился" "а следующего спринта на доске нет" "не перенесены" "tg://user?id=111"
+w "9. нет текущего спринта, один хвост — предупреждение с пингом владельца, глагол в ед. числе"
+sent "⚠️ Sprint 2 закончился" "а следующего спринта на доске нет" "1 задача не перенесена" \
+  "tg://user?id=111" "!не перенесены"
 [ -s "$TMP/moves" ] && fail "были мутации" || pass
 ITERS=("$S1" "$S2" "$S3" "$S4")
 
@@ -268,12 +274,27 @@ w "17. Review Focus: хвост с двумя исполнителями — о�
 sent '<a href="tg://user?id=222">blackHATred</a>' '<a href="tg://user?id=111">YarikMix</a>' \
   "1 задача:" "YarikMix 1" "blackHATred 1"
 
-# --- 18. Review Focus: спринт длиной 14 дней, середина
+# --- 18. Review Focus: спринт длиной 14 дней, середина — с хвостом-приманкой в самом 14-дневном
+#         спринте: если duration игнорировать (взять как 7), этот спринт «закончится» раньше и
+#         его незакрытая задача превратится в хвост несуществующего текущего — уйдёт предупреждение;
+#         при верном учёте duration это по-прежнему середина текущего спринта — тишина
 
 ITERS=("$(iter s1b "Sprint 1" 2026-09-07 7)" "$(iter s2b "Sprint 2" 2026-09-14 14)")
-fixture
-w "18. Review Focus: двухнедельный спринт, середина — не первый день, тишина" TODAY=2026-09-21
+X1=$(item x1 s2b Backlog issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 140 "Mid-sprint item")
+fixture "$X1"
+w "18. Review Focus: двухнедельный спринт, середина — не первый день, тишина (duration учитывается)" TODAY=2026-09-21
 silent
+[ -s "$TMP/moves" ] && fail "были мутации" || pass
+ITERS=("$S1" "$S2" "$S3" "$S4")
+
+# --- 19. экранирование заголовка текущего спринта и произвольного (не из ORDER) статуса
+
+S3X=$(iter s3 "Sprint <3> & co" 2026-09-28)
+ITERS=("$S1" "$S2" "$S3X" "$S4")
+TE=$(item te s2 "In <review>" issue OPEN go-park-mail-ru/2026_2_Cringe_Driven_Development 150 "Escaped status tail")
+fixture "$TE"
+w "19. заголовок текущего спринта в «перенесено в …» и произвольный статус хвоста экранируются"
+sent "Sprint &lt;3&gt; &amp; co" "In &lt;review&gt;" "!Sprint <3>" "!In <review>"
 ITERS=("$S1" "$S2" "$S3" "$S4")
 
 summary
