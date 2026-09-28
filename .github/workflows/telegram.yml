@@ -332,6 +332,8 @@ jobs:
             issue_comment:created)
               # комментарии ботов — не новость
               [ "$COMMENT_BY_TYPE" = "Bot" ] && exit 0
+              # служебные комментарии автоматики (закрытие мержем, перенос задач) — тоже
+              case "$COMMENT_BODY" in '<!-- auto -->'*) exit 0 ;; esac
               KIND=comment
               button "Открыть комментарий" "$COMMENT_URL"
               if [ "$IS_PR" = "true" ]; then

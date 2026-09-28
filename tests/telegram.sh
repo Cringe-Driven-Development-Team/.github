@@ -589,6 +589,14 @@ sent "от: YarikMix" "!для:" "!tg://user"
 when "комментарий бота молчит" "${IC[@]}" COMMENT_BY='github-actions[bot]' COMMENT_BY_TYPE=Bot COMMENT_BODY=отчёт
 silent
 
+when "служебный комментарий автоматики молчит" "${IC[@]}" COMMENT_BY=YarikMix \
+  COMMENT_BODY='<!-- auto -->Закрыта мержем https://github.com/f/r/pull/40'
+silent
+
+when "маркер не в начале — обычный комментарий" "${IC[@]}" COMMENT_BY=iRedTea ASSIGNEES='[]' \
+  COMMENT_BODY='Служебные начинаются с <!-- auto -->, а этот — нет'
+sent "💬 Комментарий" "Служебные начинаются с"
+
 when "комментарий-картинка — ссылкой" "${IC[@]}" COMMENT_BY=iRedTea COMMENT_BODY='![скрин](https://i.io/p.png)'
 sent '<a href="https://i.io/p.png">🖼 картинка</a>'
 

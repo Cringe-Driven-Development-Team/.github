@@ -14,6 +14,8 @@ REPOS=(
   Cringe-Driven-Development-Team/infra
   Cringe-Driven-Development-Team/react
   Cringe-Driven-Development-Team/figma
+  Cringe-Driven-Development-Team/frontend
+  Cringe-Driven-Development-Team/backend
   frontend-park-mail-ru/2026_2_Cringe_Driven_Development
   go-park-mail-ru/2026_2_Cringe_Driven_Development
 )

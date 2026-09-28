@@ -11,10 +11,13 @@ trap 'rm -rf "$TMP"' EXIT
 
 actionlint -no-color -oneline -shellcheck= -pyflakes=
 
+# каждый блок run: | по очереди — в add-to-project.yml их два
 for wf in .github/workflows/*.yml; do
-  awk -f tests/extract-run.awk "$wf" > "$TMP/run.sh"
-  [ -s "$TMP/run.sh" ] || continue
-  shellcheck -s bash -S warning "$TMP/run.sh" || { echo "shellcheck: замечания в $wf"; exit 1; }
+  n=1
+  while awk -v n="$n" -f tests/extract-run.awk "$wf" > "$TMP/run.sh" && [ -s "$TMP/run.sh" ]; do
+    shellcheck -s bash -S warning "$TMP/run.sh" || { echo "shellcheck: замечания в $wf, блок run №$n"; exit 1; }
+    n=$((n + 1))
+  done
 done
 
 # скрипты и тесты лежат файлами — проверяются как есть

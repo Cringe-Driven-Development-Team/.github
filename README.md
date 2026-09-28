@@ -5,7 +5,7 @@
 | Файл | Что делает |
 |---|---|
 | `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, комментарии, PR и ревью |
-| `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску |
+| `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску; после мержа PR закрывает задачи организации, на которые он ссылается |
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
 | `.github/workflows/reminders.yml` | в 10:00 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува; в 10:00, 15:00 и 20:00 сообщает о сбоях самих уведомлений и о новых репозиториях организации |
 | `scripts/reminders.sh` | логика напоминаний и служебных проверок; здесь же список репозиториев |
@@ -55,6 +55,19 @@ jobs:
 
 Репозитории этой организации получают их с уровня организации. Репозиториям других организаций их нужно завести в настройках самого репозитория.
 
+## Задачи фронта и бэка
+
+Код фронтенда и бэкенда лежит в курсовых репозиториях — [frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development) и [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development), а задачи к нему — здесь, в [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) и [backend](https://github.com/Cringe-Driven-Development-Team/backend): так их видят доска, бот и смена спринта.
+
+- Завести задачу — с доски: `+ Add item` → ввести `#` → `frontend` или `backend` → `Create new issue`. Текст без `#` создаёт черновик: он живёт только на доске, не связан ни с репозиторием, ни с PR.
+- Закрыть — строкой в описании PR курсового репозитория: `Closes Cringe-Driven-Development-Team/frontend#N`. Короткое `#N` сослалось бы на сам курсовой репозиторий.
+
+Такие PR мержат менторы, у которых нет прав на наши репозитории, и GitHub может не закрыть задачу сам. Поэтому job `close` в `add-to-project.yml` после мержа в ветку по умолчанию закрывает все задачи организации, на которые PR ссылается ключевым словом (`close`, `fix`, `resolve` в любой форме), и оставляет под задачей «Закрыта мержем …». Уже закрытые не трогает. Для этого `ADD_TO_PROJECT_PAT` нужна запись в задачи репозиториев организации: у fine-grained токена — `Issues: Read and write`, у classic — `public_repo`. Не смог закрыть — job падает, сбой приходит в «🚨 Сбои уведомлений».
+
+Комментарии, которые начинаются с `<!-- auto -->`, бот в чат не пересылает: так помечены служебные комментарии автоматики.
+
+Почему так — [спека](docs/superpowers/specs/2026-09-29-tasks-in-org-design.md).
+
 ## Как вносить правки
 
 Все подключённые репозитории ссылаются на `@main`: мерж сюда сразу действует везде. Поэтому правки — только через PR.
@@ -63,6 +76,7 @@ jobs:
    ```bash
    bash tests/telegram.sh
    bash tests/reminders.sh
+   bash tests/close.sh
    bash tests/lint.sh
    ```
    Нужны `bash`, `jq`, `perl`, GNU `date` и `awk` (всё, кроме `jq`, есть в Git Bash), а также `shellcheck` и `actionlint`.
