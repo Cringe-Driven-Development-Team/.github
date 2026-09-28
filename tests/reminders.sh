@@ -109,11 +109,12 @@ fixture
 when "нет открытых PR — тишина"
 silent
 
-when "запрос покрывает все восемь репозиториев"
+when "запрос покрывает все десять репозиториев"
 missing=""
 for r in Cringe-Driven-Development-Team/.github Cringe-Driven-Development-Team/docs \
   Cringe-Driven-Development-Team/static Cringe-Driven-Development-Team/infra \
-  Cringe-Driven-Development-Team/react Cringe-Driven-Development-Team/figma "$FRONT" "$BACK"; do
+  Cringe-Driven-Development-Team/react Cringe-Driven-Development-Team/figma \
+  Cringe-Driven-Development-Team/frontend Cringe-Driven-Development-Team/backend "$FRONT" "$BACK"; do
   grep -qF "owner: \"${r%%/*}\", name: \"${r#*/}\"" "$TMP/query" || missing="$missing $r"
 done
 if [ -z "$missing" ]; then pass; else fail "в запросе нет:$missing"; fi
@@ -328,6 +329,12 @@ sent "⚠️ не подключён: нет в REPOS (scripts/reminders.sh)" "!
 
 when "новый подключённый репозиторий — без предупреждения" DAILY=false ORG_REPOS="[$(repo figma 2026-09-20T09:00:00Z)]"
 sent "🆕 Новый репозиторий" "figma" "!не подключён"
+
+when "новые репозитории задач frontend и backend подключены" DAILY=false \
+  ORG_REPOS="[$(repo frontend 2026-09-20T09:00:00Z),$(repo backend 2026-09-20T09:00:00Z)]"
+sent_to 1 26 ">frontend</a>" "!не подключён"
+sent_to 2 26 ">backend</a>" "!не подключён"
+only 2
 
 when "два новых репозитория — два сообщения" DAILY=false \
   ORG_REPOS="[$(repo a 2026-09-20T09:00:00Z),$(repo b 2026-09-20T10:00:00Z)]"
