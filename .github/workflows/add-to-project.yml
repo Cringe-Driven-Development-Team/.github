@@ -34,3 +34,59 @@ jobs:
               }
             }' \
             -f project="$PROJECT_ID" -f issue="$ISSUE_ID"
+
+  # Страховка к «Closes Cringe-Driven-Development-Team/<repo>#N» в PR курсовых репозиториев: их мержат
+  # менторы без прав на наши репозитории, и GitHub может не закрыть задачу сам. Мерж не в ветку
+  # по умолчанию задачи не закрывает — как у GitHub
+  close:
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'closed' &&
+      github.event.pull_request.merged &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issues referenced by the merged PR
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          # <repo>#<N> после ключевого слова — по строке на задачу, без повторов. Регистр, как у GitHub,
+          # не важен; имя репозитория — в нижнем, чтобы Frontend#5 и frontend#5 не закрывались дважды
+          REFS=$(printf '%s\n%s\n' "$TITLE" "$BODY" | perl -ne '
+            my $org = quotemeta $ENV{PROJECT_OWNER};
+            while (/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+$org\/([A-Za-z0-9._-]+)#([0-9]+)\b/gi) {
+              print lc($1), "#$2\n";
+            }' | sort -u)
+          [ -n "$REFS" ] || { echo "В PR нет ссылок на задачи $PROJECT_OWNER"; exit 0; }
+          # у PR из форков и Dependabot секретов нет — но и ссылок на наши задачи там не бывает
+          [ -n "$GH_TOKEN" ] || { echo "::error::Не задан секрет ADD_TO_PROJECT_PAT — не закрыл: $(printf '%s' "$REFS" | tr '\n' ' ')"; exit 1; }
+
+          ERR="${RUNNER_TEMP:-/tmp}/gh-close.err"
+          FAILED=""
+          while IFS='#' read -r R N; do
+            API="repos/$PROJECT_OWNER/$R/issues/$N"
+            # у PR тоже есть номер в /issues — его не трогаем
+            if ! STATE=$(gh api "$API" --jq 'if .pull_request then "pr" else .state end' 2>"$ERR"); then
+              echo "::error::Не закрыл $R#$N: $(head -c 200 "$ERR")"
+              FAILED=1
+              continue
+            fi
+            case "${STATE//$'\r'/}" in
+              open) ;;
+              pr) echo "$R#$N — pull request, пропускаю"; continue ;;
+              *)  echo "$R#$N уже закрыта"; continue ;;
+            esac
+            # сначала закрыть, потом объяснить: не закрыли — не остаётся ложного комментария
+            if ! gh api -X PATCH "$API" -f state=closed -f state_reason=completed --silent 2>"$ERR"; then
+              echo "::error::Не закрыл $R#$N: $(head -c 200 "$ERR")"
+              FAILED=1
+              continue
+            fi
+            # <!-- auto --> — служебный комментарий, бот не пересылает его в чат
+            gh api "$API/comments" -f body="<!-- auto -->Закрыта мержем $PR_URL" --silent 2>"$ERR" ||
+              echo "::warning::Закрыл $R#$N, но не оставил комментарий: $(head -c 200 "$ERR")"
+            echo "Закрыл $R#$N"
+          done <<< "$REFS"
+          [ -z "$FAILED" ]
