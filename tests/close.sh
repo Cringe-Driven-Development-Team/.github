@@ -14,7 +14,8 @@ awk -v n=2 -f "$ROOT/tests/extract-run.awk" "$ROOT/.github/workflows/add-to-proj
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # заглушка gh api: задачи — из $GH_ISSUES ({"<repo>#<N>": {...}}), нет ключа — 404;
-# $GH_FAIL — «МЕТОД:<repo>#<N>» через запятую, на них gh падает; вызовы — строками «МЕТОД путь поля» в $CALLS
+# $GH_FAIL — «МЕТОД:<repo>#<N>» через запятую, на них gh падает; $GH_PATCH — ответ на PATCH;
+# вызовы — строками «МЕТОД путь поля» в $CALLS
 shift
 method=""
 path=""
@@ -38,7 +39,8 @@ key=$(printf '%s' "$path" | sed -E 's#^repos/[^/]+/([^/]+)/issues/([0-9]+).*#\1\
 case ",${GH_FAIL-}," in
   *",$method:$key,"*) echo "gh: Resource not accessible by personal access token (HTTP 403)" >&2; exit 1 ;;
 esac
-[ "$method" = GET ] || exit 0
+[ "$method" = POST ] && exit 0
+[ "$method" = PATCH ] && { printf '%s' "$GH_PATCH" | jq -r "$filter"; exit 0; }
 printf '%s' "$GH_ISSUES" | jq -e --arg k "$key" 'has($k)' > /dev/null || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
 printf '%s' "$GH_ISSUES" | jq -r --arg k "$key" ".[\$k] | $filter"
 STUB
@@ -52,7 +54,7 @@ B=repos/$ORG/backend/issues
 # так GitHub заполняет env: пустое описание PR — пустая строка
 DEFAULTS=(
   PROJECT_OWNER="$ORG" GH_TOKEN=test-pat TITLE='WEB-5: Вход' BODY= PR_URL="$PR"
-  GH_ISSUES='{}' GH_FAIL= CALLS="$TMP/calls" RUNNER_TEMP="$TMP"
+  GH_ISSUES='{}' GH_FAIL= GH_PATCH='{"state":"closed"}' CALLS="$TMP/calls" RUNNER_TEMP="$TMP"
 )
 
 # called "вызов" "!вызов" ... — отработал без ошибки; в журнале gh есть одни вызовы и нет других
@@ -128,6 +130,18 @@ when "короткий #N, чужая организация, ссылка бе�
   BODY=$'Closes #5\nCloses frontend-park-mail-ru/2026_2_Cringe_Driven_Development#6\nsee '"$ORG"$'/frontend#7\nCloses '"$ORG"'/frontend#'
 no_calls
 
+when "примеры в коде и HTML-комментариях — не команды, как у GitHub"   BODY=$'Пишите в PR `Closes '"$ORG"$'/frontend#12`
+<!-- пример:
+Closes '"$ORG"$'/frontend#1 -->
+```
+Fixes '"$ORG"$'/backend#3
+```'
+no_calls
+
+when "ключевое слово и ссылка на разных строках — не ссылка" BODY=$'Closes
+'"$ORG"'/frontend#5'
+no_calls
+
 when "PR без описания" BODY=
 no_calls
 
@@ -145,6 +159,10 @@ when "одна не закрылась — вторая закрыта, job па
   GH_ISSUES='{"frontend#5":{"state":"open"},"backend#7":{"state":"open"}}' GH_FAIL='PATCH:frontend#5'
 error "::error::Не закрыл frontend#5"
 if grep -qF "PATCH $B/7 state=closed" "$TMP/calls"; then pass; else fail "backend#7 не закрыта"; fi
+if grep -qF "POST $F/5/comments" "$TMP/calls"; then fail "комментарий к незакрытой задаче"; else pass; fi
+
+when "задача перенесена: PATCH ушёл по редиректу GET-ом и вернул open — ошибка"   BODY="Closes $ORG/frontend#5" GH_ISSUES='{"frontend#5":{"state":"open"}}' GH_PATCH='{"state":"open"}'
+error "::error::Не закрыл frontend#5: GitHub вернул состояние open"
 if grep -qF "POST $F/5/comments" "$TMP/calls"; then fail "комментарий к незакрытой задаче"; else pass; fi
 
 when "задачи с таким номером нет" BODY="Closes $ORG/frontend#99"

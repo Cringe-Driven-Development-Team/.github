@@ -53,10 +53,12 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           # <repo>#<N> после ключевого слова — по строке на задачу, без повторов. Регистр, как у GitHub,
-          # не важен; имя репозитория — в нижнем, чтобы Frontend#5 и frontend#5 не закрывались дважды
-          REFS=$(printf '%s\n%s\n' "$TITLE" "$BODY" | perl -ne '
+          # не важен; имя репозитория — в нижнем, чтобы Frontend#5 и frontend#5 не закрывались дважды.
+          # Код и HTML-комментарии — примеры, а не команды: GitHub их тоже не читает
+          REFS=$(printf '%s\n%s\n' "$TITLE" "$BODY" | perl -0777 -ne '
             my $org = quotemeta $ENV{PROJECT_OWNER};
-            while (/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+$org\/([A-Za-z0-9._-]+)#([0-9]+)\b/gi) {
+            s/<!--.*?(?:-->|\z)//gs; s/```.*?(?:```|\z)//gs; s/`[^`\n]*`//g;
+            while (/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+$org\/([A-Za-z0-9._-]+)#([0-9]+)\b/gi) {
               print lc($1), "#$2\n";
             }' | sort -u)
           [ -n "$REFS" ] || { echo "В PR нет ссылок на задачи $PROJECT_OWNER"; exit 0; }
@@ -79,8 +81,14 @@ jobs:
               *)  echo "$R#$N уже закрыта"; continue ;;
             esac
             # сначала закрыть, потом объяснить: не закрыли — не остаётся ложного комментария
-            if ! gh api -X PATCH "$API" -f state=closed -f state_reason=completed --silent 2>"$ERR"; then
+            if ! NEW=$(gh api -X PATCH "$API" -f state=closed -f state_reason=completed --jq .state 2>"$ERR"); then
               echo "::error::Не закрыл $R#$N: $(head -c 200 "$ERR")"
+              FAILED=1
+              continue
+            fi
+            # перенесённая задача отвечает 301, и gh повторяет PATCH как GET — задача остаётся открытой
+            if [ "${NEW//$'\r'/}" != closed ]; then
+              echo "::error::Не закрыл $R#$N: GitHub вернул состояние ${NEW//$'\r'/} — задача перенесена? Закройте её вручную"
               FAILED=1
               continue
             fi
