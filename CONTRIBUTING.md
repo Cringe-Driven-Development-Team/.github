@@ -6,12 +6,14 @@
 
 ## Где живёт задача
 
-Задача заводится в том репозитории, куда придётся основная часть работы. Заголовок — `<Область>. <Что сделать>`, например `DevOps. Приватный бакет для ноутбуков`.
+Задачи заводятся только в репозиториях организации. У фронта и бэка код лежит в курсовых репозиториях, но задачи там не заводим: их не увидят доска, бот и смена спринта. Для задач в организации есть отдельные репозитории без кода — [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) и [backend](https://github.com/Cringe-Driven-Development-Team/backend).
 
-| Область | Репозиторий задач | Код |
+Репозиторий выбирается по области. Если задача затрагивает несколько областей — по той, куда придётся основная часть работы. Заголовок — `<Область>. <Что сделать>`, например `DevOps. Приватный бакет для ноутбуков`.
+
+| Область | Где заводить задачу | Где код |
 |---|---|---|
-| `Frontend.`, `BFF.` | [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | [frontend-park-mail-ru/2026_2_Cringe_Driven_Development](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development) |
-| `Backend.` | [backend](https://github.com/Cringe-Driven-Development-Team/backend) | [go-park-mail-ru/2026_2_Cringe_Driven_Development](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development) |
+| `Frontend.`, `BFF.` | [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | курсовой — [frontend-park-mail-ru/2026_2_Cringe_Driven_Development](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development) |
+| `Backend.` | [backend](https://github.com/Cringe-Driven-Development-Team/backend) | курсовой — [go-park-mail-ru/2026_2_Cringe_Driven_Development](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development) |
 | `DevOps.` | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | там же |
 | `React.` | [react](https://github.com/Cringe-Driven-Development-Team/react) | там же |
 | `Figma.` | [figma](https://github.com/Cringe-Driven-Development-Team/figma) | — |
@@ -57,7 +59,7 @@
 
 Один PR закрывает одну задачу. Если работа затрагивает несколько репозиториев, PR у задачи несколько, и первый влитый закрыл бы её раньше времени. Поэтому задача делится:
 
-1. Сама задача остаётся в репозитории, куда приходится основная работа. Это родитель.
+1. Сама задача остаётся в репозитории той области, куда приходится основная работа. Это родитель.
 2. На каждый другой репозиторий заводится sub-issue в нём: в родителе `Create sub-issue` → выбрать репозиторий. В неё переезжают пункты «Что сделать» и «Приёмки», которые относятся к этому репозиторию; в родителе остаётся ссылка.
 3. PR в другом репозитории закрывает свою sub-issue. PR в репозитории родителя закрывает родителя и мержится последним.
 
