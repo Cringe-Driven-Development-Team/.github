@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/orgs/Cringe-Driven-Development-Team/projects/1">Доска задач</a> ·
+  <a href="https://github.com/Cringe-Driven-Development-Team/.github/blob/main/CONTRIBUTING.md">Как работать с задачами</a> ·
   <a href="https://cringe-driven-development-team.github.io/docs/">Схемы архитектуры</a> ·
   <a href="https://www.figma.com/design/iWGdAUKc8v8oaIGhM9X20T/Colab">Макеты в Figma</a>
 </p>

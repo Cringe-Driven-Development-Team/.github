@@ -11,6 +11,7 @@
 | `scripts/reminders.sh` | логика напоминаний и служебных проверок; здесь же список репозиториев |
 | `scripts/sprint.sh` | смена спринта: перенос незакрытых задач и сообщение в чат |
 | `tests/` | тесты скриптов и линтер |
+| `CONTRIBUTING.md` | как заводить и закрывать задачи; GitHub показывает его во всех репозиториях организации |
 
 Почему всё устроено так — [спека](docs/superpowers/specs/2026-09-18-central-workflows-design.md).
 
@@ -59,8 +60,7 @@ jobs:
 
 Код фронтенда и бэкенда лежит в курсовых репозиториях — [frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development) и [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development), а задачи к нему — здесь, в [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) и [backend](https://github.com/Cringe-Driven-Development-Team/backend): так их видят доска, бот и смена спринта.
 
-- Завести задачу — с доски: `+ Add item` → ввести `#` → `frontend` или `backend` → `Create new issue`. Текст без `#` создаёт черновик: он живёт только на доске, не связан ни с репозиторием, ни с PR.
-- Закрыть — строкой в описании PR курсового репозитория: `Closes Cringe-Driven-Development-Team/frontend#N`. Короткое `#N` сослалось бы на сам курсовой репозиторий.
+Как завести и закрыть задачу — в [CONTRIBUTING.md](CONTRIBUTING.md). PR курсового репозитория закрывает её строкой `Closes Cringe-Driven-Development-Team/frontend#N` в описании.
 
 Такие PR мержат менторы, у которых нет прав на наши репозитории, и GitHub может не закрыть задачу сам. Поэтому job `close` в `add-to-project.yml` после мержа в ветку по умолчанию закрывает все задачи организации, на которые PR ссылается ключевым словом (`close`, `fix`, `resolve` в любой форме), и оставляет под задачей «Закрыта мержем …». Уже закрытые не трогает. Для этого `ADD_TO_PROJECT_PAT` нужна запись в задачи репозиториев организации: у fine-grained токена — `Issues: Read and write`, у classic — `public_repo`. Не смог закрыть — job падает, сбой приходит в «🚨 Сбои уведомлений».
 
