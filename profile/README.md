@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="https://cellestial.ru"><b>cellestial.ru</b></a> ·
   <a href="https://github.com/orgs/Cringe-Driven-Development-Team/projects/1">Доска задач</a> ·
   <a href="https://github.com/Cringe-Driven-Development-Team/.github/blob/main/CONTRIBUTING.md">Как работать с задачами</a> ·
   <a href="https://cringe-driven-development-team.github.io/docs/">Схемы архитектуры</a> ·
