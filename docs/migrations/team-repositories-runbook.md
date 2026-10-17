@@ -96,7 +96,7 @@ rmdir -- "$KEY_DIR"
 
 В PRIMARY восстановить production environment, reviewers и branch policies из исходной конфигурации, разрешить только main. Значения внести из оригинального хранилища через stdin gh secret set:
 - frontend: production S3 credentials; endpoint/bucket/CDN vars; TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID/TELEGRAM_TOPIC_ID;
-- backend: APIDOG_ACCESS_TOKEN для contract-drift; production SSH/Vault credentials и vars; Telegram. Publishing использует выданный Actions GITHUB_TOKEN;
+- backend: APIDOG_TOKEN для contract-drift; production SSH/Vault credentials и vars; Telegram. Publishing использует выданный Actions GITHUB_TOKEN;
 - COURSE_SYNC_SSH_KEY — repository secret этой пары.
 
 Сверить полный inventory repository/environment/org secret names и vars с YAML всех workflows. Проверить наследование org secrets выбранным PRIMARY. Не унифицировать topics разных областей. До acceptance оба flags false.

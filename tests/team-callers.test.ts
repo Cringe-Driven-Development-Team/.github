@@ -63,4 +63,15 @@ test("callers pin one trusted SHA and pass only sync credentials", () => {
     expect(job.permissions).toEqual({ contents: "read", actions: "read" });
   }
 });
+test.skipIf(area !== "backend")("image publishing excludes PRs, forks and course copies", () => {
+  const login = ci.jobs.docker.steps.find((step: any) => step.name === "Login to GHCR");
+  const publish = ci.jobs.docker.steps.find((step: any) => step.name === "Build and publish");
+  for (const expression of [login.if, publish.with.push]) {
+    expect(enabled(expression)).toBe(true);
+    for (const github of [{ repository: "go-park-mail-ru/2026_2_Cringe_Driven_Development" },
+      { repository: "other/team" }, { ref: "refs/heads/topic" }, { event_name: "pull_request" }]) {
+      expect(enabled(expression, { github })).toBe(false);
+    }
+  }
+});
 
