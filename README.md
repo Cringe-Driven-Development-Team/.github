@@ -107,7 +107,9 @@ Backend код, issues и PR также вместе в [team/backend](https://g
 
 Как завести и закрыть задачу — в [CONTRIBUTING.md](CONTRIBUTING.md).
 Frontend и backend PR: `Closes #N` в соответствующем командном репозитории.
-Review ментора остаётся обязательным в обоих направлениях.
+Review ментора остаётся обязательным; согласованное исключение — backend merge
+от `YarikMix` без Approve при зелёном обязательном CI. PR и защита main сохраняются;
+frontend и другие аккаунты исключение не затрагивает. Подробности — в CONTRIBUTING.md.
 
 Для межрепозиторных PR GitHub может не закрыть задачу сам из-за прав автора merge.
 Job `close` в `add-to-project.yml` сохраняется: после мержа в default branch
