@@ -281,7 +281,7 @@ Cringe-Driven-Development-Team/backend; в фазе A там ещё может �
 
 После рабочих merge сохранить всю принятую историю и перенести её fast-forward в COURSE. Вернуть workflows отдельным reviewed commit; настройки восстановить с учётом новых коммитов. Старые Actions включать только после нужного дерева/settings и остановки новых writers. При чужой записи в COURSE и невозможном FF остановиться, разобрать историю без затирания.
 
-Frontend runtime: существующий stable rollback с сохранённым release/SHA. Backend: явный старый path ghcr.io/go-park-mail-ru/2026_2_cringe_driven_development и сохранённый sha-tag, проверенный pull credential старой организации; override полного image/tag в infra, compose diff перед deploy. Volumes, БД и миграции данных не менять.
+Frontend runtime: существующий stable rollback с сохранённым release/SHA. Backend: явный старый path ghcr.io/go-park-mail-ru/2026_2_cringe_driven_development и сохранённый sha-tag; повторный pull требует проверенный credential старой организации. Если registry недоступен, использовать сохранённый проверенный image/archive и manual override с `pull_policy: never` по [инструкции infra](https://github.com/Cringe-Driven-Development-Team/infra/blob/main/ansible/README.md). Перед восстановлением выключить production flag и дождаться активных deploy; проверить Compose diff, менять только API. Volumes, БД и миграции данных не менять.
 
 Исходный task snapshot используется только для побочных эффектов импорта в замороженном окне. После начала новой работы не восстанавливать всё старое состояние: исправлять лишь доказанный ошибочный diff относительно актуального baseline.
 
