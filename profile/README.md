@@ -23,7 +23,7 @@
 
 | Репозиторий | Что внутри |
 |---|---|
-| [frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development) | фронтенд |
+| [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | фронтенд: код, PR и задачи |
 | [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development) | бэкенд на Go |
 | [react](https://github.com/Cringe-Driven-Development-Team/react) | своя реализация React, публикуется в npm |
 | [static](https://github.com/Cringe-Driven-Development-Team/static) | статика, выкладывается в S3 и раздаётся через CDN |
@@ -33,6 +33,10 @@
 | [.github](https://github.com/Cringe-Driven-Development-Team/.github) | общие workflow: уведомления в Telegram и доска задач |
 
 ## Команда
+
+Frontend перенесён в команду; [учебная копия main](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development)
+сохраняет коммиты без Actions и новых рабочих PR. Backend пока в go-park.
+Порядок переключения — [runbook](https://github.com/Cringe-Driven-Development-Team/.github/blob/main/docs/migrations/team-repositories-runbook.md).
 
 - [Ерофей Гаранин](https://github.com/ManInTheCoat)
 - [Денис Истратов](https://github.com/iRedTea)
