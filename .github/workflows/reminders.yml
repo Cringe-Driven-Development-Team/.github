@@ -56,4 +56,5 @@ jobs:
           MIN_HOURS: ${{ inputs.min_hours || '4' }}
           PAT:       ${{ secrets.ADD_TO_PROJECT_PAT }}
           DAILY:     ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0 7 * * *' }}
+          COURSE_MIGRATED_REPOS: ${{ vars.COURSE_MIGRATED_REPOS }}
         run: bash scripts/reminders.sh

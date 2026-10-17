@@ -1,0 +1,111 @@
+name: Sync accepted main to course repository
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      ci_run_id:
+        required: true
+        type: string
+      automation_ref:
+        required: true
+        type: string
+    secrets:
+      COURSE_SYNC_SSH_KEY:
+        required: true
+      TELEGRAM_BOT_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sync:
+    if: >-
+      (github.repository == 'Cringe-Driven-Development-Team/frontend' ||
+       github.repository == 'Cringe-Driven-Development-Team/backend') &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      vars.COURSE_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: course-sync-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      SOURCE_REPO: ${{ github.repository }}
+      SOURCE_REF: ${{ github.ref }}
+      SHA: ${{ inputs.sha }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      AUTOMATION_REF: ${{ inputs.automation_ref }}
+    steps:
+      - name: Validate request before checkout
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REPO" in
+            Cringe-Driven-Development-Team/frontend|Cringe-Driven-Development-Team/backend) ;;
+            *) echo 'Invalid source repository' >&2; exit 1 ;;
+          esac
+          [ "$SOURCE_REF" = refs/heads/main ] || { echo 'Expected main' >&2; exit 1; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$AUTOMATION_REF" =~ ^[0-9a-f]{40}$ &&
+             "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid sync request' >&2; exit 1; }
+      - name: Checkout trusted automation
+        uses: actions/checkout@v4
+        with:
+          repository: Cringe-Driven-Development-Team/.github
+          ref: ${{ inputs.automation_ref }}
+          path: automation
+          persist-credentials: false
+      - name: Verify CI provenance and required jobs
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          context=$(bash automation/scripts/course-sync-context.sh "$SOURCE_REPO" "$CI_RUN_ID" "$SHA")
+          target=$(jq -r .target <<<"$context" | tr -d '\r')
+          printf 'target=%s\n' "$target" >>"$GITHUB_OUTPUT"
+      - name: Fast-forward the course main
+        env:
+          SYNC_KEY: ${{ secrets.COURSE_SYNC_SSH_KEY }}
+          TARGET: ${{ steps.context.outputs.target }}
+        run: |
+          set -euo pipefail
+          [ -n "$SYNC_KEY" ] || { echo 'Missing COURSE_SYNC_SSH_KEY' >&2; exit 1; }
+          sync_dir=$(mktemp -d "${RUNNER_TEMP:?}/course-sync.XXXXXX")
+          trap 'rm -rf -- "$sync_dir"' EXIT
+          umask 077
+          printf '%s\n' "$SYNC_KEY" >"$sync_dir/key"
+          # GitHub public Ed25519 host key, verified against api.github.com/meta on 2026-10-17.
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >"$sync_dir/known_hosts"
+          printf -v GIT_SSH_COMMAND 'ssh -F /dev/null -i %q -o UserKnownHostsFile=%q -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes' "$sync_dir/key" "$sync_dir/known_hosts"
+          export GIT_SSH_COMMAND
+          git init --quiet --bare --initial-branch=main "$sync_dir/repo.git"
+          git -C "$sync_dir/repo.git" remote add origin "https://github.com/$SOURCE_REPO.git"
+          git -C "$sync_dir/repo.git" remote add course "git@github.com:$TARGET.git"
+          bash automation/scripts/course-sync-git.sh "$sync_dir/repo.git" "$SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Report synchronization failure
+        if: failure()
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ vars.TELEGRAM_CHAT_ID }}
+          TOPIC: ${{ vars.TELEGRAM_TOPIC_ID }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          set -euo pipefail
+          if [ -f automation/scripts/course-sync-notify.sh ]; then
+            bash automation/scripts/course-sync-notify.sh "$SOURCE_REPO" "$SHA" "$RUN_URL"
+          else
+            # Checkout itself may have failed. The fallback uses no repository code.
+            [ -n "$TOKEN" ] && [ -n "$CHAT" ] || { echo 'Missing Telegram configuration' >&2; exit 1; }
+            text=$(printf 'Course synchronization failed\nRepository: %s\nCommit: %s\n%s' "$SOURCE_REPO" "$SHA" "$RUN_URL")
+            args=(--data-urlencode "chat_id=$CHAT" --data-urlencode "text=$text")
+            [ -z "$TOPIC" ] || args+=(-d "message_thread_id=$TOPIC")
+            if ! response=$(curl --silent --fail --connect-timeout 10 --max-time 30 "https://api.telegram.org/bot$TOKEN/sendMessage" "${args[@]}" 2>/dev/null); then
+              echo 'Telegram request failed' >&2
+              exit 1
+            fi
+            jq -e '.ok == true' <<<"$response" >/dev/null 2>&1 || { echo 'Telegram rejected notification' >&2; exit 1; }
+          fi

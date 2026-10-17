@@ -1,5 +1,45 @@
 # .github
 
+## Подготовленная синхронизация учебных копий
+
+`sync-to-course.yml` готовится для миграции разработки в репозитории команды.
+До переключения репозиториев он не подключён к их CI и сам по себе ничего не запускает.
+Дизайн и границы переключения — в [спецификации](docs/superpowers/specs/2026-10-17-team-repositories-migration-design.md).
+
+Workflow принимает полный SHA проверенного коммита (`sha`), его push CI run
+(`ci_run_id`) и полный SHA общей автоматики (`automation_ref`). В caller нужно
+закрепить один и тот же reviewed commit `.github` в `uses` и `automation_ref`.
+Проверки берутся из `CI` самого основного репозитория; успех deploy не требуется.
+Назначение выбирается только из фиксированной карты frontend/backend.
+
+Для включения нужен `COURSE_SYNC_ENABLED` со строкой `true`, отдельный
+`COURSE_SYNC_SSH_KEY` данного назначения и предусмотренное правилами исключение
+для обновления учебного `main`. Секреты production в эту job не передаются.
+GitHub Ed25519 host key закреплён в workflow; при его ротации нужно обновить
+shared commit и оба caller ref после проверки по официальному источнику.
+
+Ошибки оставляют job красным и отправляют одно сообщение через
+`TELEGRAM_BOT_TOKEN` в `TELEGRAM_CHAT_ID` / `TELEGRAM_TOPIC_ID`. Если Telegram
+недоступен, ошибка остаётся в Actions; повторной отправки внутри запуска нет.
+Временный ключ удаляется после завершения push, в том числе после ошибки.
+
+Повторять только sync можно через отдельный ручной workflow основного
+репозитория с исходным CI run id. Это не запускает deploy. Файлы workflow
+копируются вместе с кодом, а Actions в учебных копиях отключаются настройкой
+репозитория в согласованное окно миграции.
+
+Порядок импорта, сверки задач, включения и отката — в
+[runbook](docs/migrations/team-repositories-runbook.md). Подготовка не меняет
+действующие места работы до приёмки соответствующей пары.
+
+Monitoring переключается независимо: repository var `COURSE_MIGRATED_REPOS`
+в `.github` — `[]` (по умолчанию), `["frontend"]`, затем `["frontend","backend"]`.
+После приёмки области reminders исключает её учебную копию и проверяет
+`automation.yml`, `ci.yml` и ручной `sync-to-course.yml` командного репозитория.
+Некорректная phase даёт warning и сохраняет прежний monitoring. После обеих
+миграций PAT обновляют только в organization secret; общий job `close`
+сохраняется для остальных межрепозиторных PR.
+
 Общие workflow организации Cringe-Driven-Development-Team: уведомления в Telegram и добавление issue на доску [Sprint Board](https://github.com/orgs/Cringe-Driven-Development-Team/projects/1).
 
 | Файл | Что делает |

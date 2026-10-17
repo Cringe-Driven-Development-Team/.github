@@ -4,6 +4,7 @@
 # авторам — об одобренных, но не влитых.
 # Env: GH_TOKEN, TOKEN (бот), CHAT, TOPIC (топик ревью), OPS_TOPIC (общий топик), MAP (github-логин → telegram id),
 #      MIN_HOURS (по умолчанию 4), PAT (ADD_TO_PROJECT_PAT), DAILY (true — утренний запуск: срок PAT и дайджест).
+#      COURSE_MIGRATED_REPOS: [], ["frontend"] или ["frontend","backend"] после приёмки соответствующих окон.
 # Для тестов: NOW — «сейчас» в unix-времени, LAST_COMMIT — дата последнего коммита .github.
 set -euo pipefail
 
@@ -37,6 +38,26 @@ TOPIC=${TOPIC:-}
 OPS_TOPIC=${OPS_TOPIC:-$TOPIC}
 DAILY=${DAILY:-true}
 PAT=${PAT:-}
+
+# Это сигнал завершённого переноса для мониторинга, не разрешение sync/deploy.
+PHASE=${COURSE_MIGRATED_REPOS:-[]}
+if ! jq -e '. == [] or . == ["frontend"] or . == ["frontend","backend"]' <<< "$PHASE" >/dev/null 2>&1; then
+  echo '::warning::Некорректный COURSE_MIGRATED_REPOS; сохраняю мониторинг учебных репозиториев'
+  PHASE='[]'
+fi
+FRONT_MIGRATED=false
+BACK_MIGRATED=false
+jq -e 'index("frontend") != null' <<< "$PHASE" >/dev/null && FRONT_MIGRATED=true
+jq -e 'index("backend") != null' <<< "$PHASE" >/dev/null && BACK_MIGRATED=true
+ACTIVE_REPOS=()
+for r in "${REPOS[@]}"; do
+  case "$r" in
+    frontend-park-mail-ru/*) [ "$FRONT_MIGRATED" = true ] && continue ;;
+    go-park-mail-ru/*) [ "$BACK_MIGRATED" = true ] && continue ;;
+  esac
+  ACTIVE_REPOS+=("$r")
+done
+REPOS=("${ACTIVE_REPOS[@]}")
 
 # plural 3 день дня дней → «дня»
 plural () {
@@ -92,6 +113,10 @@ SINCE=$(gh api "repos/$SELF/actions/workflows/reminders.yml/runs?status=success&
 for r in "${REPOS[@]}"; do
   WFS="automation.yml"
   [ "$r" = "$SELF" ] && WFS="automation.yml reminders.yml"
+  if { [ "$r" = Cringe-Driven-Development-Team/frontend ] && [ "$FRONT_MIGRATED" = true ]; } ||
+     { [ "$r" = Cringe-Driven-Development-Team/backend ] && [ "$BACK_MIGRATED" = true ]; }; then
+    WFS="automation.yml ci.yml sync-to-course.yml"
+  fi
   for wf in $WFS; do
     if ! OUT=$(gh api "repos/$r/actions/workflows/$wf/runs?status=failure&created=%3E$SINCE&per_page=1" \
         --jq '[.total_count, (.workflow_runs[0].html_url // "")] | @tsv' 2>/dev/null); then
@@ -102,7 +127,9 @@ for r in "${REPOS[@]}"; do
     [[ "${COUNT:-}" =~ ^[1-9][0-9]*$ ]] || continue
     case "$wf" in
       automation.yml) WHAT="«Автоматизации»" ;;
-      *)              WHAT="«Напоминаний о ревью»" ;;
+      reminders.yml) WHAT="«Напоминаний о ревью»" ;;
+      ci.yml) WHAT="«CI (включая синхронизацию)»" ;;
+      sync-to-course.yml) WHAT="«Sync to course»" ;;
     esac
     OPS=$(printf '%s\n• %s: %s %s %s — <a href="%s">последний</a>' "$OPS" "$(side "$r")" "$COUNT" \
       "$(plural "$COUNT" "упавший запуск" "упавших запуска" "упавших запусков")" "$WHAT" "$LAST_URL")
@@ -112,6 +139,11 @@ done
 # срок токена доски — раз в день: GitHub отдаёт его в заголовке ответа
 if [ "$DAILY" = "true" ]; then
   RENEW="Выпустите новый и обновите секрет в организации, frontend и backend."
+  if [ "$BACK_MIGRATED" = true ]; then
+    RENEW="Выпустите новый и обновите секрет в организации."
+  elif [ "$FRONT_MIGRATED" = true ]; then
+    RENEW="Выпустите новый и обновите секрет в организации и backend."
+  fi
   if [ -z "$PAT" ]; then
     echo "::warning::ADD_TO_PROJECT_PAT недоступен — срок не проверен"
   else
