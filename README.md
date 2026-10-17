@@ -28,6 +28,18 @@ shared commit и оба caller ref после проверки по официа
 копируются вместе с кодом, а Actions в учебных копиях отключаются настройкой
 репозитория в согласованное окно миграции.
 
+Порядок импорта, сверки задач, включения и отката — в
+[runbook](docs/migrations/team-repositories-runbook.md). Подготовка не меняет
+действующие места работы до приёмки соответствующей пары.
+
+Monitoring переключается независимо: repository var `COURSE_MIGRATED_REPOS`
+в `.github` — `[]` (по умолчанию), `["frontend"]`, затем `["frontend","backend"]`.
+После приёмки области reminders исключает её учебную копию и проверяет
+`automation.yml`, `ci.yml` и ручной `sync-to-course.yml` командного репозитория.
+Некорректная phase даёт warning и сохраняет прежний monitoring. После обеих
+миграций PAT обновляют только в organization secret; общий job `close`
+сохраняется для остальных межрепозиторных PR.
+
 Общие workflow организации Cringe-Driven-Development-Team: уведомления в Telegram и добавление issue на доску [Sprint Board](https://github.com/orgs/Cringe-Driven-Development-Team/projects/1).
 
 | Файл | Что делает |

@@ -236,6 +236,15 @@ gh variable set PRODUCTION_ENABLED -R "$PRIMARY" --body true
 
 Monitoring .github variable COURSE_MIGRATED_REPOS: [] до переноса, ["frontend"] после frontend acceptance, ["frontend","backend"] после backend acceptance. Опубликовать соответствующую фазу документации .github и agent-plugins. Для принятой области мониторятся team CI и manual-sync, course исключается. Остальные репозитории не менять.
 
+Подготовленные локальные doc ветки в обоих репозиториях: docs/migration-phase-a
+(только frontend) и docs/migration-phase-b (следующий commit, также backend).
+Сначала публикуется backward-compatible monitoring при пустой phase; doc-A
+публикуется только после frontend acceptance, doc-B — после backend acceptance.
+При публикации doc-B обновить ссылку на backend в frontend README/CLAUDE на
+Cringe-Driven-Development-Team/backend; в фазе A там ещё может быть учебная ссылка.
+Точные подготовительные SHA и проверки фиксируются в preparation journal;
+рабочие SHA/import всё равно пересобираются в каждом окне.
+
 ## Откат
 
 Сначала выключить COURSE_SYNC_ENABLED/PRODUCTION_ENABLED, Actions и все новые writers; дождаться jobs. Сделать актуальные snapshot/bundles.

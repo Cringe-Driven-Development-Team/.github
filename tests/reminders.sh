@@ -62,7 +62,7 @@ DEFAULTS=(
   FIXTURE="$TMP/fixture.json" QUERY_FILE="$TMP/query" CALLS="$TMP/calls"
   GH_TOKEN=test-gh PAT=test-pat DAILY=true PAT_HEADERS="$OK_HEADERS"
   RUNS='{}' RUNS_404= RUNS_FAIL= PREV_RUN=2026-09-20T07:00:00Z
-  ORG_REPOS='[]' ORG_FAIL= NO_AUTOMATION=
+  ORG_REPOS='[]' ORG_FAIL= NO_AUTOMATION= COURSE_MIGRATED_REPOS='[]'
 )
 
 SELF=Cringe-Driven-Development-Team/.github
@@ -395,6 +395,55 @@ if grep -qF "::warning::ADD_TO_PROJECT_PAT недоступен" "$TMP/out"; the
 when "GitHub не ответил на проверку токена — предупреждение в лог" DAILY=true PAT_HEADERS=
 silent
 if grep -qF "::warning::Не проверил срок ADD_TO_PROJECT_PAT" "$TMP/out"; then pass; else fail "нет ::warning::"; fi
+
+# --- поэтапный перенос разработки
+
+fixture
+TEAM_FRONT=Cringe-Driven-Development-Team/frontend
+TEAM_BACK=Cringe-Driven-Development-Team/backend
+when "only_frontend_migrated" DAILY=false COURSE_MIGRATED_REPOS='["frontend"]'
+silent
+if grep -qF "repos/$FRONT/" "$TMP/calls"; then fail "остался запрос к старому frontend"; else pass; fi
+if grep -qF "repos/$BACK/" "$TMP/calls"; then pass; else fail "backend исключён до переноса"; fi
+for wf in ci.yml sync-to-course.yml; do
+  if grep -qF "repos/$TEAM_FRONT/actions/workflows/$wf/runs?" "$TMP/calls"; then pass; else fail "frontend $wf не мониторится"; fi
+done
+if grep -qF "repos/$TEAM_BACK/actions/workflows/ci.yml/" "$TMP/calls"; then fail "backend CI включён раньше переноса"; else pass; fi
+
+when "both_pairs_migrated" DAILY=false COURSE_MIGRATED_REPOS='["frontend","backend"]'
+silent
+for course in "$FRONT" "$BACK"; do
+  if grep -qF "repos/$course/" "$TMP/calls"; then fail "остался запрос к $course"; else pass; fi
+done
+for team in "$TEAM_FRONT" "$TEAM_BACK"; do
+  for wf in ci.yml sync-to-course.yml; do
+    if grep -qF "repos/$team/actions/workflows/$wf/runs?" "$TMP/calls"; then pass; else fail "$team $wf не мониторится"; fi
+  done
+done
+
+when "sync_failure_is_reported" DAILY=false COURSE_MIGRATED_REPOS='["frontend"]' \
+  RUNS="{\"$TEAM_FRONT:ci.yml\":1}"
+sent_to 1 26 "CI" "https://github.com/$TEAM_FRONT/actions/runs/1"
+only 1
+if grep -qF 'created=%3E2026-09-20T07:00:00Z' "$TMP/calls"; then pass; else fail "потеряно окно SINCE"; fi
+
+when "manual_sync_failure_is_reported" DAILY=false COURSE_MIGRATED_REPOS='["frontend","backend"]' \
+  RUNS="{\"$TEAM_BACK:sync-to-course.yml\":1}"
+sent_to 1 26 "Sync to course" "https://github.com/$TEAM_BACK/actions/runs/1"
+only 1
+
+for phase in '{' '["backend"]' '["frontend","unknown"]' '"frontend"'; do
+  when "invalid_phase_is_warning: $phase" DAILY=false COURSE_MIGRATED_REPOS="$phase"
+  silent
+  if grep -qF '::warning::Некорректный COURSE_MIGRATED_REPOS' "$TMP/out"; then pass; else fail "нет предупреждения о phase"; fi
+  for course in "$FRONT" "$BACK"; do
+    if grep -qF "repos/$course/" "$TMP/calls"; then pass; else fail "учебный repo молча исключён"; fi
+  done
+done
+
+when "токен после обоих переносов обновляется только в организации" DAILY=true \
+  COURSE_MIGRATED_REPOS='["frontend","backend"]' PAT_HEADERS="$(exp "2026-09-25 18:00:00 UTC")"
+sent "обновите секрет в организации." "!frontend и backend"
 
 # --- ошибки
 
