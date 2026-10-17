@@ -61,6 +61,34 @@ test "$(git ls-remote "https://github.com/$COURSE.git" refs/heads/main | cut -f1
 
 Открытые рабочие PR сначала завершить или согласованно перенести. Активных writers/runs не должно остаться. Не отменять чужие jobs автоматически. Если main изменился между snapshot и backup, начать снимок заново.
 
+До публикации ветки импорта составить отчёт по сообщениям коммитов, которые
+впервые появятся в PRIMARY/main. Инструмент читает только локальную Git-историю
+и проверенный snapshot; refs и метаданные не меняет, существующий отчёт не затирает.
+
+~~~bash
+bash "$AUTOMATION/scripts/migration-closing-refs.sh" \
+  "$BACKUP_ROOT/course.git" "$BACKUP_ROOT/primary.git" \
+  "$BACKUP_ROOT/before" "$BACKUP_ROOT/historical-closing-references.json"
+jq -r '.candidates[] | .sha as $sha | .references[] |
+  [$sha, .text, .repository, .number, (.primary_issue.id // ""),
+   (.primary_issue.state // ""), (.primary_issue.title // "")] | @tsv' \
+  "$BACKUP_ROOT/historical-closing-references.json" \
+  > "$BACKUP_ROOT/historical-closing-references.tsv"
+~~~
+
+JSON сохраняет полный message и SHA каждого кандидата, найденные короткие,
+квалифицированные и URL-ссылки, а также ID/title/state совпавшей задачи PRIMARY.
+Уже имеющиеся в PRIMARY коммиты исключаются; SHA обеих main должны совпадать
+со свежим snapshot. Это консервативный список кандидатов: все ссылки в сообщении
+с closing keyword требуют ручного разбора, он не имитирует весь парсер GitHub.
+Проверить отчёт вместе с ментором до push/merge импорта и записать проверявшего,
+найденные совпадения и решение в журнал окна. Непонятное или неприемлемое
+совпадение останавливает окно; исторические сообщения не переписываются.
+Выключенные Actions приостанавливают Telegram-автоматику, но не встроенные
+закрытия/уведомления GitHub. Последующая сверка восстановит состояние, однако
+не уберёт timeline events и уже отправленные GitHub notifications.
+Этот preflight не заменяет snapshot/compare после импорта.
+
 ## Отключение writers и доступ
 
 Только после допуска к окну:
