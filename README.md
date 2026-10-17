@@ -1,9 +1,9 @@
 # .github
 
-## Подготовленная синхронизация учебных копий
+## Синхронизация учебных копий
 
-`sync-to-course.yml` готовится для миграции разработки в репозитории команды.
-До переключения репозиториев он не подключён к их CI и сам по себе ничего не запускает.
+`sync-to-course.yml` подключён к frontend CI после переноса фронтенда.
+Backend пока работает по прежней схеме; его caller подготовлен к отдельному окну.
 Дизайн и границы переключения — в [спецификации](docs/superpowers/specs/2026-10-17-team-repositories-migration-design.md).
 
 Workflow принимает полный SHA проверенного коммита (`sha`), его push CI run
@@ -98,15 +98,26 @@ jobs:
 
 ## Задачи фронта и бэка
 
-Код фронтенда и бэкенда лежит в курсовых репозиториях — [frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development) и [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development), а задачи к нему — здесь, в [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) и [backend](https://github.com/Cringe-Driven-Development-Team/backend): так их видят доска, бот и смена спринта.
+Frontend код, issues и PR ведём вместе в [frontend](https://github.com/Cringe-Driven-Development-Team/frontend).
+[Учебный frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development)
+получает те же коммиты main без Actions и новых рабочих PR.
+Backend пока разрабатывается в [go-park](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development),
+задачи — в [team/backend](https://github.com/Cringe-Driven-Development-Team/backend).
 
-Как завести и закрыть задачу — в [CONTRIBUTING.md](CONTRIBUTING.md). PR курсового репозитория закрывает её строкой `Closes Cringe-Driven-Development-Team/frontend#N` в описании.
+Как завести и закрыть задачу — в [CONTRIBUTING.md](CONTRIBUTING.md).
+Frontend PR: `Closes #N`; backend PR пока: `Closes Cringe-Driven-Development-Team/backend#N`.
+Review ментора остаётся обязательным в обоих направлениях.
 
-Такие PR мержат менторы, у которых нет прав на наши репозитории, и GitHub может не закрыть задачу сам. Поэтому job `close` в `add-to-project.yml` после мержа в ветку по умолчанию закрывает все задачи организации, на которые PR ссылается ключевым словом (`close`, `fix`, `resolve` в любой форме), и оставляет под задачей «Закрыта мержем …». Уже закрытые не трогает. Для этого `ADD_TO_PROJECT_PAT` нужна запись в задачи репозиториев организации: у fine-grained токена — `Issues: Read and write`, у classic — `public_repo`. Не смог закрыть — job падает, сбой приходит в «🚨 Сбои уведомлений».
+Для межрепозиторных PR GitHub может не закрыть задачу сам из-за прав автора merge.
+Job `close` в `add-to-project.yml` сохраняется: после мержа в default branch
+закрывает задачи организации по closing keywords и оставляет «Закрыта мержем …».
+Уже закрытые задачи не трогает. `ADD_TO_PROJECT_PAT` требует записи в Issues
+организации; отказ завершает job ошибкой и попадает в ops.
 
 Комментарии, которые начинаются с `<!-- auto -->`, бот в чат не пересылает: так помечены служебные комментарии автоматики.
 
-Почему так — [спека](docs/superpowers/specs/2026-09-29-tasks-in-org-design.md).
+История разделения задач и кода — [старая спека](docs/superpowers/specs/2026-09-29-tasks-in-org-design.md);
+актуальная миграция — [новая схема](docs/superpowers/specs/2026-10-17-team-repositories-migration-design.md).
 
 ## Как вносить правки
 
