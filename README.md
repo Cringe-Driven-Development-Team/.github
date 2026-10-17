@@ -2,8 +2,8 @@
 
 ## Синхронизация учебных копий
 
-`sync-to-course.yml` подключён к frontend CI после переноса фронтенда.
-Backend пока работает по прежней схеме; его caller подготовлен к отдельному окну.
+`sync-to-course.yml` подключён к frontend и backend CI после переноса обеих областей.
+Учебные репозитории получают main, их Actions выключены настройкой GitHub.
 Дизайн и границы переключения — в [спецификации](docs/superpowers/specs/2026-10-17-team-repositories-migration-design.md).
 
 Workflow принимает полный SHA проверенного коммита (`sha`), его push CI run
@@ -101,11 +101,12 @@ jobs:
 Frontend код, issues и PR ведём вместе в [frontend](https://github.com/Cringe-Driven-Development-Team/frontend).
 [Учебный frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development)
 получает те же коммиты main без Actions и новых рабочих PR.
-Backend пока разрабатывается в [go-park](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development),
-задачи — в [team/backend](https://github.com/Cringe-Driven-Development-Team/backend).
+Backend код, issues и PR также вместе в [team/backend](https://github.com/Cringe-Driven-Development-Team/backend).
+[Учебный backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development)
+получает те же коммиты main без Actions и новых рабочих PR.
 
 Как завести и закрыть задачу — в [CONTRIBUTING.md](CONTRIBUTING.md).
-Frontend PR: `Closes #N`; backend PR пока: `Closes Cringe-Driven-Development-Team/backend#N`.
+Frontend и backend PR: `Closes #N` в соответствующем командном репозитории.
 Review ментора остаётся обязательным в обоих направлениях.
 
 Для межрепозиторных PR GitHub может не закрыть задачу сам из-за прав автора merge.
