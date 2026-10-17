@@ -1,6 +1,8 @@
 # Локальная подготовка миграции — 2026-10-17
 
-Выполнена подготовка задач 1–8. Финальное независимое review: ожидается.
+Выполнена подготовка задач 1–8. Финальное независимое review завершено:
+Critical нет; Important с pre-import closing-reference отчётом исправлен
+и проверен RED→GREEN. Один Minor уведомлений отложен, см. ниже.
 Никаких push, PR, merge на GitHub, изменений settings/flags/secrets, deploy или
 отправки сообщений эта подготовка не выполняла. Окна 9–10 ждут согласования.
 
@@ -10,7 +12,7 @@
 
 | Checkout | Локальная ветка | Подготовленный commit / диапазон review |
 | --- | --- | --- |
-| .github/.worktrees/migration-automation | prep/team-repositories-migration | 5bf41b0..5acbbf2 (код); этот журнал добавлен позже |
+| .github/.worktrees/migration-automation | prep/team-repositories-migration | 5bf41b0..f3a426a (код и fix review); этот журнал добавлен позже |
 | migration-prep/frontend | migration/import | 550af0c..e3c2895 |
 | migration-prep/backend | migration/import | 0f4b657..5e9437d |
 | migration-prep/infra | prep/team-backend-image | 9ca55ec..2dfca7a |
@@ -44,7 +46,7 @@ Frontend/backend origin пока указывает на локальный task
 
 - Shared: telegram 134, reminders 120, close 22, sprint 47 assertions;
   Git sync 11 сценариев, CI context 11, notifier 9, workflow blocks 3,
-  import 6, snapshot 9; actionlint/shellcheck.
+  import 6, snapshot 9, historical-reference preflight 5; actionlint/shellcheck.
 - Frontend: Bun 1.4.2 frozen install, check, build; actionlint;
   caller matrix 4 теста / 37 assertions.
 - Backend: Go 1.27.1 tidy -diff, build, make test с race (coverage 65,7%),
@@ -63,7 +65,7 @@ Frontend/backend origin пока указывает на локальный task
 
 ~~~bash
 # .github
-for suite in telegram reminders close sprint course-sync-git course-sync-context course-sync-notify course-sync-workflow course-import migration-state lint; do
+for suite in telegram reminders close sprint course-sync-git course-sync-context course-sync-notify course-sync-workflow course-import migration-state migration-closing-refs lint; do
   bash "tests/$suite.sh"
 done
 CALLER_AREA=frontend CALLER_DIR=/path/to/frontend bun test tests/team-callers.test.ts
@@ -115,4 +117,31 @@ mentor reviews и health на production проверяются только п�
 - Task 6: Ruling: add shared Bun-native YAML caller matrix tests for both applications — verifies PR/main/flags and credential boundaries without new dependencies — cost if wrong: running this optional cross-check requires Bun.
 - Task 7: Ruling: normalize LF checkout endings only in fresh local infra/plugin clones; use pinned deployment libraries in an isolated --target directory and an ephemeral official Go container with /app safe.directory — Windows CRLF broke the fake Docker shebang, host Ansible was too old, and ensurepip was absent — cost if wrong: tests differ from Windows execution; no repository content beyond intended edits or system Python configuration changes.
 - Task 8: Ruling: treat cdd-tasks edits as a reference-map migration and test the prior version plus fresh phase-A/phase-B application scenarios, without five wording-pressure repetitions — discipline rules are unchanged and reference tests use retrieval/application, not persuasion micro-tests — cost if wrong: one sample per phase gives limited stochastic assurance; final whole-change review remains.
+- Final: Ruling: add a read-only historical-reference CLI with real Git regression tests, rather than only an unverified grep example — makes the missing pre-import gate concrete and repeatable with snapshot SHA matching — cost if wrong: conservative candidates need manual review; Python 3 was already required.
+- Final: Ruling: real deploy-key/ruleset write permissions, teacher Actions settings, secret availability, GHCR publish/pull and production health remain gates for tasks 9–10 — user authorized local tasks 1–8 only — cost if wrong: external permissions or runtime problems can still block the approved window; rollout does not start without those checks.
+- Final: Ruling: remote availability of the pinned automation commit is checked only after authorized publication — local ancestry and matching literal pins were verified — cost if wrong: reusable callers fail until the reviewed shared SHA is published; runbook explicitly gates this.
+- Final: Ruling: keep all prepared branches/worktrees as-is rather than offer integration choices — user selected local tasks 1–8 and explicitly deferred rollout; no merge/push requested — cost if wrong: integration remains a later explicit action.
+
+## Отложенный Minor
+
+- Final: minor (deferred): normal and checkout-fallback failure messages omit the direct course-repository URL; source, commit and run URL remain. Add fixed-map destination URL and assertions later; requires updating both caller pins.
+
+## Итог review и сохранённые артефакты
+
+Один свежий final reviewer: Critical — 0, Important — 1 исправлен.
+Реальный локальный preflight smoke: 175 новых frontend коммитов, 0 кандидатов;
+это не заменяет свежий отчёт будущего окна. Весь shared suite после fix прошёл.
+Frontend/backend/infra конфигурация после их успешных проверок не менялась.
+
+Логи, полный ledger и исходный review diff сохранены вне Git:
+migration-prep/artifacts/preparation-verification-2026-10-17/.
+Portable Linux actionlint/shellcheck и gh bridge сохранены в
+migration-prep/artifacts/preparation-tools/bin/; добавить этот каталог и
+существующий jq в PATH для повторных локальных проверок.
+
+Doc-A/B основаны на monitoring commit 5acbbf2. Публикуются обычными PR после
+общей подготовки: при merge на актуальную main сохраняется preflight fix
+f3a426a. Нельзя заменять актуальную main старым деревом doc-ветки.
+Ветки и worktrees сохранены для будущих согласованных окон; удалены только
+временные каталоги исполнения этого плана после сохранения их evidence.
 
