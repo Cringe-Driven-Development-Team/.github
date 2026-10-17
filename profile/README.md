@@ -24,7 +24,7 @@
 | Репозиторий | Что внутри |
 |---|---|
 | [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | фронтенд: код, PR и задачи |
-| [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development) | бэкенд на Go |
+| [backend](https://github.com/Cringe-Driven-Development-Team/backend) | бэкенд на Go: код, PR и задачи |
 | [react](https://github.com/Cringe-Driven-Development-Team/react) | своя реализация React, публикуется в npm |
 | [static](https://github.com/Cringe-Driven-Development-Team/static) | статика, выкладывается в S3 и раздаётся через CDN |
 | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | инфраструктура: Pulumi и Ansible для двух VPS |
@@ -34,8 +34,10 @@
 
 ## Команда
 
-Frontend перенесён в команду; [учебная копия main](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development)
-сохраняет коммиты без Actions и новых рабочих PR. Backend пока в go-park.
+Frontend и backend перенесены в команду.
+[Учебная копия frontend](https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development)
+и [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development)
+сохраняют коммиты main без Actions и новых рабочих PR.
 Порядок переключения — [runbook](https://github.com/Cringe-Driven-Development-Team/.github/blob/main/docs/migrations/team-repositories-runbook.md).
 
 - [Ерофей Гаранин](https://github.com/ManInTheCoat)

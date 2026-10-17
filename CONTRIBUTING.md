@@ -2,15 +2,15 @@
 
 Как завести и закрыть задачу в репозиториях организации — для менторов и для команды. Задачи видны на доске [Scrumban](https://github.com/orgs/Cringe-Driven-Development-Team/projects/1).
 
-Ветки, коммиты и ревью описаны в README репозитория с кодом: [frontend](https://github.com/Cringe-Driven-Development-Team/frontend#как-работать-с-задачами), [backend](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development#как-работать-с-задачами).
+Ветки, коммиты и ревью описаны в README репозитория с кодом: [frontend](https://github.com/Cringe-Driven-Development-Team/frontend#как-работать-с-задачами), [backend](https://github.com/Cringe-Driven-Development-Team/backend#как-работать-с-задачами).
 
 ## Где живёт задача
 
-Задачи заводятся только в репозиториях организации. Frontend уже перенесён:
+Задачи заводятся только в репозиториях организации. Обе области перенесены:
 код, issues и PR вместе в [frontend](https://github.com/Cringe-Driven-Development-Team/frontend).
-Backend пока разрабатывается в go-park, его задачи — в
+Backend код, issues и PR — в
 [backend](https://github.com/Cringe-Driven-Development-Team/backend).
-Учебный frontend — копия main с выключенными Actions, новых рабочих PR там нет.
+Оба учебных репозитория — копии main с выключенными Actions, новых рабочих PR там нет.
 Схема и порядок переноса — в [runbook](docs/migrations/team-repositories-runbook.md).
 
 Репозиторий выбирается по области. Если задача затрагивает несколько областей — по той, куда придётся основная часть работы. Заголовок — `<Область>. <Что сделать>`, например `DevOps. Приватный бакет для ноутбуков`.
@@ -18,7 +18,7 @@ Backend пока разрабатывается в go-park, его задачи 
 | Область | Где заводить задачу | Где код |
 |---|---|---|
 | `Frontend.`, `BFF.` | [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | там же |
-| `Backend.` | [backend](https://github.com/Cringe-Driven-Development-Team/backend) | курсовой — [go-park-mail-ru/2026_2_Cringe_Driven_Development](https://github.com/go-park-mail-ru/2026_2_Cringe_Driven_Development) |
+| `Backend.` | [backend](https://github.com/Cringe-Driven-Development-Team/backend) | там же |
 | `DevOps.` | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | там же |
 | `React.` | [react](https://github.com/Cringe-Driven-Development-Team/react) | там же |
 | `Figma.` | [figma](https://github.com/Cringe-Driven-Development-Team/figma) | — |
@@ -82,17 +82,17 @@ Backend пока разрабатывается в go-park, его задачи 
 
 | Где PR | Строка |
 |---|---|
-| backend PR в go-park до переноса backend | `Closes Cringe-Driven-Development-Team/backend#12` |
 | тот же репозиторий, что и задача | `Closes #12` |
 
-- В курсовом репозитории ссылка только полная: короткое `#12` сошлётся на сам курсовой репозиторий, и задача не закроется.
+- Рабочие frontend/backend PR создаются в командных репозиториях и закрывают свои задачи через `Closes #N`.
 - Строка работает в описании PR. В описании задачи и в комментариях она ничего не закрывает.
 - Задача закрывается при мерже в `main`, карточка уезжает в `Done`. Руками закрывать не нужно.
 - PR, который делает только часть задачи, пишет `Part of …` вместо `Closes …`.
 
 Frontend PR требует review Ярослава и закрывает задачу через `Closes #N`.
-Backend PR пока мержится в go-park; задачу в организации за него закрывает
-автоматика, подробности в [README](README.md#задачи-фронта-и-бэка).
+Backend PR требует review Александра и также закрывает задачу через `Closes #N`.
+Автоматика для остальных межрепозиторных PR сохраняется,
+подробности в [README](README.md#задачи-фронта-и-бэка).
 Обязательное review ментора сохраняется после переноса каждой области.
 
 ### Без pull request
