@@ -13,7 +13,7 @@ REPOS=(
   Cringe-Driven-Development-Team/docs
   Cringe-Driven-Development-Team/static
   Cringe-Driven-Development-Team/infra
-  Cringe-Driven-Development-Team/react
+  Cringe-Driven-Development-Team/frontend-packages
   Cringe-Driven-Development-Team/figma
   Cringe-Driven-Development-Team/frontend
   Cringe-Driven-Development-Team/backend

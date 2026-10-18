@@ -113,11 +113,18 @@ when "запрос покрывает все десять репозиторие
 missing=""
 for r in Cringe-Driven-Development-Team/.github Cringe-Driven-Development-Team/docs \
   Cringe-Driven-Development-Team/static Cringe-Driven-Development-Team/infra \
-  Cringe-Driven-Development-Team/react Cringe-Driven-Development-Team/figma \
+  Cringe-Driven-Development-Team/frontend-packages Cringe-Driven-Development-Team/figma \
   Cringe-Driven-Development-Team/frontend Cringe-Driven-Development-Team/backend "$FRONT" "$BACK"; do
   grep -qF "owner: \"${r%%/*}\", name: \"${r#*/}\"" "$TMP/query" || missing="$missing $r"
 done
 if [ -z "$missing" ]; then pass; else fail "в запросе нет:$missing"; fi
+
+NAME="старый репозиторий React исключён из запроса"
+if grep -qF 'owner: "Cringe-Driven-Development-Team", name: "react"' "$TMP/query"; then
+  fail "запрос всё ещё обращается к старому репозиторию"
+else
+  pass
+fi
 
 fixture "$(pr "$BACK" "API-3: Черновик" 2026-09-18T12:00:00Z true wait:blackHATred req:blackHATred@2026-09-18T12:00:00Z)"
 when "черновик пропущен"
