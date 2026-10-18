@@ -58,6 +58,7 @@ checkout_failure_still_notifies() {
     RUN_URL=https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/101 \
     bash "$TMP/block.sh") >"$out" 2>"$err"
   assert_eq "$(find "$TMP/sent" -type f | wc -l)" 1
+  grep -qF '❌ Course synchronization failed' "$TMP/sent/1"
   grep -q "$source_repo" "$TMP/sent/1"
   grep -q '/actions/runs/101' "$TMP/sent/1"
 }
