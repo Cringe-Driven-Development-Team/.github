@@ -53,9 +53,18 @@ test("rejects_malformed_json", async () => {
   const nullRun = createGitHubApi("secret", fake(() => response(null)));
   assert.equal(await nullRun.getRun(repo, 101), null); // policy rejects the shape with a field-specific error
   const invalidJson = createGitHubApi("secret", fake(() => new Response("not-json")));
-  await assert.rejects(invalidJson.getRun(repo, 101), /JSON/);
+  await assert.rejects(invalidJson.getRun(repo, 101), /run.*JSON/);
   const arrayJobs = createGitHubApi("secret", fake(() => response([])));
   await assert.rejects(arrayJobs.getAttemptJobs(repo, 101, 1), IncompleteJobsError);
+});
+
+test("body_read_timeout_names_resource", async () => {
+  const api = createGitHubApi("secret", fake(() => {
+    const reply = response({});
+    reply.json = async () => { throw new DOMException("request aborted", "AbortError"); };
+    return reply;
+  }));
+  await assert.rejects(api.getRun(repo, 101), /run.*timeout/i);
 });
 
 test("classifies_http_errors", async () => {

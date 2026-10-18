@@ -140,7 +140,10 @@ export function verifyJobs(
       if (matching.length > 1) throw new CheckError(`ambiguous job ${name}`, "one result", String(matching.length), false);
       if (matching.length === 0) continue;
       const row = matching[0]!;
-      if (row.status !== "completed" || row.conclusion !== "success") {
+      if (row.status !== "completed" || typeof row.conclusion !== "string") {
+        throw new CheckError(`job ${name} success`, "completed/success", `${printable(row.status)}/${printable(row.conclusion)}`, true);
+      }
+      if (row.conclusion !== "success") {
         throw new CheckError(`job ${name} success`, "completed/success", `${printable(row.status)}/${printable(row.conclusion)}`, false);
       }
       found.add(name);
