@@ -29,7 +29,7 @@ DEFAULTS=(
 )
 
 when one_failure_message
-sent_to 1 26 'Cringe-Driven-Development-Team/frontend' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' '/actions/runs/101'
+sent_to 1 26 '❌ Course synchronization failed' 'Cringe-Driven-Development-Team/frontend' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' '/actions/runs/101'
 only 1
 [ -f "$TMP/calls" ] && [ "$(wc -l < "$TMP/calls")" -eq 1 ] && pass || fail 'expected exactly one request'
 
