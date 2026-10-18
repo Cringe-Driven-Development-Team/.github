@@ -20,7 +20,7 @@ Backend код, issues и PR — в
 | `Frontend.`, `BFF.` | [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | там же |
 | `Backend.` | [backend](https://github.com/Cringe-Driven-Development-Team/backend) | там же |
 | `DevOps.` | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | там же |
-| `React.` | [react](https://github.com/Cringe-Driven-Development-Team/react) | там же |
+| `React.` | [frontend-packages](https://github.com/Cringe-Driven-Development-Team/frontend-packages) | [packages/react](https://github.com/Cringe-Driven-Development-Team/frontend-packages/tree/main/packages/react) |
 | `Figma.` | [figma](https://github.com/Cringe-Driven-Development-Team/figma) | — |
 
 Префикс называет область, а не исполнителя: задачу `Frontend.` может делать девопс. Исполнитель — в `Assignees`.
