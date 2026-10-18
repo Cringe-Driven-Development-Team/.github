@@ -25,12 +25,21 @@
 |---|---|
 | [frontend](https://github.com/Cringe-Driven-Development-Team/frontend) | фронтенд: код, PR и задачи |
 | [backend](https://github.com/Cringe-Driven-Development-Team/backend) | бэкенд на Go: код, PR и задачи |
-| [react](https://github.com/Cringe-Driven-Development-Team/react) | своя реализация React, публикуется в npm |
+| [frontend-packages](https://github.com/Cringe-Driven-Development-Team/frontend-packages) | учебные библиотеки фронтенда, публикуются в npm |
 | [static](https://github.com/Cringe-Driven-Development-Team/static) | статика, выкладывается в S3 и раздаётся через CDN |
 | [infra](https://github.com/Cringe-Driven-Development-Team/infra) | инфраструктура: Pulumi и Ansible для двух VPS |
 | [figma](https://github.com/Cringe-Driven-Development-Team/figma) | всё, что связано с макетами в Figma |
 | [docs](https://github.com/Cringe-Driven-Development-Team/docs) | архитектурные схемы — [сайт](https://cringe-driven-development-team.github.io/docs/) |
 | [.github](https://github.com/Cringe-Driven-Development-Team/.github) | общие workflow: уведомления в Telegram и доска задач |
+
+## Пакеты frontend-packages
+
+| Пакет | Что внутри | npm |
+|---|---|---|
+| [@cdd-team/react](https://github.com/Cringe-Driven-Development-Team/frontend-packages/tree/main/packages/react) | собственная реализация React | [npm](https://www.npmjs.com/package/@cdd-team/react) |
+| [@cdd-team/zustand](https://github.com/Cringe-Driven-Development-Team/frontend-packages/tree/main/packages/zustand) | управление состоянием | [npm](https://www.npmjs.com/package/@cdd-team/zustand) |
+| [@cdd-team/openapi](https://github.com/Cringe-Driven-Development-Team/frontend-packages/tree/main/packages/openapi) | генерация типов из OpenAPI и типизированный HTTP-клиент | [npm](https://www.npmjs.com/package/@cdd-team/openapi) |
+| [@cdd-team/oxlint-plugin-jsdoc](https://github.com/Cringe-Driven-Development-Team/frontend-packages/tree/main/packages/oxlint-plugin-jsdoc) | правила oxlint для JSDoc | [npm](https://www.npmjs.com/package/@cdd-team/oxlint-plugin-jsdoc) |
 
 ## Команда
 
