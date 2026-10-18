@@ -11,6 +11,11 @@ Workflow принимает полный SHA проверенного комми
 закрепить один и тот же reviewed commit `.github` в `uses` и `automation_ref`.
 Проверки берутся из `CI` самого основного репозитория; успех deploy не требуется.
 Назначение выбирается только из фиксированной карты frontend/backend.
+Проверку исходного CI run и обязательных jobs выполняет локальное Node 24 action
+`actions/course-sync-context/`, загруженное из закреплённого `automation_ref`.
+Оно читает GitHub API с паузами до 5 секунд в пределах 60 секунд и при отказе
+называет конкретное несовпавшее поле или job. Git/SSH-копирование остаётся в
+`scripts/course-sync-git.sh`; во время sync пакеты npm не устанавливаются.
 
 Для включения нужен `COURSE_SYNC_ENABLED` со строкой `true`, отдельный
 `COURSE_SYNC_SSH_KEY` данного назначения и предусмотренное правилами исключение
@@ -132,12 +137,21 @@ Job `close` в `add-to-project.yml` сохраняется: после мерж�
 
 1. Прогнать тесты и линтер — оба должны пройти:
    ```bash
+   npm ci --prefix actions/course-sync-context
+   npm test --prefix actions/course-sync-context
+   npm run typecheck --prefix actions/course-sync-context
+   npm run build --prefix actions/course-sync-context
+   git diff --exit-code -- actions/course-sync-context/dist/main.js
+   bash tests/course-sync-workflow.sh
+   bash tests/course-sync-git.sh
    bash tests/telegram.sh
    bash tests/reminders.sh
    bash tests/close.sh
    bash tests/lint.sh
    ```
-   Нужны `bash`, `jq`, `perl`, GNU `date` и `awk` (всё, кроме `jq`, есть в Git Bash), а также `shellcheck` и `actionlint`.
+   Для action нужны Node 24 и npm; для остальных проверок — `bash`, `jq`, `perl`,
+   GNU `date`, `awk`, `shellcheck` и `actionlint`. Собранный `dist/main.js`
+   коммитится вместе с TypeScript, CI сравнивает его с повторной сборкой.
 2. Открыть PR. Этот репозиторий вызывает свои workflow из той же ветки: открытие PR, пуши и ревью сразу проходят через новую версию, сообщения приходят в боевой топик.
 3. События `issues` и `issue_comment` всегда берут workflow из `main` — их видно только после мержа.
 

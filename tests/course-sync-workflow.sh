@@ -17,6 +17,17 @@ extract() {
 assert_eq() {
   [ "$1" = "$2" ] || { printf 'expected <%s>, got <%s>\n' "$2" "$1" >&2; cat "$err" >&2; exit 1; }
 }
+trusted_action_is_wired() {
+  grep -Fq 'uses: ./automation/actions/course-sync-context' "$WF"
+  grep -Fq 'id: context' "$WF"
+  grep -Fq 'TARGET: ${{ steps.context.outputs.target }}' "$WF"
+  grep -Fq 'ref: ${{ inputs.automation_ref }}' "$WF"
+  grep -Fq 'SOURCE_REPO: ${{ github.repository }}' "$WF"
+  grep -Fq 'CI_RUN_ID: ${{ inputs.ci_run_id }}' "$WF"
+  grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WF"
+  grep -Fq 'contents: read' "$WF"
+  grep -Fq 'actions: read' "$WF"
+}
 invalid_request_is_rejected() {
   extract 1
   defaults=("SOURCE_REPO=$source_repo" SOURCE_REF=refs/heads/main "SHA=$sha" CI_RUN_ID=101 "AUTOMATION_REF=$ref")
@@ -28,7 +39,7 @@ invalid_request_is_rejected() {
   done
 }
 temporary_credentials_are_removed_on_failure() {
-  extract 3
+  extract 2
   mkdir -p "$TMP/job/automation/scripts" "$TMP/runner"
   cat >"$TMP/job/automation/scripts/course-sync-git.sh" <<'CORE'
 #!/usr/bin/env bash
@@ -49,7 +60,7 @@ CORE
   ! grep -q 'fake-private-sync-key' "$out" "$err"
 }
 checkout_failure_still_notifies() {
-  extract 4
+  extract 3
   mkdir -p "$TMP/job" "$TMP/bin" "$TMP/sent"
   cp "$ROOT/tests/stub-curl.sh" "$TMP/bin/curl"
   chmod +x "$TMP/bin/curl"
@@ -67,7 +78,7 @@ if [ "$#" -gt 0 ]; then
   printf 'ok %s\n' "$1"
 else
   failures=0
-  for name in invalid_request_is_rejected temporary_credentials_are_removed_on_failure checkout_failure_still_notifies; do
+  for name in trusted_action_is_wired invalid_request_is_rejected temporary_credentials_are_removed_on_failure checkout_failure_still_notifies; do
     if bash "$0" "$name" >"$TMP/$name.log" 2>&1; then
       cat "$TMP/$name.log"
     else
@@ -77,5 +88,5 @@ else
     fi
   done
   [ "$failures" -eq 0 ] || exit 1
-  echo 'workflow blocks: 3 passed'
+  echo 'workflow blocks: 4 passed'
 fi

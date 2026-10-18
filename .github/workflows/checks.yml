@@ -1,0 +1,47 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  course-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: actions/course-sync-context/package-lock.json
+      - name: Install action dev dependencies
+        working-directory: actions/course-sync-context
+        run: npm ci
+      - name: Test and typecheck action
+        working-directory: actions/course-sync-context
+        run: |
+          npm test
+          npm run typecheck
+      - name: Build and verify committed action
+        run: |
+          npm run build --prefix actions/course-sync-context
+          git diff --exit-code -- actions/course-sync-context/dist/main.js
+      - name: Test sync shell integration
+        run: |
+          bash tests/course-sync-workflow.sh
+          bash tests/course-sync-git.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.0'
+      - name: Install workflow linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Lint workflows and shell
+        run: bash tests/lint.sh
