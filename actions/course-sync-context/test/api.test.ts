@@ -83,3 +83,14 @@ test("times_out_at_ten_seconds", async () => {
     return true;
   });
 });
+
+test("shared_deadline_cancels_request_before_per_request_timeout", async () => {
+  const controller = new AbortController();
+  const api = createGitHubApi("secret", fake((_url, init) => new Promise((_resolve, reject) => {
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  })), 100);
+  const started = Date.now();
+  setTimeout(() => controller.abort(), 10);
+  await assert.rejects(api.getRun(repo, 101, controller.signal), ApiError);
+  assert.ok(Date.now() - started < 80, "shared deadline should cancel before HTTP timeout");
+});

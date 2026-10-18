@@ -1,0 +1,8 @@
+name: Verify course sync CI context
+description: Check accepted main CI provenance and required jobs
+outputs:
+  target:
+    description: Fixed course repository selected from the trusted source repository
+runs:
+  using: node24
+  main: dist/main.js

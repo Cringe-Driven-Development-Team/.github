@@ -1,9 +1,9 @@
 import type { SourceRepo } from "./policy.js";
 
 export interface GitHubApi {
-  getRun(repo: SourceRepo, runId: number): Promise<unknown>;
-  getWorkflow(repo: SourceRepo): Promise<unknown>;
-  getAttemptJobs(repo: SourceRepo, runId: number, attempt: number): Promise<readonly unknown[]>;
+  getRun(repo: SourceRepo, runId: number, deadline?: AbortSignal): Promise<unknown>;
+  getWorkflow(repo: SourceRepo, deadline?: AbortSignal): Promise<unknown>;
+  getAttemptJobs(repo: SourceRepo, runId: number, attempt: number, deadline?: AbortSignal): Promise<readonly unknown[]>;
 }
 
 export class ApiError extends Error {
@@ -30,7 +30,7 @@ export function createGitHubApi(
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 10_000,
 ): GitHubApi {
-  const request = async (path: string): Promise<unknown> => {
+  const request = async (path: string, deadline?: AbortSignal): Promise<unknown> => {
     let response: Response;
     try {
       response = await fetchImpl(`https://api.github.com/${path}`, {
@@ -39,7 +39,7 @@ export function createGitHubApi(
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
         },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: deadline ? AbortSignal.any([AbortSignal.timeout(timeoutMs), deadline]) : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       const timeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
@@ -57,14 +57,14 @@ export function createGitHubApi(
   };
 
   return {
-    getRun: (repo, runId) => request(`repos/${repo}/actions/runs/${runId}`),
-    getWorkflow: repo => request(`repos/${repo}/actions/workflows/ci.yml`),
-    async getAttemptJobs(repo, runId, attempt) {
+    getRun: (repo, runId, deadline) => request(`repos/${repo}/actions/runs/${runId}`, deadline),
+    getWorkflow: (repo, deadline) => request(`repos/${repo}/actions/workflows/ci.yml`, deadline),
+    async getAttemptJobs(repo, runId, attempt, deadline) {
       const result: unknown[] = [];
       const ids = new Set<number>();
       let expectedCount: number | undefined;
       for (let page = 1; ; page++) {
-        const body = record(await request(`repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`));
+        const body = record(await request(`repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`, deadline));
         const totalCount = body?.total_count;
         const jobs = body?.jobs;
         if (!Number.isSafeInteger(totalCount) || Number(totalCount) < 0 || !Array.isArray(jobs)) {
