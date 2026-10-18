@@ -60,13 +60,9 @@ jobs:
           persist-credentials: false
       - name: Verify CI provenance and required jobs
         id: context
+        uses: ./automation/actions/course-sync-context
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          context=$(bash automation/scripts/course-sync-context.sh "$SOURCE_REPO" "$CI_RUN_ID" "$SHA")
-          target=$(jq -r .target <<<"$context" | tr -d '\r')
-          printf 'target=%s\n' "$target" >>"$GITHUB_OUTPUT"
       - name: Fast-forward the course main
         env:
           SYNC_KEY: ${{ secrets.COURSE_SYNC_SSH_KEY }}
