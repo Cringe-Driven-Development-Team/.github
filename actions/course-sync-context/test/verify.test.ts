@@ -59,6 +59,24 @@ test("incomplete_jobs_then_complete", async () => {
   assert.equal(reads, 2);
 });
 
+test("unfinished_required_job_then_success", async () => {
+  let reads = 0;
+  const clock = fakeClock();
+  const api = fakeApi({ getAttemptJobs: async () => ++reads === 1
+    ? [{ ...job(), status: "in_progress", conclusion: null }]
+    : [job()] });
+  assert.equal(await verifyCandidate(candidate, api, clock), candidate.target);
+  assert.equal(reads, 2);
+  assert.equal(clock.elapsed(), 5_000);
+});
+
+test("permanently_unfinished_job_expires_with_specific_error", async () => {
+  const clock = fakeClock();
+  const api = fakeApi({ getAttemptJobs: async () => [{ ...job(), status: "queued", conclusion: null }] });
+  await assert.rejects(verifyCandidate(candidate, api, clock), /job Check success.*queued/);
+  assert.equal(clock.elapsed(), 60_000);
+});
+
 test("attempt_changes_during_read", async () => {
   let reads = 0;
   const attempts: number[] = [];

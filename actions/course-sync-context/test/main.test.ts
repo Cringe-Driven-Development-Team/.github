@@ -31,6 +31,21 @@ test("failure_never_writes_output", async () => {
   assert.deepEqual(output, []);
 });
 
+test("unfinished_job_writes_output_only_after_success", async () => {
+  let reads = 0;
+  const output: string[] = [];
+  const transientApi: GitHubApi = {
+    ...api,
+    getAttemptJobs: async () => ++reads === 1
+      ? [{ id: 1, name: "Check", run_id: 101, run_attempt: 1, status: "in_progress", conclusion: null }]
+      : [{ id: 1, name: "Check", run_id: 101, run_attempt: 1, status: "completed", conclusion: "success" }],
+  };
+  const advancingClock: Clock = { now: () => 0, sleep: async () => assert.deepEqual(output, []) };
+  await executeAction(env, transientApi, advancingClock, line => output.push(line));
+  assert.equal(reads, 2);
+  assert.deepEqual(output, ["target=frontend-park-mail-ru/2026_2_Cringe_Driven_Development\n"]);
+});
+
 test("direct_entry_refuses_invalid_input_without_an_api_request", () => {
   const result = spawnSync(process.execPath, ["--import", "tsx", "src/main.ts"], {
     cwd: new URL("..", import.meta.url),

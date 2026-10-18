@@ -23,7 +23,7 @@ function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 function createGitHubApi(token, fetchImpl = fetch, timeoutMs = 1e4) {
-  const request = async (path, deadline) => {
+  const request = async (path, resource, deadline) => {
     let response;
     try {
       response = await fetchImpl(`https://api.github.com/${path}`, {
@@ -36,27 +36,28 @@ function createGitHubApi(token, fetchImpl = fetch, timeoutMs = 1e4) {
       });
     } catch (error) {
       const timeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-      throw new ApiError(0, true, timeout ? "GitHub API timeout" : "GitHub API network error");
+      throw new ApiError(0, true, timeout ? `GitHub API ${resource} timeout` : `GitHub API ${resource} network error`);
     }
     if (!response.ok) {
       const retryable2 = response.status === 429 || response.status >= 500;
-      throw new ApiError(response.status, retryable2, `GitHub API HTTP ${response.status}`);
+      throw new ApiError(response.status, retryable2, `GitHub API ${resource} HTTP ${response.status}`);
     }
     try {
       return await response.json();
-    } catch {
-      throw new ApiError(response.status, true, "GitHub API invalid JSON");
+    } catch (error) {
+      const timeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      throw new ApiError(response.status, true, timeout ? `GitHub API ${resource} timeout` : `GitHub API ${resource} invalid JSON`);
     }
   };
   return {
-    getRun: (repo, runId, deadline) => request(`repos/${repo}/actions/runs/${runId}`, deadline),
-    getWorkflow: (repo, deadline) => request(`repos/${repo}/actions/workflows/ci.yml`, deadline),
+    getRun: (repo, runId, deadline) => request(`repos/${repo}/actions/runs/${runId}`, "run", deadline),
+    getWorkflow: (repo, deadline) => request(`repos/${repo}/actions/workflows/ci.yml`, "workflow", deadline),
     async getAttemptJobs(repo, runId, attempt, deadline) {
       const result = [];
       const ids = /* @__PURE__ */ new Set();
       let expectedCount;
       for (let page = 1; ; page++) {
-        const body = record(await request(`repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`, deadline));
+        const body = record(await request(`repos/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100&page=${page}`, `jobs attempt ${attempt} page ${page}`, deadline));
         const totalCount = body?.total_count;
         const jobs = body?.jobs;
         if (!Number.isSafeInteger(totalCount) || Number(totalCount) < 0 || !Array.isArray(jobs)) {
@@ -205,7 +206,10 @@ function verifyJobs(jobsByAttempt, snapshot, requiredJobs) {
       if (matching.length > 1) throw new CheckError(`ambiguous job ${name}`, "one result", String(matching.length), false);
       if (matching.length === 0) continue;
       const row = matching[0];
-      if (row.status !== "completed" || row.conclusion !== "success") {
+      if (row.status !== "completed" || typeof row.conclusion !== "string") {
+        throw new CheckError(`job ${name} success`, "completed/success", `${printable(row.status)}/${printable(row.conclusion)}`, true);
+      }
+      if (row.conclusion !== "success") {
         throw new CheckError(`job ${name} success`, "completed/success", `${printable(row.status)}/${printable(row.conclusion)}`, false);
       }
       found.add(name);
