@@ -229,8 +229,8 @@ pending-доставки в боевой Telegram при проверке. Пе�
 Локальная автоматическая проверка `bun test tests/snapshot.test.ts` оставляет
 исходную WAL-базу открытой, восстанавливает только снимок, сверяет `pending`/`sent`,
 ID и повторную доставку GitHub/Apidog, затем проверяет `/health` и отсутствие
-сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS
-ещё не выполнялось; его результат фиксируется при интеграции infra.
+сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS выполнено в Task 9 с синтетическими
+строками и выключенным sender; результат и ограничения записаны в журнале ниже.
 
 ## Переключение без двойной отправки
 
@@ -352,17 +352,53 @@ worker. При сетевом обрыве или аварии после при
 
 ## Журнал живой приёмки
 
-В этом коммите выполнены только локальные проверки. Для каждого пункта ниже
+Инфраструктурная приёмка выполнена в Task 9 (подробности ниже), без сообщений
+в Telegram. Настоящие доставки и переключение ещё не приняты. Для каждого пункта ниже
 вписать UTC-время, SHA/digest, идентификаторы доставок/строк, команды и результат
 без ключей, подписей и полного payload. Pending нельзя считать проверкой.
 
 | Проверка | Фактический результат |
 | --- | --- |
-| Публикация SHA в GHCR, pull с VPS | Pending — после merge Task 8 |
-| Infra sub-issue #20 и API-проверка связи | Pending — контроллер Task 8 |
-| GitHub signed delivery, health, duplicate | Pending — Tasks 9–10 |
+| Публикация SHA в GHCR, pull с VPS | SHA `08e7968fa0d39dd5f25fe8495c58d78006a26653`, digest `sha256:30718ed06926bff66627502361185c2ca6ebca78b20b044ce4d8bba92f12e858`; anonymous pull с VPS успешен |
+| Infra sub-issue #20 и API-проверка связи | infra#70 подтверждена через sub_issues API, закрыта после merge PR #73 |
+| GitHub signed delivery, health, duplicate | Task 9: health 200; синтетические GitHub/Apidog: неверная подпись 401, первая доставка 202, повтор 200; конфликт GitHub ID 409. Настоящая GitHub delivery pending |
 | Apidog live header, fixture и тестовый чат | Pending — Task 10 |
-| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Pending — Task 9 |
+| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Выполнено в Task 9 с синтетическими строками, подробности ниже |
 | Репетиция отката и отсутствие двойной отправки | Pending — до переключения Task 10 |
 | Граница Actions/worker, GitHub/Apidog в боевых темах | Pending — Task 10 |
 | Board, close, reminders после переключения и отката | Pending — Task 10 |
+
+Источник инфраструктурных результатов — [infra RUNBOOK на проверенном main](https://github.com/Cringe-Driven-Development-Team/infra/blob/edc13058522c850c3cac5cfeb46ba278a74c5c10/RUNBOOK.md#фактическая-проверка-infra70-2026-10-24-utc).
+`systemctl start restic-backup` завершился `Result=success`, `ExecMainStatus=0`.
+Snapshot `d8b71852ca25c0c3bedd7faa0f4a47a20c41f20261972cf79785b99f75b8e20e`
+создан `2026-10-24T21:33:58Z` и восстановлен командой:
+
+```sh
+restic restore d8b71852ca25c0c3bedd7faa0f4a47a20c41f20261972cf79785b99f75b8e20e --host auxiliary --target /var/tmp/hooks-restore.K7QIjA --include /var/lib/docker/volumes/hooks_hooks_data/_data/snapshots/queue.sqlite
+```
+
+Изолированная проверка в закреплённом образе с `--network none` без worker дала
+`PRAGMA integrity_check=ok`, сохранённые pending/sent и stable-ID duplicate.
+Синтетический статус sent и message ID были заданы скриптом и не доказывают
+доставку в Telegram. После удаления тестовых строк создан и отдельно восстановлен
+чистый snapshot `837743262111103e2929288a77b24cb46376c94ec3c71c4a55158abdfd7b1088`
+(`2026-10-24T21:37:06Z`): integrity ok, ноль тестовых deliveries/outbox.
+Обычное восстановление выполнять из этого или более позднего чистого snapshot:
+первый тестовый архив содержит синтетическую pending-строку.
+
+Infra PR #73 merged в `edc13058522c850c3cac5cfeb46ba278a74c5c10`;
+[post-merge run 40139285195](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40139285195)
+успешен, включая production apply/verify. Sender оставлен false.
+
+Для продолжения Task 10 нужно отдельное разрешение владельца на создание org
+webhook и Apidog target, настройку Telegram credentials, изменение org variable,
+включение sender и тестовые сообщения. До него эти действия не выполняются.
+Read-only проверка доступа 2026-10-25: текущий GitHub token не позволяет прочитать
+org hooks (404, требуется `admin:org_hook`) и `TELEGRAM_EVENTS_SOURCE` (403,
+требуются org-admin права/Actions variables permission). Это ограничение доступа,
+а не подтверждение отсутствия hook или variable; их текущее состояние неизвестно.
+Контроллер read-only подтвердил существующие темы: Apidog `6033`, GitHub `26`,
+Code Review `1513` в чате `-1003713420351`; отправка не проверялась.
+Для Apidog остаются нужны доступ владельца к Notifications, настоящая доставка,
+подтверждение signature header (в Vault provisional `X-Apidog-Signature`) и
+обезличенная fixture. #20 пока не закрывать.
