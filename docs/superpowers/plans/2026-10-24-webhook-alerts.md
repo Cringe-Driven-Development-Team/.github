@@ -94,7 +94,7 @@
 
 ### Task 6: Уведомления Apidog
 
-**Files:** Create `services/webhook-alerts/src/apidog.ts`, `tests/apidog.test.ts`, `tests/fixtures/apidog/`; modify `src/http.ts`, `src/config.ts`, `src/worker.ts`.
+**Files:** Create `services/webhook-alerts/src/apidog.ts`, `tests/apidog.test.ts`, `tests/fixtures/apidog/`; modify `src/http.ts`, `src/config.ts`, `src/worker.ts`, `src/main.ts`.
 
 **Interfaces:** `formatApidog(delivery: Delivery, config: FormatConfig): OutgoingMessage[]`; `extractApidogDeliveryId(raw: Uint8Array, parsed: unknown, now: number): string`.
 
@@ -102,6 +102,7 @@
 - [ ] Write `tests/apidog.test.ts`: correct HMAC SHA-1 to configured header accepts; wrong/missing header rejects without storage; endpoint/schema/document/test results map to configured topic; missing object/URL stays readable; duplicate ID/body window is stable.
 - [ ] Run `bun test tests/apidog.test.ts`; expect failure.
 - [ ] Implement signature and robust payload projection based on observed fixture, keeping raw payload intact for replay.
+- [ ] Wire `main.ts` to a combined GitHub/Apidog projector that preserves GitHub `.reviewGroup`; when sending is enabled, require Telegram config and start the worker, while disabled mode continues durable intake without sending. Add a focused enabled/disabled integration test.
 - [ ] Run `bun test tests/apidog.test.ts tests/http.test.ts`; expect success.
 - [ ] Commit with `feat: receive Apidog notifications`.
 
