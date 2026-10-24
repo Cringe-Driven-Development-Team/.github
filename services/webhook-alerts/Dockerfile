@@ -1,4 +1,5 @@
 FROM oven/bun:1.4.4-alpine
+LABEL org.opencontainers.image.source="https://github.com/Cringe-Driven-Development-Team/.github"
 RUN apk add --no-cache wget
 WORKDIR /app
 COPY package.json bun.lock ./
