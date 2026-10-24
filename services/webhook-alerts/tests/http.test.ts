@@ -6,7 +6,8 @@ import { loadConfig } from '../src/config';
 import { createApp, type AcceptDelivery, type IncomingDelivery } from '../src/http';
 
 const secret = 'local-test-secret';
-const config = loadConfig({ GITHUB_WEBHOOK_SECRET: secret });
+const apidogEnv = { APIDOG_SIGNATURE_KEY: 'test-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
+const config = loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret });
 const encoder = new TextEncoder();
 const json = encoder.encode('{ "message": "Привет 🌍" }\n');
 const sign = (raw: Uint8Array) => `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
@@ -32,22 +33,22 @@ function app(accept: AcceptDelivery = () => 'accepted', checkDb = () => {}) {
 describe('configuration', () => {
   test('requires a nonempty webhook secret without exposing its value', () => {
     expect(() => loadConfig({})).toThrow('GITHUB_WEBHOOK_SECRET');
-    expect(() => loadConfig({ GITHUB_WEBHOOK_SECRET: '  ' })).toThrow('GITHUB_WEBHOOK_SECRET');
+    expect(() => loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: '  ' })).toThrow('GITHUB_WEBHOOK_SECRET');
   });
 
   test('defaults to paused sending, port 8080 and persistent database path', () => {
     expect(config.sendEnabled).toBe(false);
     expect(config.port).toBe(8080);
     expect(config.databasePath).toBe('/data/queue.sqlite');
-    expect(loadConfig({ GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'true' }).sendEnabled).toBe(true);
+    expect(loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' }).sendEnabled).toBe(true);
   });
 
   test('rejects malformed flags, invalid ports and empty database paths', () => {
     for (const port of ['0', '-1', '65536', '8080junk', '1.5', '']) {
-      expect(() => loadConfig({ GITHUB_WEBHOOK_SECRET: secret, PORT: port })).toThrow('PORT');
+      expect(() => loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, PORT: port })).toThrow('PORT');
     }
-    expect(() => loadConfig({ GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'yes' })).toThrow('WEBHOOK_ALERTS_SEND_ENABLED');
-    expect(() => loadConfig({ GITHUB_WEBHOOK_SECRET: secret, DATABASE_PATH: '' })).toThrow('DATABASE_PATH');
+    expect(() => loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'yes' })).toThrow('WEBHOOK_ALERTS_SEND_ENABLED');
+    expect(() => loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, DATABASE_PATH: '' })).toThrow('DATABASE_PATH');
   });
 });
 
@@ -129,9 +130,8 @@ describe('GitHub ingress', () => {
     expect((await app().fetch(request(json, { 'x-github-event': 'future-event' }))).status).toBe(202);
   });
 
-  test('returns 404 for unknown routes including the not-yet-wired Apidog route', async () => {
+  test('returns 404 for unknown routes', async () => {
     expect((await app().request('/unknown')).status).toBe(404);
-    expect((await app().request('/webhooks/apidog', { method: 'POST' })).status).toBe(404);
   });
 
   test('rejects advertised bodies over one MiB before reading their stream', async () => {

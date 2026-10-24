@@ -4,6 +4,7 @@ import type { SendResult } from './telegram';
 import { formatGithub, formatGithubReviewGroup, githubReview, type FormatConfig } from './github';
 import type { GithubApi } from './github-api';
 import { ReviewGroups } from './review-groups';
+import { formatApidog, type FormatConfig as ApidogFormatConfig } from './apidog';
 
 interface Projector {
   (delivery: Delivery): Promise<OutgoingMessage[]>;
@@ -92,4 +93,10 @@ export function createGithubProjector(api: GithubApi, config: FormatConfig = {})
   return Object.assign((delivery: Delivery) => formatGithub(delivery, api, config), {
     reviewGroup: (deliveries: Delivery[]) => formatGithubReviewGroup(deliveries, api, config),
   });
+}
+
+export function createProjector(api: GithubApi, config: FormatConfig & ApidogFormatConfig): WorkerDeps['project'] {
+  const github = createGithubProjector(api, config);
+  return Object.assign(async (delivery: Delivery) => delivery.source === 'apidog'
+    ? formatApidog(delivery, config) : github(delivery), { reviewGroup: github.reviewGroup });
 }

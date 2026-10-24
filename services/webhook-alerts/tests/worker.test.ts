@@ -148,13 +148,6 @@ test('poller stops after abort and does not overlap work', async () => {
   expect(rows(path)[0]).toMatchObject({ status: 'sent', telegram_message_id: 42, attempts: 1 });
 });
 
-test('enabled sender fails startup until a real projector is wired', async () => {
-  const child = Bun.spawn([process.execPath, 'run', 'src/main.ts'], { cwd: join(import.meta.dir, '..'), env: { ...Bun.env, GITHUB_WEBHOOK_SECRET: 'local', WEBHOOK_ALERTS_SEND_ENABLED: 'true', DATABASE_PATH: '/not-used/queue.sqlite' }, stdout: 'pipe', stderr: 'pipe' });
-  expect(await child.exited).not.toBe(0);
-  expect(await new Response(child.stderr).text()).toContain('projector');
-});
-
-
 test('logs include HTTP status but never Telegram body, payload, card or bot token', async () => {
   const { store } = queue();
   const logs: string[] = [];

@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
-import { verifyGithub } from './auth';
+import { verifyApidog, verifyGithub } from './auth';
 import type { Config } from './config';
+import { apidogEvent, extractApidogDeliveryId } from './apidog';
 import type { AcceptResult } from './store';
 export type { AcceptResult } from './store';
 
 export interface IncomingDelivery {
   source: 'github' | 'apidog';
-  deliveryId: string;
+  deliveryId?: string;
   event: string;
   raw: Uint8Array;
 }
@@ -64,7 +65,9 @@ export function createApp(deps: {
     return c.json({ status: 'ok' });
   });
 
-  app.post('/webhooks/github', async c => {
+  app.post('/webhooks/:source', async c => {
+    const source = c.req.param('source');
+    if (source !== 'github' && source !== 'apidog') return c.notFound();
     let raw: Uint8Array;
     try { raw = await readBoundedBody(c.req.raw); }
     catch (error) {
@@ -73,23 +76,32 @@ export function createApp(deps: {
         : c.json({ error: 'invalid_body' }, 400);
     }
 
-    const signature = c.req.header('X-Hub-Signature-256') ?? '';
-    if (!verifyGithub(raw, signature, deps.config.githubWebhookSecret)) {
-      return c.json({ error: 'invalid_signature' }, 401);
-    }
+    const valid = source === 'github'
+      ? verifyGithub(raw, c.req.header('X-Hub-Signature-256') ?? '', deps.config.githubWebhookSecret)
+      : verifyApidog(raw, c.req.header(deps.config.apidogSignatureHeader) ?? '', deps.config.apidogSignatureKey);
+    if (!valid) return c.json({ error: 'invalid_signature' }, 401);
 
-    const deliveryId = c.req.header('X-GitHub-Delivery')?.trim();
-    const event = c.req.header('X-GitHub-Event')?.trim();
-    if (!deliveryId || !event) return c.json({ error: 'missing_delivery_metadata' }, 400);
+    let deliveryId: string | undefined;
+    let event: string;
+    if (source === 'github') {
+      deliveryId = c.req.header('X-GitHub-Delivery')?.trim();
+      event = c.req.header('X-GitHub-Event')?.trim() ?? '';
+      if (!deliveryId || !event) return c.json({ error: 'missing_delivery_metadata' }, 400);
+    } else event = 'notification';
     if (c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
       return c.json({ error: 'json_required' }, 415);
     }
 
-    try { JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); }
+    let parsed: unknown;
+    try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); }
     catch { return c.json({ error: 'invalid_json' }, 400); }
 
+    if (source === 'apidog') {
+      deliveryId = extractApidogDeliveryId(raw, parsed, Date.now());
+      event = apidogEvent(parsed);
+    }
     let result: AcceptResult;
-    try { result = await deps.accept({ source: 'github', deliveryId, event, raw }); }
+    try { result = await deps.accept({ source, ...(deliveryId ? { deliveryId } : {}), event, raw }); }
     catch { return c.json({ error: 'storage_unavailable' }, 503); }
     if (result === 'conflict') return c.json({ error: 'delivery_conflict' }, 409);
     return c.json({ status: result }, result === 'duplicate' ? 200 : 202);

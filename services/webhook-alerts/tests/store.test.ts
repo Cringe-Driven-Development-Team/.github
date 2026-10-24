@@ -187,7 +187,7 @@ test('real HTTP acceptance survives reopening and returns duplicate or conflict 
   const path = databasePath();
   const store = open(path);
   const secret = 'test-only-secret';
-  const config = loadConfig({ GITHUB_WEBHOOK_SECRET: secret });
+  const config = loadConfig({ GITHUB_WEBHOOK_SECRET: secret, APIDOG_SIGNATURE_KEY: 'test-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' });
   const request = (body = raw) => new Request('http://localhost/webhooks/github', {
     method: 'POST', body: new Uint8Array(body), headers: {
       'content-type': 'application/json', 'x-github-event': 'issues', 'x-github-delivery': 'http-1',
