@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Real image contract: health, durable intake across recreation, snapshot CLI.
+# Real image contract: publishing source, health, persistence, snapshot CLI.
 # Build first: docker build -t webhook-alerts:test services/webhook-alerts
 set -euo pipefail
 image=${1:-webhook-alerts:test}
+source_repository=$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')
+[ "$source_repository" = 'https://github.com/Cringe-Driven-Development-Team/.github' ] || {
+  echo "image source must identify the publishing repository; found: $source_repository" >&2
+  exit 1
+}
 name="webhook-alerts-test-$$"
 volume="$name-data"
 cleanup() {

@@ -33,6 +33,14 @@ Workflow `webhook-alerts-image.yml` публикует только push в `mai
 SHA-тег и registry digest записать в infra issue/PR. Локальный Docker image ID
 не заменяет registry manifest digest. Сборка использует контекст
 `services/webhook-alerts`; доступ к GHCR — `GITHUB_TOKEN` с `packages: write`.
+Dockerfile явно задаёт `org.opencontainers.image.source` на
+`https://github.com/Cringe-Driven-Development-Team/.github`, переопределяя source
+базового образа Bun. Docker smoke проверяет label в собранном образе.
+[GitHub рекомендует этот label для связи package с репозиторием и доступа workflow](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+Если финализация manifest всё ещё отвечает `denied`, проверить в package settings
+связь с `.github`, `Manage Actions access` для этого репозитория и разрешённое
+создание packages в организации; успешный login и загрузка слоёв сами по себе
+не подтверждают право опубликовать manifest. До успешной публикации digest pending.
 Перед deploy проверить доступность pull с VPS; приватному package нужны отдельные
 read credentials на VPS. Образ работает пользователем `bun`, слушает `8080`,
 содержит `wget`; постоянный том монтируется в `/data` с правом записи пользователя
