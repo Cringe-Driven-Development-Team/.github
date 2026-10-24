@@ -122,22 +122,22 @@
 
 **Files:** Create `.github/workflows/webhook-alerts-image.yml`, `services/webhook-alerts/README.md`; modify `.github/workflows/telegram.yml`, `README.md`, relevant `tests/telegram.sh` and `tests/lint.sh`; keep `.github/workflows/reminders.yml` and `add-to-project.yml` behavior.
 
-**Interfaces:** organization variable `TELEGRAM_EVENTS_SOURCE=webhook` disables only job `notify` in reusable `telegram.yml`; unset/other value enables it. `WEBHOOK_ALERTS_SEND_ENABLED=false` keeps worker paused while ingest runs; fixed GHCR SHA tag feeds infra Task 9.
+**Interfaces:** organization variable `TELEGRAM_EVENTS_SOURCE=webhook` disables only job `notify` in reusable `telegram.yml`; unset/other value enables it. `WEBHOOK_ALERTS_SEND_ENABLED=false` keeps worker paused while ingest runs. GHCR full-SHA tag traces the commit; serialized publication preserves an existing tag. Infra Task 9 pins the published registry manifest digest, `ghcr.io/cringe-driven-development-team/webhook-alerts@sha256:<64 hex>`, rather than the tag.
 
 - [ ] Write failing workflow test: org variable skips only event `notify`, while board and reminders remain available; test Docker image boots `/health`, persists `/data` and can run snapshot CLI.
 - [ ] Run workflow/test checks; expect failure.
 - [ ] Add image build/publish on main, operation guide for GitHub organization webhook and Apidog target, secret names, shadow ingest, cutover, boundary reconciliation, rollback and redelivery. Add job-level flag in `telegram.yml`; leave default as old sender.
 - [ ] Run `bun test`, `bunx tsc --noEmit`, Docker build, `bash tests/telegram.sh`, `bash tests/reminders.sh`, `bash tests/close.sh`, `bash tests/lint.sh`; expect all green.
-- [ ] Create infra sub-issue of .github#20 with the image/snapshot contract and merge order in both issues; confirm GitHub sub-issue relationship through API.
-- [ ] Commit and open `.github` PR with `Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/20`; merge to publish a fixed image tag, but leave old sender as default. Parent issue remains open.
+- [ ] Before opening the Task 8 PR, create infra sub-issue of .github#20 with the image/snapshot contract and merge order in both issues; confirm GitHub sub-issue relationship through API.
+- [ ] Commit and open `.github` PR with `Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/20`; merge and verify SHA-tag publication, then record its registry manifest digest in both issues for Task 9. Leave old sender as default. Parent issue remains open; external steps stay pending until performed and verified.
 
 ### Task 9: VPS/Restic integration (separate infra sub-issue)
 
 **Files in `infra`:** Modify `ansible/roles/restic_backup/templates/restic-backup.service.j2`, `ansible/inventory/group_vars/auxiliary/vars.yml`, `ansible/roles/hooks/defaults/main.yml` or only group vars for image settings, `RUNBOOK.md`, `ansible/README.md`; add a meaningful verification in `ansible/verify.yml` if the existing check cannot detect a missing snapshot. Put infra spec/plan beside these files if this task grows beyond a small integration.
 
-**Interfaces:** `ExecStartPre` executes `docker compose -f /opt/hooks/compose.yml exec -T hooks bun run src/cli.ts snapshot --output /data/snapshots/queue.sqlite`; `ExecStart` backs up the snapshot, Caddy volumes and `/opt/hooks`, excluding the live SQLite file. `hooks_image` uses the fixed SHA tag built by Task 8.
+**Interfaces:** `ExecStartPre` executes `docker compose -f /opt/hooks/compose.yml exec -T hooks bun run src/cli.ts snapshot --output /data/snapshots/queue.sqlite`; `ExecStart` backs up the snapshot, Caddy volumes and `/opt/hooks`, excluding the live SQLite file. `hooks_image` pins the registry manifest digest published by Task 8: `ghcr.io/cringe-driven-development-team/webhook-alerts@sha256:<64 hex>`. Keep the full-SHA tag alongside it for traceability, not as the deployment reference.
 
-- [ ] Recheck infra sub-issue relationship, image tag and snapshot contract from Task 8 before changing the VPS.
+- [ ] Recheck infra sub-issue relationship, published registry manifest digest and corresponding SHA tag, pull access from the VPS, and snapshot contract from Task 8 before changing the VPS. Do not substitute a local Docker image ID for the registry manifest digest.
 - [ ] Write a targeted test or check for rendered systemd unit and Restic path list: snapshot command precedes `restic backup`, live `queue.sqlite` is absent. Run it and observe failure.
 - [ ] Implement unit/path changes and document restore. Keep existing auxiliary/prod separation and HTTPS healthcheck.
 - [ ] Run Ansible syntax/check and targeted test; on VPS run snapshot → Restic → restore in isolated directory with Telegram disabled, verify integrity, pending/sent rows and duplicate key.

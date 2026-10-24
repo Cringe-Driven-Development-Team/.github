@@ -39,9 +39,12 @@ read credentials на VPS. Образ работает пользователе�
 образа. В infra задать `hooks_image` этим digest reference, `hooks_command: []`,
 `hooks_port: 8080`, `hooks_data_path: /data`.
 
-Порядок: PR Task 8 с `Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/20` → успешная публикация SHA →
-infra sub-issue родителя #20 и PR Task 9 (образ, snapshot → Restic → restore) →
-живая приёмка и переключение Task 10 → финальный PR, закрывающий #20.
+Порядок: создать infra sub-issue родителя #20 и проверить связь через API →
+открыть и влить PR Task 8 с
+`Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/20` →
+успешная публикация SHA-тега и запись registry digest в обеих issues →
+PR Task 9 (образ по digest, snapshot → Restic → restore) → живая приёмка и
+переключение Task 10 → финальный PR, закрывающий #20.
 Связь infra issue должна быть именно GitHub sub-issue, проверенной через API,
 а договор образа/снимка и порядок merge записываются в обеих issues. До этих
 внешних действий Task 8 полностью не завершена. Публикация и merge этого кода
