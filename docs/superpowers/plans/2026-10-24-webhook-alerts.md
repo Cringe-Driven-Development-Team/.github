@@ -36,7 +36,7 @@
 
 **Files:** Create `services/webhook-alerts/package.json`, `bun.lock`, `tsconfig.json`, `Dockerfile`, `.dockerignore`, `src/config.ts`, `src/auth.ts`, `src/http.ts`, `src/main.ts`, `tests/http.test.ts`; modify `.github/workflows/checks.yml` to run `bun test`, `bunx tsc --noEmit`, Docker build.
 
-**Interfaces:** `loadConfig(env: Record<string,string|undefined>): Config`; `verifyGithub(raw: Uint8Array, signature: string, secret: string): boolean`; `verifyApidog(raw: Uint8Array, signature: string, secret: string): boolean`; `createApp(deps: {config: Config; accept: AcceptDelivery}): Hono`. `AcceptDelivery` accepts `{source, deliveryId, event, raw}` and returns `accepted | duplicate | conflict`.
+**Interfaces:** `loadConfig(env: Record<string,string|undefined>): Config`; `verifyGithub(raw: Uint8Array, signature: string, secret: string): boolean`; `verifyApidog(raw: Uint8Array, signature: string, secret: string): boolean` (only HMAC primitive here; Task 6 wires the Apidog route and configurable header); `createApp(deps: {config: Config; accept: AcceptDelivery}): Hono`. `AcceptDelivery` accepts `{source, deliveryId, event, raw}` and returns `accepted | duplicate | conflict`.
 
 - [ ] Write `tests/http.test.ts`: valid GitHub official HMAC vector reaches `accept` with exact raw bytes; wrong/malformed signature returns 401; missing `X-GitHub-Delivery` returns 400; invalid JSON returns 400; duplicate ID with altered body returns 409; unknown path returns 404; both `Content-Length` and streamed oversize cases return 413; SQLite error maps to 503; `/health` checks DB callback.
 - [ ] Run `bun test tests/http.test.ts`; expect failures for missing modules.
@@ -84,7 +84,7 @@
 
 **Files:** Create `services/webhook-alerts/src/review-groups.ts`, `tests/review-groups.test.ts`; modify `src/store.ts`, `src/worker.ts`, `src/github.ts`.
 
-**Interfaces:** `ReviewGroups.record(delivery: Delivery, now: number): void`; `ReviewGroups.releaseDue(now: number): number`; key `repository + PR number + reviewer login`; store keeps due time, source delivery IDs and review IDs. `releaseDue` inserts outbox rows transactionally under stable `(review_group, group_id, ordinal)` keys and returns the number released.
+**Interfaces:** `ReviewGroups.record(delivery: Delivery, now: number): void`; `ReviewGroups.releaseDue(now: number, project: (deliveries: Delivery[]) => Promise<OutgoingMessage[]>): Promise<number>`; key `repository + PR number + reviewer login`; store keeps due time, source delivery IDs and review IDs. `releaseDue` projects the group, then inserts outbox rows transactionally under stable `(review_group, group_id, ordinal)` keys and returns the number released.
 
 - [ ] Write `tests/review-groups.test.ts`: two `commented` deliveries within 180 seconds make one alert after last+180 seconds; restart preserves timer; approved/changes requested are immediate and do not duplicate already grouped comments; PR opened with reviewers creates two independently retryable outbox rows.
 - [ ] Run `bun test tests/review-groups.test.ts`; expect failure.
