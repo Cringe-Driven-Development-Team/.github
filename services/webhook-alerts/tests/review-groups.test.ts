@@ -238,3 +238,48 @@ test('a leased verdict for another reviewer does not delay an unrelated due grou
   expect(sent).toHaveLength(1); expect(sent[0]!.html).toContain('Комментарии к PR');
   await worker(store, sent, 300000); expect(sent).toHaveLength(2); expect(sent[1]!.html).toContain('Апрув');
 });
+
+test('an intermediate leased comment preserves one continuous three-comment series', async () => {
+  const { store, path } = open(); const sent: OutgoingMessage[] = [];
+  review(store, 1, 1000); await worker(store, sent, 1000);
+  review(store, 2, 180000); expect(store.claimUnprepared(180000, 120000)).toHaveLength(1);
+  review(store, 3, 182000); await worker(store, sent, 182000);
+  expect(sent).toHaveLength(0);
+  await worker(store, sent, 300000); expect(sent).toHaveLength(0);
+  await worker(store, sent, 361999); expect(sent).toHaveLength(0);
+  await worker(store, sent, 362000);
+  expect(sent).toHaveLength(1); expect(sent[0]!.html).toContain('5 комментариев');
+  expect(sent[0]!.button?.url).toEndWith('pullrequestreview-1');
+  await worker(store, sent, 600000); expect(sent).toHaveLength(1);
+  expect(outbox(path).map(row => [row.origin_type, row.origin_id, row.ordinal])).toEqual([['review_group', 1, 0]]);
+});
+
+test('a leased intermediate comment does not bridge a genuine gap of at least 180 seconds', async () => {
+  const { store, path } = open(); const sent: OutgoingMessage[] = [];
+  review(store, 1, 1000); await worker(store, sent, 1000);
+  review(store, 2, 400000); expect(store.claimUnprepared(400000, 120000)).toHaveLength(1);
+  review(store, 3, 402000); await worker(store, sent, 402000);
+  expect(sent).toHaveLength(1); expect(sent[0]!.button?.url).toEndWith('pullrequestreview-1');
+  await worker(store, sent, 520000); expect(sent).toHaveLength(1);
+  await worker(store, sent, 581999); expect(sent).toHaveLength(1);
+  await worker(store, sent, 582000);
+  expect(sent).toHaveLength(2); expect(sent[1]!.html).toContain('3 комментария');
+  expect(sent[1]!.button?.url).toEndWith('pullrequestreview-2');
+  expect(outbox(path).map(row => [row.origin_id, row.ordinal])).toEqual([[1, 0], [2, 0]]);
+});
+
+test('a leased predecessor blocks its review key while other keys and ordinary deliveries progress', async () => {
+  const { store, path } = open(); const sent: OutgoingMessage[] = [];
+  review(store, 1, 1000); await worker(store, sent, 1000);
+  review(store, 2, 180000); store.claimUnprepared(180000, 120000);
+  review(store, 3, 182000); review(store, 4, 182000, 'approved', 'other');
+  store.accept({ source: 'github', event: 'pull_request', deliveryId: 'unrelated-pr', receivedAt: 182000,
+    raw: Buffer.from(JSON.stringify({ ...prFixture, pull_request: { ...prFixture.pull_request, requested_reviewers: [] } })) });
+  await worker(store, sent, 182000);
+  expect(sent).toHaveLength(2); expect(sent.map(message => message.topic)).toEqual([26, 1513]);
+  expect(sent[0]!.html).toContain('Открыт pull request'); expect(sent[1]!.html).toContain('other');
+  expect(store.claimUnprepared(182001, 100)).toHaveLength(0);
+  const db = new Database(path);
+  try { expect(db.query("SELECT prepared FROM deliveries WHERE delivery_id = 'review-3'").get()).toEqual({ prepared: 0 }); }
+  finally { db.close(); }
+});

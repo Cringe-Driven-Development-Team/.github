@@ -127,8 +127,26 @@ export class Store {
   claimUnprepared(now: number, leaseMs: number): Delivery[] {
     this.checkLease(now, leaseMs);
     return this.db.transaction(() => {
-      const rows = this.db.query<DeliveryRow, [number, number]>(`SELECT * FROM deliveries
-        WHERE prepared = 0 AND (lease_until IS NULL OR lease_until <= ?) ORDER BY id LIMIT ?`).all(now, CLAIM_LIMIT);
+      const pending = this.db.query<DeliveryRow, []>(
+        'SELECT * FROM deliveries WHERE prepared = 0 ORDER BY received_at, id',
+      ).all();
+      const rows: DeliveryRow[] = [];
+      const reviewKeys = new Set<string>();
+      for (const row of pending) {
+        let review;
+        try { review = githubReview(delivery(row)); }
+        catch { /* Invalid input still reaches preparation and its safe diagnostic. */ }
+        if (review) {
+          const key = JSON.stringify([review.repository, review.number, review.reviewer]);
+          if (reviewKeys.has(key)) continue;
+          // Reserve the key even if its earliest source is leased: a later
+          // comment must not overtake a source that bridges the same series.
+          reviewKeys.add(key);
+        }
+        if (row.lease_until !== null && row.lease_until > now) continue;
+        rows.push(row);
+        if (rows.length === CLAIM_LIMIT) break;
+      }
       const leaseUntil = now + leaseMs;
       for (const row of rows) {
         this.db.query('UPDATE deliveries SET lease_until = ? WHERE id = ?').run(leaseUntil, row.id);
