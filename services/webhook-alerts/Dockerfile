@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY src ./src
-RUN mkdir -p /data && chown bun:bun /data
+RUN mkdir -p /data/snapshots && chmod 700 /data/snapshots && chown bun:bun /data /data/snapshots
 USER bun
 EXPOSE 8080
 CMD ["bun", "run", "src/main.ts"]

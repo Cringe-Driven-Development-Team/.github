@@ -63,6 +63,60 @@ live-проверке. Generic object `id` ключом доставки не с
 ID с разными телами; `202` — сохранено; `200` — дубликат. Payload без валидной
 подписи не сохраняется.
 
-Публикация образа, переключение Actions, snapshot/restore и боевое включение
-выполняются последующими задачами плана; текущий runbook фиксирует приём и его
-оставшуюся live-проверку.
+## Согласованный снимок SQLite и изолированное восстановление
+
+Снимок работающей WAL-базы создаётся без остановки сервиса:
+
+```sh
+docker compose exec -T hooks bun run src/cli.ts snapshot --output /data/snapshots/queue.sqlite
+```
+
+CLI использует `DATABASE_PATH` (по умолчанию `/data/queue.sqlite`) и не требует
+настроек Telegram или webhook-ключей. Он выполняет `VACUUM INTO` в уникальный
+временный файл рядом с результатом, проверяет `PRAGMA integrity_check`, вызывает
+`fsync` файла и каталога и атомарно заменяет готовый снимок. Файл имеет права
+`0600`, новый каталог — `0700`. Выходной путь не может совпадать с работающей БД,
+в том числе через symbolic/hard link. При обычной ошибке команда возвращает
+ненулевой код, сохраняет предыдущий снимок и удаляет временные файлы. Прежний
+снимок удерживается временной hard link до завершения синхронизации каталога;
+катастрофический отказ файловой системы может помешать и откату.
+
+Restic должен запускаться **только после успешного завершения CLI** и сохранять
+только готовый `/data/snapshots/queue.sqlite` из тома сервиса. Работающие
+`/data/queue.sqlite`, `queue.sqlite-wal`, `queue.sqlite-shm` и временные файлы
+снимка в резервную копию очереди не входят. Интеграция unit Restic выполняется
+отдельной задачей infra.
+
+Проверка восстановления из готового файла (из каталога `services/webhook-alerts`):
+
+```sh
+restore_dir=$(mktemp -d)
+cp /path/to/restored/snapshots/queue.sqlite "$restore_dir/queue.sqlite"
+bun -e '
+  import { Database } from "bun:sqlite";
+  const db = new Database(process.argv[1], { readonly: true });
+  try {
+    console.log(db.query("PRAGMA integrity_check").all());
+    console.log(db.query("SELECT id, source, delivery_id, dedupe_kind FROM deliveries ORDER BY id").all());
+    console.log(db.query("SELECT id, origin_id, status, telegram_message_id FROM outbox ORDER BY id").all());
+  } finally { db.close(); }
+' "$restore_dir/queue.sqlite"
+```
+
+Ожидается `integrity_check: ok`, сохранённые ID и состояния `pending`/`sent`.
+Для проверки достаточно одного файла, WAL исходной БД не нужен. Проверять в
+изолированном каталоге с остановленным worker; если запускается сервис,
+обязательно установить `WEBHOOK_ALERTS_SEND_ENABLED=false`. Не воспроизводить
+pending-доставки в боевой Telegram при проверке. Перед заменой рабочей базы
+остановить сервис, сохранить текущую базу с её sidecar-файлами отдельно,
+установить восстановленный файл с владельцем процесса и правами `0600`, затем
+запустить с отключённой отправкой; проверить очередь и только потом включать worker.
+
+Локальная автоматическая проверка `bun test tests/snapshot.test.ts` оставляет
+исходную WAL-базу открытой, восстанавливает только снимок, сверяет `pending`/`sent`,
+ID и повторную доставку GitHub/Apidog, затем проверяет `/health` и отсутствие
+сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS
+ещё не выполнялось; его результат фиксируется при интеграции infra.
+
+Публикация образа, переключение Actions и боевое включение выполняются следующими
+задачами плана; live-проверка Apidog по-прежнему остаётся обязательной.
