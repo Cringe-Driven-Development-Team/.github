@@ -1,6 +1,8 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Store, Delivery, OutgoingMessage } from './store';
 import type { SendResult } from './telegram';
+import { formatGithub, type FormatConfig } from './github';
+import type { GithubApi } from './github-api';
 
 interface WorkerDeps {
   store: Store;
@@ -61,4 +63,8 @@ export async function startWorker(deps: WorkerDeps & { signal: AbortSignal }): P
     try { await setTimeout(1000, undefined, { signal: deps.signal }); }
     catch { if (deps.signal.aborted) break; }
   }
+}
+
+export function createGithubProjector(api: GithubApi, config: FormatConfig = {}): WorkerDeps['project'] {
+  return delivery => formatGithub(delivery, api, config);
 }
