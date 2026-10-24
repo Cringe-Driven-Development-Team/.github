@@ -6,6 +6,7 @@ import { openStore } from './store';
 
 if (import.meta.main) {
   const config = loadConfig(Bun.env);
+  if (config.sendEnabled) throw new Error('Telegram sender requires a configured event projector');
   mkdirSync(dirname(config.databasePath), { recursive: true });
   const store = openStore(config.databasePath);
   const app = createApp({
@@ -14,5 +15,5 @@ if (import.meta.main) {
     accept: delivery => store.accept(delivery),
   });
   Bun.serve({ port: config.port, hostname: '0.0.0.0', fetch: app.fetch, maxRequestBodySize: MAX_BODY_BYTES });
-  // No worker starts until durable intake and delivery are implemented and explicitly enabled.
+  // A later formatter task wires startWorker with the real event projector.
 }

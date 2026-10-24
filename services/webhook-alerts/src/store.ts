@@ -159,6 +159,26 @@ export class Store {
     }).immediate();
   }
 
+  markSent(id: number, telegramMessageId: number): void {
+    this.db.query("UPDATE outbox SET status = 'sent', telegram_message_id = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'leased'").run(telegramMessageId, id);
+  }
+
+  markRetry(id: number, dueAt: number, errorCode: string): void {
+    this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = ? WHERE id = ? AND status = 'leased'").run(dueAt, errorCode, id);
+  }
+
+  markFailed(id: number, errorCode: string): void {
+    this.db.query("UPDATE outbox SET status = 'failed', lease_until = NULL, error_code = ? WHERE id = ? AND status = 'leased'").run(errorCode, id);
+  }
+
+  useFallback(id: number): void {
+    this.db.query("UPDATE outbox SET html = fallback_html, fallback_html = NULL WHERE id = ? AND status = 'leased' AND fallback_html IS NOT NULL").run(id);
+  }
+
+  retryFailed(id: number, now: number): boolean {
+    return this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'failed'").run(now, id).changes === 1;
+  }
+
   checkHealth(): void { this.db.query('SELECT 1 FROM deliveries LIMIT 1').get(); }
   close(): void { this.db.close(); }
 
