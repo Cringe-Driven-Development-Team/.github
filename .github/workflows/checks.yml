@@ -9,6 +9,23 @@ permissions:
   contents: read
 
 jobs:
+  webhook-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Install webhook service dependencies
+        working-directory: services/webhook-alerts
+        run: bun install --frozen-lockfile
+      - name: Test and typecheck webhook service
+        working-directory: services/webhook-alerts
+        run: |
+          bun test
+          bunx tsc --noEmit
+      - name: Build webhook service image
+        run: docker build -t webhook-alerts:test services/webhook-alerts
   course-sync:
     runs-on: ubuntu-latest
     steps:
