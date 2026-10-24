@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Прогоняет скрипт из .github/workflows/telegram.yml на подставных событиях.
-# Нужны bash, jq, perl, GNU date и awk. Запуск: bash tests/telegram.sh
+# Нужны bash, jq, perl, GNU date, awk и Bun. Запуск: bash tests/telegram.sh
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# Verify the job gate as well as the legacy sender's extracted shell below.
+bun test "$ROOT/tests/webhook-workflows.test.ts" || exit 1
 source "$ROOT/tests/lib.sh"
 
 SCRIPT="$TMP/script.sh"

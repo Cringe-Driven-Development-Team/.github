@@ -8,6 +8,8 @@ on:
 
 jobs:
   notify:
+    # Unset/other values retain the Actions sender until the explicit cutover.
+    if: vars.TELEGRAM_EVENTS_SOURCE != 'webhook'
     runs-on: ubuntu-latest
     # одиночные комментарии ревью приходят по одному событию: следующий комментарий того же ревьювера
     # к тому же PR отменяет ждущий запуск, и в чат уходит одно сообщение на серию.

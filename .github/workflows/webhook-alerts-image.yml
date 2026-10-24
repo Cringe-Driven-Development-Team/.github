@@ -1,0 +1,56 @@
+name: Webhook alerts image
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: github.repository == 'Cringe-Driven-Development-Team/.github' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: webhook-alerts-image-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish commit image
+        env:
+          REGISTRY_OWNER: ${{ github.repository_owner }}
+          IMAGE_SHA: ${{ github.sha }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repository="${REGISTRY_OWNER,,}/webhook-alerts"
+          tag="sha-$IMAGE_SHA"
+          image="ghcr.io/$repository:$tag"
+          probe_dir=$(mktemp -d)
+          trap 'rm -rf "$probe_dir"' EXIT
+          registry_token=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+            --user "$REGISTRY_USER:$REGISTRY_TOKEN" --get \
+            --data-urlencode 'service=ghcr.io' --data-urlencode "scope=repository:$repository:pull" \
+            https://ghcr.io/token | jq -er '.token | select(type == "string" and length > 0)')
+          echo "::add-mask::$registry_token"
+          status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+            --header "Authorization: Bearer $registry_token" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            --output "$probe_dir/manifest.json" --write-out '%{http_code}' \
+            "https://ghcr.io/v2/$repository/manifests/$tag")
+          case "$status" in
+            200) echo "Commit image already exists: $image; keeping the published image"; exit 0 ;;
+            404)
+              jq -e '.errors | type == "array" and length > 0 and all(.[]; .code == "MANIFEST_UNKNOWN" or .code == "NAME_UNKNOWN")' \
+                "$probe_dir/manifest.json" >/dev/null || { echo '::error::Registry did not confirm a missing image'; exit 1; } ;;
+            *) echo "::error::Registry image lookup failed (HTTP $status)"; exit 1 ;;
+          esac
+          docker build -t "$image" services/webhook-alerts
+          docker push "$image"

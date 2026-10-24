@@ -1,0 +1,6 @@
+{
+  "notificationId": "synthetic-notification-1",
+  "event": "endpoint.updated",
+  "object": { "name": "Public API", "url": "https://example.com/apidog/object" },
+  "extra": "private-extra-field"
+}

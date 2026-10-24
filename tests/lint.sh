@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Проверяет все workflow: actionlint — YAML и выражения, shellcheck — скрипты из run: |.
 # Встроенный в actionlint вызов shellcheck на Windows зависает, поэтому он запускается отдельно.
-# Нужны actionlint, shellcheck и awk. Запуск: bash tests/lint.sh
+# Нужны actionlint, shellcheck, awk и Bun. Запуск: bash tests/lint.sh
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -10,6 +10,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 actionlint -no-color -oneline -shellcheck= -pyflakes=
+# Check the event gate and execute the publisher with a local Docker boundary stub.
+bun test tests/webhook-workflows.test.ts
 
 # каждый блок run: | по очереди — в add-to-project.yml их два
 for wf in .github/workflows/*.yml; do
