@@ -61,6 +61,21 @@ describe('GitHub event projection', () => {
     for (const s of ['⚒️ 1 коммит', '· frontend ·', '/tree/task%3C1%3E', '• abcdef0 feat: первое']) expect(m?.html).toContain(s);
     expect(m?.html).not.toContain('из main'); expect(m?.html).not.toContain('тело');
   });
+  test.each([false, true])('organization push intake suppresses default branches, tags and invalid refs before API enrichment (forced=%s)', async forced => {
+    for (const [ref, defaultBranch] of [
+      ['refs/heads/main', 'main'], ['refs/heads/trunk', 'trunk'],
+      ['refs/tags/v1', 'main'], ['refs/heads/', 'main'], ['', 'main'], ['main', 'main'],
+    ]) {
+      const p = push(forced); p.ref = ref!; p.repository.default_branch = defaultBranch!;
+      const warnings: unknown[] = [];
+      expect(await formatGithub(delivery('push', p), api(), { ...config, warn: w => warnings.push(w) })).toEqual([]);
+      expect(warnings).toEqual([]);
+    }
+  });
+  test('a branch named main remains eligible when the repository default is trunk', async () => {
+    const p = push(); p.ref = 'refs/heads/main'; p.repository.default_branch = 'trunk';
+    expect(await formatGithub(delivery('push', p), api(), config)).toHaveLength(1);
+  });
   test('deleted and zero-distinct pushes are silent', async () => {
     const p = push(); p.commits[0]!.distinct = false;
     expect(await formatGithub(delivery('push', p), api(), config)).toEqual([]);

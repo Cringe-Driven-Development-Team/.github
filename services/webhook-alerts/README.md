@@ -5,9 +5,46 @@
 SQLite. При `WEBHOOK_ALERTS_SEND_ENABLED=false` (по умолчанию) worker не запускается:
 приём и `/health` работают без Telegram, payload остаётся для последующей обработки.
 
+## Образ, CI и порядок интеграции
+
+`checks.yml` проверяет `bun test`, `bunx tsc --noEmit`, сборку Docker и настоящий
+контейнер: `/health`, сохранность доставки в `/data` после пересоздания и snapshot
+CLI. Локально из корня репозитория:
+
+```sh
+(cd services/webhook-alerts && bun install --frozen-lockfile && bun test && bunx tsc --noEmit)
+docker build -t webhook-alerts:test services/webhook-alerts
+bash tests/webhook-alerts-docker.sh webhook-alerts:test
+bash tests/telegram.sh
+bash tests/reminders.sh
+bash tests/close.sh
+bash tests/lint.sh
+```
+
+Workflow `webhook-alerts-image.yml` публикует только push в `main` основного
+репозитория. Контракт имени: `ghcr.io/cringe-driven-development-team/webhook-alerts:sha-<40-символьный SHA main>`.
+Нет плавающего `latest`: в infra закрепляется полный SHA успешного запуска
+публикации, а digest из GHCR записывается в PR. Сборка использует контекст
+`services/webhook-alerts`; доступ к GHCR — `GITHUB_TOKEN` с `packages: write`.
+Перед deploy проверить доступность pull с VPS; приватному package нужны отдельные
+read credentials на VPS. Образ работает пользователем `bun`, слушает `8080`,
+содержит `wget`; постоянный том монтируется в `/data` с правом записи пользователя
+образа. В infra задать `hooks_image` этим тегом, `hooks_command: []`,
+`hooks_port: 8080`, `hooks_data_path: /data`.
+
+Порядок: PR Task 8 с `Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/20` → успешная публикация SHA →
+infra sub-issue родителя #20 и PR Task 9 (образ, snapshot → Restic → restore) →
+живая приёмка и переключение Task 10 → финальный PR, закрывающий #20.
+Связь infra issue должна быть именно GitHub sub-issue, проверенной через API,
+а договор образа/снимка и порядок merge записываются в обеих issues. До этих
+внешних действий Task 8 полностью не завершена. Публикация и merge этого кода
+сами по себе не меняют отправителя.
+
 ## Настройки
 
-Все значения поступают из окружения процесса; реальные ключи хранить в Vault.
+Все значения поступают из окружения процесса. В infra они задаются словарём
+`vault_hooks_env` в Ansible Vault; роль `hooks` рендерит `/opt/hooks/.env` с правами
+`0600`. Не коммитить открытый `.env`, ключи, подписи или необезличенный payload.
 
 | Переменная | Требование |
 | --- | --- |
@@ -26,6 +63,48 @@ SQLite. При `WEBHOOK_ALERTS_SEND_ENABLED=false` (по умолчанию) wor
 При отправке работает единый projector GitHub/Apidog с сохранением группировки ревью.
 `SIGTERM`/`SIGINT` прекращает приём, дожидается worker и закрывает SQLite.
 
+Организационная Actions variable `TELEGRAM_EVENTS_SOURCE` — отдельная настройка
+GitHub, не env сервиса. Строка `webhook` выключает только job `notify` reusable
+`telegram.yml`; отсутствие или другое значение оставляет старую отправку.
+Actions сравнивает строки без учёта регистра. Variable должна быть доступна всем
+вызывающим репозиториям; проверить отсутствие repository/environment override.
+Не отключать Actions, caller `automation.yml`, `board`, `close`, `reminders.yml`,
+course-sync и workflow релизных уведомлений. Их секреты по-прежнему нужны.
+
+## GitHub organization webhook и shadow intake
+
+Владелец организации открывает Settings → Webhooks → Add webhook:
+
+- Payload URL: `https://hooks.cellestial.ru/webhooks/github`;
+- Content type: `application/json`, SSL verification включена;
+- Secret совпадает с `GITHUB_WEBHOOK_SECRET`, ключ отдельный от Apidog;
+- Individual events: Pushes, Issues, Issue comments, Pull requests, Pull request
+  reviews (`push`, `issues`, `issue_comment`, `pull_request`, `pull_request_review`).
+
+Это один webhook организации, дополнительных repository hooks для тех же событий
+не создавать. Организационный hook охватывает все её репозитории; до включения
+подтвердить, что такой охват нужен, включая репозитории без старого caller.
+Входящие `push` в default branch и теги сохраняются, но projector не отправляет
+их в Telegram: уведомления получают только непустые `refs/heads/*` вне default
+branch, чтобы сохранить фильтр старых callers. Этот фильтр и охват репозиториев
+проверить при живой приёмке.
+Шаги создания — в [GitHub Docs](https://docs.github.com/en/webhooks/using-webhooks/creating-webhooks).
+
+Сначала развернуть с `WEBHOOK_ALERTS_SEND_ENABLED=false`. Проверить
+`https://hooks.cellestial.ru/health`, затем включить hook и посмотреть `ping` и
+тестовое событие в Recent Deliveries: 2xx после сохранения, ответ менее 10 секунд.
+`ping` сохраняется, но не создаёт сообщения. Неверная подпись должна дать `401`.
+Повторить доставку с тем же `X-GitHub-Delivery`: `200`, одна строка в SQLite.
+SQLite недоступна — `503`, доставка подлежит повтору после восстановления.
+Правила подписи и срок ответа — в
+[GitHub best practices](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks).
+
+В shadow intake старый sender продолжает писать в рабочий чат; новый только
+сохраняет. Не включать worker с боевым токеном для проверки shadow-очереди.
+Формат и отправку проверять отдельным экземпляром/БД с тестовым чатом и темами;
+тестовая БД не становится боевой очередью. Live GitHub/Apidog, права токенов,
+доступность образа и восстановление фиксируются в журнале ниже.
+
 ## Apidog: приём и незавершённая live-проверка
 
 [Официальные настройки уведомлений Apidog](https://share.apidog.com/apidoc/docs-site/544525/notification-settings-616240m0)
@@ -37,9 +116,11 @@ SQLite. При `WEBHOOK_ALERTS_SEND_ENABLED=false` (по умолчанию) wor
 проектный OpenAPI export не содержит notification target settings/payload.
 До включения боевых уведомлений:
 
-1. При отключённой отправке подготовить Apidog target `/webhooks/apidog` с
-   `Signature Auth`, отдельным ключом и нужными endpoint/schema/document событиями.
+1. В Settings → Notifications → Notification Targets создать канал `Webhook` с
+   URL `https://hooks.cellestial.ru/webhooks/apidog`. При отключённой отправке включить
+   `Signature Auth`, отдельный ключ и нужные endpoint/schema/document события.
    Для завершения автоматических тестов настроить уведомления сценария Apidog.
+   После сохранения target привязать его к Notification Events нужного проекта.
 2. Получить тестовую доставку, определить имя заголовка без публикации ключа,
    настроить `APIDOG_SIGNATURE_HEADER` и подтвердить проверку исходных байтов.
 3. Сохранить обезличенный payload с настоящей структурой в `tests/fixtures/apidog/`.
@@ -68,7 +149,7 @@ ID с разными телами; `202` — сохранено; `200` — ду�
 Снимок работающей WAL-базы создаётся без остановки сервиса:
 
 ```sh
-docker compose exec -T hooks bun run src/cli.ts snapshot --output /data/snapshots/queue.sqlite
+docker compose -f /opt/hooks/compose.yml exec -T hooks bun run src/cli.ts snapshot --output /data/snapshots/queue.sqlite
 ```
 
 CLI использует `DATABASE_PATH` (по умолчанию `/data/queue.sqlite`) и не требует
@@ -101,6 +182,21 @@ bun -e '
     console.log(db.query("SELECT id, origin_id, status, telegram_message_id FROM outbox ORDER BY id").all());
   } finally { db.close(); }
 ' "$restore_dir/queue.sqlite"
+bun -e '
+  import { Database } from "bun:sqlite";
+  import { openStore } from "./src/store";
+  const path = process.argv[1];
+  const db = new Database(path, { readonly: true });
+  let row;
+  try { row = db.query("SELECT source, delivery_id, event, raw FROM deliveries WHERE dedupe_kind = ? LIMIT 1").get("id"); }
+  finally { db.close(); }
+  if (!row) throw new Error("restored snapshot needs a stable-ID delivery for duplicate check");
+  const store = openStore(path);
+  try {
+    if (store.accept({ source: row.source, deliveryId: row.delivery_id, event: row.event, raw: row.raw }) !== "duplicate") throw new Error("restored delivery was not deduplicated");
+  } finally { store.close(); }
+  console.log("Restored stable-ID duplicate rejected");
+' "$restore_dir/queue.sqlite"
 ```
 
 Ожидается `integrity_check: ok`, сохранённые ID и состояния `pending`/`sent`.
@@ -118,5 +214,137 @@ ID и повторную доставку GitHub/Apidog, затем провер
 сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS
 ещё не выполнялось; его результат фиксируется при интеграции infra.
 
-Публикация образа, переключение Actions и боевое включение выполняются следующими
-задачами плана; live-проверка Apidog по-прежнему остаётся обязательной.
+## Переключение без двойной отправки
+
+Эти действия выполняются в Task 10 после infra Task 9. До них обязательны
+подписанные live-доставки обоих источников, тестовый чат, snapshot → Restic →
+изолированное restore и репетиция отката. Пока любая проверка pending, оставить
+`WEBHOOK_ALERTS_SEND_ENABLED=false` и старую отправку включённой.
+
+1. Сохранить в журнале UTC-время начала, SHA/digest образа, прежнее значение и
+   visibility `TELEGRAM_EVENTS_SOURCE`, ID hook, GitHub delivery GUID, Actions
+   run/job URLs и Telegram message IDs. Список подключённых callers проверить
+   по репозиториям, включая локальные overrides variable. Для Apidog подтвердить
+   отсутствие другого notification target, пишущего те же события в тот же чат.
+2. Пока worker выключен, установить organization Actions variable
+   `TELEGRAM_EVENTS_SOURCE=webhook` для всех нужных репозиториев. Дождаться конца
+   всех уже начавшихся `notify`, включая трёхминутные серии ревью; не отменять
+   jobs с неизвестным результатом. Новым тестовым событием убедиться, что
+   `notify` skipped во всех callers, но `board`/`close` доступны. Зафиксировать
+   UTC-время окончания старых jobs. Worker ещё не включать.
+3. Снять snapshot. Сопоставить каждую shadow-доставку до и во время границы с
+   Recent Deliveries, Actions и Telegram: источник, GUID, repository, объект,
+   действие, SHA/review ID и фактический результат отправки. Один PR может дать
+   две карточки в разные темы; серия ревью — одну на несколько доставок.
+   Успешный Actions job сам по себе не доказывает отправку: отправитель также
+   пропускает черновики, ботов и другие события. В журнале явно отметить
+   `already sent`, `intentionally silent`, `new worker owns` или `unresolved`.
+   Не выбирать все строки по одному `received_at`: отложенная доставка может
+   относиться к старому событию. Не включать worker при `unresolved`.
+4. Для строк `already sent` и подтверждённых `intentionally silent` записать
+   завершение с нулём сообщений. Только первый переход из чистого shadow-режима
+   (outbox и группы ревью пусты), явно проверенные внутренние SQLite ID вместо
+   примера `[1,2]`:
+
+   ```sh
+   docker compose -f /opt/hooks/compose.yml exec -T hooks bun -e '
+     import { Database } from "bun:sqlite";
+     import { openStore } from "./src/store";
+     if ((Bun.env.WEBHOOK_ALERTS_SEND_ENABLED ?? "false") !== "false") throw new Error("stop worker first");
+     const ids = JSON.parse(process.argv[1]);
+     if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isSafeInteger)) throw new Error("explicit delivery IDs required");
+     const path = Bun.env.DATABASE_PATH ?? "/data/queue.sqlite";
+     const db = new Database(path, { readonly: true });
+     try {
+       if (db.query("SELECT count(*) AS n FROM outbox").get().n || db.query("SELECT count(*) AS n FROM review_groups").get().n) throw new Error("not a clean shadow queue: reconcile outbox/groups separately");
+       for (const id of ids) {
+         const row = db.query("SELECT source, lease_until FROM deliveries WHERE id = ?").get(id);
+         if (!row || row.source !== "github" || row.lease_until !== null) throw new Error("invalid shadow delivery");
+       }
+     } finally { db.close(); }
+     const store = openStore(path);
+     try { for (const id of ids) store.prepare(id, []); }
+     finally { store.close(); }
+     console.log("Reconciled delivery IDs", ids);
+   ' '[1,2]'
+   ```
+
+   Это сохраняет payload и `(source, delivery_id)`, поэтому повторная доставка
+   уже сверенного события не создаёт рассылку. Новые события, недоставленные
+   старым sender, и Apidog остаются unprepared для worker. Отдельно сверить
+   изолированные тестовые Apidog события, чтобы они не стали боевой рассылкой.
+   Не применять этот рецепт к очереди, где worker уже работал: подготовленные
+   outbox/группы требуют сверки каждого сообщения, не только delivery.
+5. Повторно проверить пограничные доставки, пришедшие во время сверки. Сохранить
+   журнал соответствий и новый snapshot. Через Ansible Vault выставить
+   `WEBHOOK_ALERTS_SEND_ENABLED=true`, применить роль `hooks` и пересоздать сервис
+   с обновлённым `.env`. Изменение env-файла без пересоздания недостаточно.
+6. Создать по одному новому GitHub и Apidog событию. Проверить ожидаемое число
+   карточек, GitHub тему `26`, review `1513`, Apidog выбранную тему и записи
+   `sent`/`telegram_message_id`. Redelivery того же GitHub GUID не добавляет
+   карточку. Проверить добавление issue на доску, `close` и обычный запуск
+   reminders. Только после этого записать приёмку; #20 пока не закрывать до
+   фиксации всех live результатов в финальном PR.
+
+## Откат и повтор доставки
+
+Откат сначала отрепетировать в изолированном чате/экземпляре и проверить в живом
+окне переключения. Сохранить время, результаты обеих отправок и отсутствие дублей:
+
+1. Вернуть в Vault `WEBHOOK_ALERTS_SEND_ENABLED=false`, пересоздать `hooks` и
+   дождаться завершения прежнего процесса/worker. Убедиться по очереди и чату,
+   что больше ничего не отправляется; `/health` и durable intake остаются рабочими.
+   Если штатная остановка невозможна, остановить контейнер и сверить неизвестный
+   исход отправки до возобновления: Telegram мог принять сообщение до обрыва связи.
+2. После остановки worker вернуть прежнее значение/отсутствие organization
+   variable (любое значение, кроме `webhook`, включает старый sender), проверить
+   visibility и overrides. Новое поддерживаемое событие должно дать ровно одну
+   старую карточку. Проверить board и reminders; записать Actions run/job URL.
+3. Очередь, snapshot и журнал не удалять. Старый workflow обрабатывает новые
+   события и не умеет автоматически отправить накопленную очередь сервиса.
+   Не перезапускать старые Actions runs уже отправленных worker событий.
+   Сначала сверить GUID/объекты/message IDs для периода отката; перед повторным
+   включением worker вновь разобрать outbox и группы, чтобы не повторить сообщения
+   старого sender. Рецепт чистого shadow выше к такой очереди неприменим.
+4. Apidog при выключенном worker накапливается до восстановления сервиса;
+   отдельного старого Actions sender у него нет. После сверки возобновить его
+   через worker. Не включать параллельный target в тот же Telegram чат.
+
+Для GitHub в organization hook → Recent Deliveries открыть нужную доставку и
+нажать Redeliver после устранения ошибки. GitHub не повторяет неудачные webhook
+автоматически; GUID redelivery сохраняется, правила — в
+[GitHub best practices](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks).
+Уже сохранённый GUID вернёт `200`, он не сбрасывает `prepared` и `sent`.
+`409` требует разбирательства с отличающимся телом, не удаления dedupe-ключа.
+Для Apidog способ live redelivery и наличие постоянного notification ID ещё
+нужно подтвердить; без ID повтор спустя пять минут может стать новой доставкой.
+Не переотправлять его без сверки с очередью.
+
+Если исходная доставка сохранена, а её outbox-строка имеет `failed`, после
+проверки фактической отправки в Telegram можно повторить именно эту строку:
+
+```sh
+docker compose -f /opt/hooks/compose.yml exec -T hooks bun run src/cli.ts retry 123
+```
+
+Здесь `123` — внутренний outbox ID, не GitHub GUID. Команда не создаёт новую
+delivery и не повторяет `sent`; строка `pending`/`leased` уже обслуживается
+worker. При сетевом обрыве или аварии после принятия Telegram, но до записи
+`message_id`, исход может быть неизвестен: сверить чат до ручного retry.
+
+## Журнал живой приёмки
+
+В этом коммите выполнены только локальные проверки. Для каждого пункта ниже
+вписать UTC-время, SHA/digest, идентификаторы доставок/строк, команды и результат
+без ключей, подписей и полного payload. Pending нельзя считать проверкой.
+
+| Проверка | Фактический результат |
+| --- | --- |
+| Публикация SHA в GHCR, pull с VPS | Pending — после merge Task 8 |
+| Infra sub-issue #20 и API-проверка связи | Pending — контроллер Task 8 |
+| GitHub signed delivery, health, duplicate | Pending — Tasks 9–10 |
+| Apidog live header, fixture и тестовый чат | Pending — Task 10 |
+| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Pending — Task 9 |
+| Репетиция отката и отсутствие двойной отправки | Pending — до переключения Task 10 |
+| Граница Actions/worker, GitHub/Apidog в боевых темах | Pending — Task 10 |
+| Board, close, reminders после переключения и отката | Pending — Task 10 |

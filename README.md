@@ -57,12 +57,23 @@ Monitoring переключается независимо: repository var `COUR
 | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску; после мержа PR закрывает задачи организации, на которые он ссылается |
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
 | `.github/workflows/reminders.yml` | в 10:00 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува; в 10:00, 15:00 и 20:00 сообщает о сбоях самих уведомлений и о новых репозиториях организации |
+| `services/webhook-alerts/` | GitHub/Apidog → постоянная очередь SQLite → Telegram; отправка по умолчанию выключена |
+| `.github/workflows/webhook-alerts-image.yml` | после push в main публикует GHCR образ с полным SHA коммита |
 | `scripts/reminders.sh` | логика напоминаний и служебных проверок; здесь же список репозиториев |
 | `scripts/sprint.sh` | смена спринта: перенос незакрытых задач и сообщение в чат |
 | `tests/` | тесты скриптов и линтер |
 | `CONTRIBUTING.md` | как заводить и закрывать задачи; GitHub показывает его во всех репозиториях организации |
 
 Почему всё устроено так — [спека](docs/superpowers/specs/2026-09-18-central-workflows-design.md).
+
+Сервис уведомлений пока готовится к переключению: настройки GitHub organization
+webhook, Apidog, `vault_hooks_env`, контракт образа/снимка, shadow intake,
+восстановление, граница отправителей и проверка отката — в
+[runbook сервиса](services/webhook-alerts/README.md). Старый sender остаётся
+включённым, пока organization variable `TELEGRAM_EVENTS_SOURCE` не равна
+`webhook`. Флаг выключает только `notify` в `telegram.yml`; доска, закрытие задач,
+напоминания и релизные сообщения продолжают работать. Worker сервиса включается
+отдельно через `WEBHOOK_ALERTS_SEND_ENABLED=true` после сверки очереди.
 
 ## Как подключить репозиторий
 
@@ -144,12 +155,16 @@ Job `close` в `add-to-project.yml` сохраняется: после мерж�
    git diff --exit-code -- actions/course-sync-context/dist/main.js
    bash tests/course-sync-workflow.sh
    bash tests/course-sync-git.sh
+   (cd services/webhook-alerts && bun install --frozen-lockfile && bun test && bunx tsc --noEmit)
+   docker build -t webhook-alerts:test services/webhook-alerts
+   bash tests/webhook-alerts-docker.sh webhook-alerts:test
    bash tests/telegram.sh
    bash tests/reminders.sh
    bash tests/close.sh
    bash tests/lint.sh
    ```
-   Для action нужны Node 24 и npm; для остальных проверок — `bash`, `jq`, `perl`,
+   Для action нужны Node 24 и npm; для сервиса и workflow-тестов — Bun 1.4.4 и Docker;
+   для остальных проверок — `bash`, `jq`, `perl`,
    GNU `date`, `awk`, `shellcheck` и `actionlint`. Собранный `dist/main.js`
    коммитится вместе с TypeScript, CI сравнивает его с повторной сборкой.
 2. Открыть PR. Этот репозиторий вызывает свои workflow из той же ветки: открытие PR, пуши и ревью сразу проходят через новую версию, сообщения приходят в боевой топик.

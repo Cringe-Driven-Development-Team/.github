@@ -177,8 +177,12 @@ export async function formatGithub(delivery: Delivery, api: GithubApi, config: F
   }
 
   if (delivery.event !== 'push' || p.deleted === true) return [];
-  const branch = str(p.ref).replace(/^refs\/heads\//, '');
+  const ref = str(p.ref);
+  if (!ref.startsWith('refs/heads/')) return [];
+  const branch = ref.slice('refs/heads/'.length);
   const defaultBranch = str(repository.default_branch) || 'main';
+  // Organization hooks also receive default-branch and tag pushes omitted by callers.
+  if (!branch || branch === defaultBranch) return [];
   let commits: Commit[] = array(p.commits).map(obj).filter(c => c.distinct === true).map(c => ({ sha: str(c.id), message: str(c.message) }));
   let heading = `⚒️ ${commitsLabel(commits.length)}`, note = '', label = 'Открыть изменения', target = str(p.compare);
   if (p.forced === true) {

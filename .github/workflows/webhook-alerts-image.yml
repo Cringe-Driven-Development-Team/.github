@@ -1,0 +1,29 @@
+name: Webhook alerts image
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: github.repository == 'Cringe-Driven-Development-Team/.github' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish commit image
+        env:
+          REGISTRY_OWNER: ${{ github.repository_owner }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          image="ghcr.io/${REGISTRY_OWNER,,}/webhook-alerts:sha-$IMAGE_SHA"
+          docker build -t "$image" services/webhook-alerts
+          docker push "$image"
