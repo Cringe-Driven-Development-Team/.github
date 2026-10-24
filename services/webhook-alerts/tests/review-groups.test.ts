@@ -124,10 +124,10 @@ test('a group extended during asynchronous projection never releases a stale sna
   const pending = groups.releaseDue(181000, async deliveries => { await gate; return project.reviewGroup!(deliveries); });
   // A separate connection can commit while the projection is awaiting the API.
   const second = open(path).store;
-  record(second, new ReviewGroups(second), 2, 181000);
+  record(second, new ReviewGroups(second), 2, 180999);
   resume(); expect(await pending).toBe(0); expect(outbox(path)).toHaveLength(0);
-  expect(await groups.releaseDue(360999, project.reviewGroup!)).toBe(0);
-  expect(await groups.releaseDue(361000, project.reviewGroup!)).toBe(1);
+  expect(await groups.releaseDue(360998, project.reviewGroup!)).toBe(0);
+  expect(await groups.releaseDue(360999, project.reviewGroup!)).toBe(1);
   expect(outbox(path)[0]!.html).toContain('4 комментария');
 });
 
@@ -193,4 +193,48 @@ test('opening a schema-v1 database preserves queued messages and enables review 
   expect(await groups.releaseDue(181000, project.reviewGroup!)).toBe(1);
   expect(store.claimDue(181000, 100).map(row => [row.originType, row.ordinal])).toEqual([['delivery', 0], ['review_group', 0]]);
   expect(outbox(path)[0]!.html).toBe('queued before upgrade');
+});
+
+test.each([181000, 400000])('backlog comment received at %s starts a new series after 180 seconds of silence', async receivedAt => {
+  const { store, path } = open(); const sent: OutgoingMessage[] = [];
+  review(store, 1, 1000); review(store, 2, receivedAt);
+  await worker(store, sent, 600000);
+  expect(sent).toHaveLength(2);
+  expect(sent.map(message => message.button?.url.split('#')[1])).toEqual(['pullrequestreview-1', 'pullrequestreview-2']);
+  expect(outbox(path).map(row => [row.origin_id, row.ordinal])).toEqual([[1, 0], [2, 0]]);
+});
+
+test('restart waits for an accepted leased verdict before releasing its pending comments', async () => {
+  const { store, path } = open(); const sent: OutgoingMessage[] = [];
+  review(store, 1, 1000); await worker(store, sent, 1000);
+  review(store, 2, 180000, 'approved');
+  expect(store.claimUnprepared(180000, 120000)).toHaveLength(1);
+  store.close(); const reopened = open(path).store;
+  await worker(reopened, sent, 181000); expect(sent).toHaveLength(0); expect(outbox(path)).toHaveLength(0);
+  await worker(reopened, sent, 300000);
+  expect(sent).toHaveLength(1); expect(sent[0]!.html).toContain('Апрув'); expect(sent[0]!.html).toContain('4 комментария');
+  await worker(reopened, sent, 600000); expect(sent).toHaveLength(1);
+  expect(outbox(path).map(row => [row.origin_type, row.origin_id, row.ordinal])).toEqual([['review_group', 1, 0]]);
+});
+
+test('a verdict accepted during asynchronous projection blocks the final release transaction', async () => {
+  const { store, path } = open(); const groups = new ReviewGroups(store);
+  record(store, groups, 1, 1000);
+  let resume!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const pending = groups.releaseDue(181000, async deliveries => { await gate; return project.reviewGroup!(deliveries); });
+  const second = open(path).store;
+  review(second, 2, 180000, 'changes_requested'); second.claimUnprepared(180000, 120000);
+  resume(); expect(await pending).toBe(0); expect(outbox(path)).toHaveLength(0);
+  const sent: OutgoingMessage[] = [];
+  await worker(store, sent, 300000); expect(sent).toHaveLength(1); expect(sent[0]!.html).toContain('Запрошены правки');
+});
+
+test('a leased verdict for another reviewer does not delay an unrelated due group', async () => {
+  const { store } = open(); const sent: OutgoingMessage[] = [];
+  review(store, 1, 1000); await worker(store, sent, 1000);
+  review(store, 2, 180000, 'approved', 'other'); store.claimUnprepared(180000, 120000);
+  await worker(store, sent, 181000);
+  expect(sent).toHaveLength(1); expect(sent[0]!.html).toContain('Комментарии к PR');
+  await worker(store, sent, 300000); expect(sent).toHaveLength(2); expect(sent[1]!.html).toContain('Апрув');
 });

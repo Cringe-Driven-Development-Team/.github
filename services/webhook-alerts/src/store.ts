@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { githubReview } from './github';
 
 export type AcceptResult = 'accepted' | 'duplicate' | 'conflict';
 
@@ -49,6 +50,15 @@ interface DeliveryRow {
   received_at: number;
   prepared: number;
   lease_until: number | null;
+}
+interface ReviewGroupRow {
+  id: number;
+  revision: number;
+  repository: string;
+  pr_number: number;
+  reviewer: string;
+  due_at: number;
+  sealed: number;
 }
 interface OutboxRow {
   id: number;
@@ -150,9 +160,9 @@ export class Store {
         .get(deliveryId, review.repository, review.id)) return;
       const sealed = review.state === 'commented' ? 0 : 1;
       const dueAt = now + (sealed ? 0 : 180000);
-      const existing = this.db.query<{ id: number }, [string, number, string]>(`SELECT id FROM review_groups
-        WHERE repository = ? AND pr_number = ? AND reviewer = ? AND released = 0 AND sealed = 0 ORDER BY id DESC LIMIT 1`)
-        .get(review.repository, review.number, review.reviewer);
+      const existing = this.db.query<{ id: number }, [string, number, string, number]>(`SELECT id FROM review_groups
+        WHERE repository = ? AND pr_number = ? AND reviewer = ? AND released = 0 AND sealed = 0 AND due_at > ? ORDER BY id DESC LIMIT 1`)
+        .get(review.repository, review.number, review.reviewer, now);
       const id = existing?.id ?? Number(this.db.query(`INSERT INTO review_groups (repository, pr_number, reviewer, due_at)
         VALUES (?, ?, ?, ?)`).run(review.repository, review.number, review.reviewer, dueAt).lastInsertRowid);
       this.db.query('INSERT INTO review_group_deliveries (delivery_id, group_id, review_id, repository) VALUES (?, ?, ?, ?)')
@@ -162,14 +172,36 @@ export class Store {
   }
 
   dueReviewGroups(now: number): { id: number; revision: number; deliveries: Delivery[] }[] {
-    return this.db.transaction(() => this.db.query<{ id: number; revision: number }, [number, number]>(
-      'SELECT id, revision FROM review_groups WHERE released = 0 AND due_at <= ? ORDER BY id LIMIT ?',
-    ).all(now, CLAIM_LIMIT).map(group => ({ ...group, deliveries: this.db.query<DeliveryRow, [number]>(`SELECT d.* FROM deliveries d
+    return this.db.transaction(() => this.db.query<ReviewGroupRow, [number]>(
+      'SELECT * FROM review_groups WHERE released = 0 AND due_at <= ? ORDER BY id',
+    ).all(now).filter(group => !this.hasUnrecordedReview(group)).slice(0, CLAIM_LIMIT).map(group => ({ ...group, deliveries: this.db.query<DeliveryRow, [number]>(`SELECT d.* FROM deliveries d
       JOIN review_group_deliveries r ON r.delivery_id = d.id WHERE r.group_id = ? ORDER BY d.received_at, d.id`).all(group.id).map(delivery) })))();
+  }
+
+  private hasUnrecordedReview(group: ReviewGroupRow): boolean {
+    if (group.sealed) return false;
+    // An accepted delivery can still be leased by a worker that crashed. Wait
+    // for it to be recorded even though claimUnprepared cannot return it yet.
+    const pending = this.db.query<DeliveryRow, [number]>(`SELECT d.* FROM deliveries d
+      WHERE d.prepared = 0 AND d.source = 'github' AND d.event = 'pull_request_review' AND d.received_at < ?
+      AND NOT EXISTS (SELECT 1 FROM review_group_deliveries r WHERE r.delivery_id = d.id)`).all(group.due_at);
+    return pending.some(row => {
+      try {
+        const review = githubReview(delivery(row));
+        return review?.repository === group.repository && review.number === group.pr_number && review.reviewer === group.reviewer;
+      } catch {
+        // Invalid input cannot join a group; it remains unprepared for diagnosis.
+        return false;
+      }
+    });
   }
 
   releaseReviewGroup(id: number, revision: number, messages: OutgoingMessage[], now: number): boolean {
     return this.db.transaction(() => {
+      const group = this.db.query<ReviewGroupRow, [number]>('SELECT * FROM review_groups WHERE id = ?').get(id);
+      // Recheck accepted deliveries under the write lock: one may have arrived
+      // while the asynchronous projection was waiting for GitHub.
+      if (!group || this.hasUnrecordedReview(group)) return false;
       const updated = this.db.query('UPDATE review_groups SET released = 1 WHERE id = ? AND revision = ? AND released = 0 AND due_at <= ?')
         .run(id, revision, now);
       if (!updated.changes) return false;
