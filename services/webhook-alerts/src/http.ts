@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { verifyGithub } from './auth';
 import type { Config } from './config';
+import type { AcceptResult } from './store';
+export type { AcceptResult } from './store';
 
 export interface IncomingDelivery {
   source: 'github' | 'apidog';
@@ -9,7 +11,6 @@ export interface IncomingDelivery {
   raw: Uint8Array;
 }
 
-export type AcceptResult = 'accepted' | 'duplicate' | 'conflict';
 export type AcceptDelivery = (delivery: IncomingDelivery) => AcceptResult | Promise<AcceptResult>;
 export const MAX_BODY_BYTES = 1024 * 1024;
 
