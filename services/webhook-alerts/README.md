@@ -23,13 +23,20 @@ bash tests/lint.sh
 
 Workflow `webhook-alerts-image.yml` публикует только push в `main` основного
 репозитория. Контракт имени: `ghcr.io/cringe-driven-development-team/webhook-alerts:sha-<40-символьный SHA main>`.
-Нет плавающего `latest`: в infra закрепляется полный SHA успешного запуска
-публикации, а digest из GHCR записывается в PR. Сборка использует контекст
+Повторные публикации одного SHA сериализуются и сохраняют существующий тег:
+перед сборкой workflow проверяет registry, а при ошибке доступа/сети прекращает
+работу. Только подтверждённое отсутствие manifest разрешает build/push.
+Нет плавающего `latest`: SHA-тег служит для связи с коммитом, а в infra
+`hooks_image` закрепляется по digest успешной публикации:
+`ghcr.io/cringe-driven-development-team/webhook-alerts@sha256:<64 hex>`.
+Проверить его через `docker buildx imagetools inspect <полный SHA-тег>`;
+SHA-тег и registry digest записать в infra issue/PR. Локальный Docker image ID
+не заменяет registry manifest digest. Сборка использует контекст
 `services/webhook-alerts`; доступ к GHCR — `GITHUB_TOKEN` с `packages: write`.
 Перед deploy проверить доступность pull с VPS; приватному package нужны отдельные
 read credentials на VPS. Образ работает пользователем `bun`, слушает `8080`,
 содержит `wget`; постоянный том монтируется в `/data` с правом записи пользователя
-образа. В infra задать `hooks_image` этим тегом, `hooks_command: []`,
+образа. В infra задать `hooks_image` этим digest reference, `hooks_command: []`,
 `hooks_port: 8080`, `hooks_data_path: /data`.
 
 Порядок: PR Task 8 с `Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/20` → успешная публикация SHA →
