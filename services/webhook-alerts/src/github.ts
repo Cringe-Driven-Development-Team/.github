@@ -18,7 +18,29 @@ const names = (v: unknown): string[] => array(v).map(login).filter(Boolean);
 const text = (v: unknown, limit = 180) => escapeHtml(truncate(str(v), limit));
 const bot = (v: unknown): boolean => obj(v).type === 'Bot' || login(v).endsWith('[bot]');
 
-export async function formatGithub(delivery: Delivery, api: GithubApi, config: FormatConfig = {}): Promise<OutgoingMessage[]> {
+export interface GithubReview {
+  repository: string; number: number; reviewer: string; id: number;
+  state: 'commented' | 'approved' | 'changes_requested';
+}
+
+export function githubReview(delivery: Delivery): GithubReview | undefined {
+  if (delivery.source !== 'github' || delivery.event !== 'pull_request_review') return;
+  const p = obj(JSON.parse(new TextDecoder().decode(delivery.raw)));
+  const review = obj(p.review), pr = obj(p.pull_request), state = str(review.state).toLowerCase();
+  if (p.action !== 'submitted' || !['commented', 'approved', 'changes_requested'].includes(state)
+    || bot(review.user) || login(review.user) === login(pr.user)) return;
+  const repository = str(obj(p.repository).full_name), reviewer = login(review.user);
+  if (!repository || !reviewer || !Number.isSafeInteger(review.id) || !Number.isSafeInteger(pr.number)) throw new Error('invalid review');
+  return { repository, number: Number(pr.number), reviewer, id: Number(review.id), state: state as GithubReview['state'] };
+}
+
+export async function formatGithubReviewGroup(deliveries: Delivery[], api: GithubApi, config: FormatConfig = {}): Promise<OutgoingMessage[]> {
+  const last = deliveries.at(-1);
+  if (!last) return [];
+  return formatGithub(last, api, config, deliveries);
+}
+
+export async function formatGithub(delivery: Delivery, api: GithubApi, config: FormatConfig = {}, reviewGroup?: Delivery[]): Promise<OutgoingMessage[]> {
   if (delivery.source !== 'github') return [];
   const p = obj(JSON.parse(new TextDecoder().decode(delivery.raw)));
   const action = str(p.action);
@@ -116,12 +138,20 @@ export async function formatGithub(delivery: Delivery, api: GithubApi, config: F
   if (delivery.event === 'pull_request_review') {
     const item = obj(p.pull_request), review = obj(p.review), by = login(review.user), author = login(item.user);
     const state = str(review.state).toLowerCase();
-    // Task 5 persists commented reviews BEFORE marking a delivery prepared.
-    if (action !== 'submitted' || !['approved', 'changes_requested'].includes(state) || by === author || bot(review.user)) return [];
+    // Commented deliveries are formatted only after the durable group is due.
+    if (action !== 'submitted' || !(reviewGroup ? ['commented', 'approved', 'changes_requested'] : ['approved', 'changes_requested']).includes(state) || by === author || bot(review.user)) return [];
     let people = `автор: ${m(author)} · ревьювер: ${text(by, 80)}`;
-    const reviews = await enrich('reviews', () => api.reviews(repo, Number(item.number)));
+    const reviews = reviewGroup ? undefined : await enrich('reviews', () => api.reviews(repo, Number(item.number)));
     let count: number | undefined, target = str(review.html_url);
-    if (reviews) {
+    if (reviewGroup) {
+      const series = reviewGroup.map(d => obj(obj(JSON.parse(new TextDecoder().decode(d.raw))).review));
+      const comments = await enrich('review_comments', () => api.reviewComments(repo, Number(item.number)));
+      if (comments) {
+        const ids = new Set(series.map(r => Number(r.id)));
+        count = comments.filter(c => ids.has(c.reviewId)).length + series.filter(r => str(r.body).trim()).length;
+      }
+      target = str(series[0]?.html_url) || target;
+    } else if (reviews) {
       const current = reviews.find(r => r.id === review.id);
       const at = Date.parse(current?.submittedAt ?? str(review.submitted_at));
       const preceding = reviews.filter(r => r.login === by && r.state !== 'PENDING' && Date.parse(r.submittedAt ?? '') <= at)
@@ -141,7 +171,7 @@ export async function formatGithub(delivery: Delivery, api: GithubApi, config: F
       }
     }
     if (count) people += `\n${plural(count, 'комментарий', 'комментария', 'комментариев')}`;
-    const message = card(state === 'approved' ? '👍 Апрув' : '✋ Запрошены правки', item, people, reviewTopic, 'Открыть ревью', target);
+    const message = card(state === 'approved' ? '👍 Апрув' : state === 'changes_requested' ? '✋ Запрошены правки' : '💬 Комментарии к PR', item, people, reviewTopic, 'Открыть ревью', target);
     if (count === 0) delete message.button;
     return [message];
   }

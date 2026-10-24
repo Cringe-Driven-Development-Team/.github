@@ -1,12 +1,18 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Store, Delivery, OutgoingMessage } from './store';
 import type { SendResult } from './telegram';
-import { formatGithub, type FormatConfig } from './github';
+import { formatGithub, formatGithubReviewGroup, githubReview, type FormatConfig } from './github';
 import type { GithubApi } from './github-api';
+import { ReviewGroups } from './review-groups';
+
+interface Projector {
+  (delivery: Delivery): Promise<OutgoingMessage[]>;
+  reviewGroup?: (deliveries: Delivery[]) => Promise<OutgoingMessage[]>;
+}
 
 interface WorkerDeps {
   store: Store;
-  project: (delivery: Delivery) => Promise<OutgoingMessage[]>;
+  project: Projector;
   send: (message: OutgoingMessage) => Promise<SendResult>;
 }
 
@@ -23,12 +29,29 @@ async function sendSafely(send: WorkerDeps['send'], message: OutgoingMessage): P
 
 export async function runOnce({ store, project, send, now }: WorkerDeps & { now: number }): Promise<number> {
   const startedAt = performance.now();
-  for (const delivery of store.claimUnprepared(now, LEASE_MS)) {
-    try { store.prepare(delivery.id, await project(delivery)); }
-    catch {
-      console.error(JSON.stringify({ deliveryId: delivery.id, errorCode: 'preparation_failed' }));
-      // The preparation lease expires; raw delivery remains durable and unprepared.
+  const groups = new ReviewGroups(store);
+  // Drain accepted deliveries before releasing timers: a queued verdict may be
+  // beyond the first claim batch and must supersede its comments first.
+  for (;;) {
+    const batch = store.claimUnprepared(now, LEASE_MS);
+    if (!batch.length) break;
+    for (const delivery of batch) {
+      try {
+        if (githubReview(delivery)) {
+          if (!project.reviewGroup) throw new Error('review group projector required');
+          groups.record(delivery, delivery.receivedAt);
+          store.prepare(delivery.id, []);
+        } else store.prepare(delivery.id, await project(delivery));
+      }
+      catch {
+        console.error(JSON.stringify({ deliveryId: delivery.id, errorCode: 'preparation_failed' }));
+        // The preparation lease expires; raw delivery remains durable and unprepared.
+      }
     }
+  }
+  if (project.reviewGroup) {
+    try { await groups.releaseDue(now, project.reviewGroup); }
+    catch { console.error(JSON.stringify({ errorCode: 'review_group_preparation_failed' })); }
   }
   const messages = store.claimDue(now, LEASE_MS);
   for (const message of messages) {
@@ -66,5 +89,7 @@ export async function startWorker(deps: WorkerDeps & { signal: AbortSignal }): P
 }
 
 export function createGithubProjector(api: GithubApi, config: FormatConfig = {}): WorkerDeps['project'] {
-  return delivery => formatGithub(delivery, api, config);
+  return Object.assign((delivery: Delivery) => formatGithub(delivery, api, config), {
+    reviewGroup: (deliveries: Delivery[]) => formatGithubReviewGroup(deliveries, api, config),
+  });
 }

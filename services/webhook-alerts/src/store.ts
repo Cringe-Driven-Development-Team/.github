@@ -84,6 +84,7 @@ function message(row: OutboxRow): DueMessage {
 const HASH_WINDOW_MS = 5 * 60 * 1000;
 const CLAIM_LIMIT = 10;
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
+const reviewSchema = readFileSync(new URL('./review-groups-schema.sql', import.meta.url), 'utf8');
 
 export class Store {
   constructor(private readonly db: Database) {}
@@ -143,6 +144,44 @@ export class Store {
     }).immediate();
   }
 
+  recordReview(deliveryId: number, review: { repository: string; number: number; reviewer: string; id: number; state: string }, now: number): void {
+    this.db.transaction(() => {
+      if (this.db.query('SELECT delivery_id FROM review_group_deliveries WHERE delivery_id = ? OR (repository = ? AND review_id = ?)')
+        .get(deliveryId, review.repository, review.id)) return;
+      const sealed = review.state === 'commented' ? 0 : 1;
+      const dueAt = now + (sealed ? 0 : 180000);
+      const existing = this.db.query<{ id: number }, [string, number, string]>(`SELECT id FROM review_groups
+        WHERE repository = ? AND pr_number = ? AND reviewer = ? AND released = 0 AND sealed = 0 ORDER BY id DESC LIMIT 1`)
+        .get(review.repository, review.number, review.reviewer);
+      const id = existing?.id ?? Number(this.db.query(`INSERT INTO review_groups (repository, pr_number, reviewer, due_at)
+        VALUES (?, ?, ?, ?)`).run(review.repository, review.number, review.reviewer, dueAt).lastInsertRowid);
+      this.db.query('INSERT INTO review_group_deliveries (delivery_id, group_id, review_id, repository) VALUES (?, ?, ?, ?)')
+        .run(deliveryId, id, review.id, review.repository);
+      this.db.query('UPDATE review_groups SET due_at = ?, sealed = ?, revision = revision + 1 WHERE id = ?').run(dueAt, sealed, id);
+    }).immediate();
+  }
+
+  dueReviewGroups(now: number): { id: number; revision: number; deliveries: Delivery[] }[] {
+    return this.db.transaction(() => this.db.query<{ id: number; revision: number }, [number, number]>(
+      'SELECT id, revision FROM review_groups WHERE released = 0 AND due_at <= ? ORDER BY id LIMIT ?',
+    ).all(now, CLAIM_LIMIT).map(group => ({ ...group, deliveries: this.db.query<DeliveryRow, [number]>(`SELECT d.* FROM deliveries d
+      JOIN review_group_deliveries r ON r.delivery_id = d.id WHERE r.group_id = ? ORDER BY d.received_at, d.id`).all(group.id).map(delivery) })))();
+  }
+
+  releaseReviewGroup(id: number, revision: number, messages: OutgoingMessage[], now: number): boolean {
+    return this.db.transaction(() => {
+      const updated = this.db.query('UPDATE review_groups SET released = 1 WHERE id = ? AND revision = ? AND released = 0 AND due_at <= ?')
+        .run(id, revision, now);
+      if (!updated.changes) return false;
+      const insert = this.db.query(`INSERT INTO outbox
+        (origin_type, origin_id, ordinal, topic, html, button_json, fallback_html, due_at)
+        VALUES ('review_group', ?, ?, ?, ?, ?, ?, ?)`);
+      messages.forEach((item, ordinal) => insert.run(id, ordinal, item.topic, item.html,
+        item.button ? JSON.stringify(item.button) : null, item.fallbackHtml ?? null, now));
+      return true;
+    }).immediate();
+  }
+
   claimDue(now: number, leaseMs: number): DueMessage[] {
     this.checkLease(now, leaseMs);
     return this.db.transaction(() => {
@@ -199,10 +238,13 @@ export function openStore(path: string): Store {
     db.exec('PRAGMA foreign_keys = ON');
     db.transaction(() => {
       const version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
-      if (version > 1) throw new Error('unsupported database schema');
+      if (version > 2) throw new Error('unsupported database schema');
       if (version === 0) {
         db.exec(schema);
-        db.exec('PRAGMA user_version = 1');
+      }
+      if (version < 2) {
+        db.exec(reviewSchema);
+        db.exec('PRAGMA user_version = 2');
       }
     }).immediate();
     return new Store(db);
