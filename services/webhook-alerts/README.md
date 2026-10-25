@@ -353,7 +353,8 @@ worker. При сетевом обрыве или аварии после при
 ## Журнал живой приёмки
 
 Инфраструктурная приёмка выполнена в Task 9 (подробности ниже), без сообщений
-в Telegram. Настоящие доставки и переключение ещё не приняты. Для каждого пункта ниже
+в Telegram. Настоящий GitHub intake проверен ниже; Apidog и переключение ещё
+не приняты. Для каждого пункта ниже
 вписать UTC-время, SHA/digest, идентификаторы доставок/строк, команды и результат
 без ключей, подписей и полного payload. Pending нельзя считать проверкой.
 
@@ -361,7 +362,7 @@ worker. При сетевом обрыве или аварии после при
 | --- | --- |
 | Публикация SHA в GHCR, pull с VPS | SHA `08e7968fa0d39dd5f25fe8495c58d78006a26653`, digest `sha256:30718ed06926bff66627502361185c2ca6ebca78b20b044ce4d8bba92f12e858`; anonymous pull с VPS успешен |
 | Infra sub-issue #20 и API-проверка связи | infra#70 подтверждена через sub_issues API, закрыта после merge PR #73 |
-| GitHub signed delivery, health, duplicate | Task 9: health 200; синтетические GitHub/Apidog: неверная подпись 401, первая доставка 202, повтор 200; конфликт GitHub ID 409. Настоящая GitHub delivery pending |
+| GitHub signed delivery, health, duplicate | Task 9: health 200; синтетические GitHub/Apidog: неверная подпись 401, первая доставка 202, повтор 200; конфликт GitHub ID 409. Task 10: настоящий ping/push 202, redelivery push 200; по одной строке на GUID |
 | Apidog live header, fixture и тестовый чат | Pending — Task 10 |
 | Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Выполнено в Task 9 с синтетическими строками, подробности ниже |
 | Репетиция отката и отсутствие двойной отправки | Pending — до переключения Task 10 |
@@ -390,15 +391,48 @@ Infra PR #73 merged в `edc13058522c850c3cac5cfeb46ba278a74c5c10`;
 [post-merge run 40139285195](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40139285195)
 успешен, включая production apply/verify. Sender оставлен false.
 
-Для продолжения Task 10 нужно отдельное разрешение владельца на создание org
-webhook и Apidog target, настройку Telegram credentials, изменение org variable,
-включение sender и тестовые сообщения. До него эти действия не выполняются.
-Read-only проверка доступа 2026-10-25: текущий GitHub token не позволяет прочитать
-org hooks (404, требуется `admin:org_hook`) и `TELEGRAM_EVENTS_SOURCE` (403,
-требуются org-admin права/Actions variables permission). Это ограничение доступа,
-а не подтверждение отсутствия hook или variable; их текущее состояние неизвестно.
+Владелец отдельно разрешил Task 10. После обновления GitHub scopes контроллер
+создал organization hook `702764072`: active, TLS verification включена, URL
+`https://hooks.cellestial.ru/webhooks/github`, события `push`, `issues`,
+`issue_comment`, `pull_request`, `pull_request_review`. Secret взят из Vault.
+Настоящий GitHub ping `a537a93e-d004-11f1-8716-24d99f5d0ff6` и push
+`adba7d2a-d004-11f1-8fad-583c490826f7` получили `202`; повтор push — `200`.
+Контроллер проверил SQLite на VPS: ровно одна строка для каждого GUID.
+Sender остаётся `false`: эти результаты подтверждают intake, отправка worker ещё pending.
+Пограничный push `adba7d2a-d004-11f1-8fad-583c490826f7` (`1e7de41`, ветка
+`automation-20-webhooks-ghcr-fix`) классифицирован как `already sent` старым sender:
+[Actions run 40143875584](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40143875584)
+успешен, в теме `26` подтверждено сообщение `7370` от `2026-10-24T23:43:20Z`.
+Не воспроизводить эту доставку worker при переключении; внутренний SQLite ID
+нужно явно сверить перед применением рецепта reconciliation выше.
+Прежний отказ чтения org hooks/variable из-за scope устранён контроллером;
+прежнее состояние variable здесь не утверждается.
 Контроллер read-only подтвердил существующие темы: Apidog `6033`, GitHub `26`,
-Code Review `1513` в чате `-1003713420351`; отправка не проверялась.
-Для Apidog остаются нужны доступ владельца к Notifications, настоящая доставка,
+Code Review `1513` в чате `-1003713420351`; отправка worker не проверялась.
+Владелец настраивает Apidog target вручную: MCP не предоставляет Notifications.
+Для Apidog остаются нужны настоящая доставка,
 подтверждение signature header (в Vault provisional `X-Apidog-Signature`) и
 обезличенная fixture. #20 пока не закрывать.
+
+Дополнительная read-only сверка shadow-очереди: три `issues:edited` меняют body,
+возраст issue на момент правки больше 600 секунд; фильтр тихих правок не применим.
+Все три имеют подтверждённые карточки старого bot в теме `26` и классифицированы
+`already sent` (SQLite ID — по наблюдению контроллера):
+
+| SQLite ID / GUID | Объект | Actions run | Telegram message / UTC |
+| --- | --- | --- | --- |
+| 3 / `e26bde50-d005-11f1-8b0d-84002d692177` | frontend#4 | [40144445474](https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/40144445474) | `7371`, `2026-10-24T23:51:58Z` |
+| 4 / `e41f0c90-d005-11f1-960a-da7275fe9fcb` | infra#74 | [40144448255](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40144448255) | `7372`, `2026-10-24T23:52:01Z` |
+| 5 / `43293030-d006-11f1-9bc0-655b6af8abdb` | infra#74 | [40144615238](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40144615238) | `7373`, `2026-10-24T23:54:41Z` |
+
+GitHub delivery metadata подтверждает `202` для каждой. Таблица фиксирует сверку,
+а не изменение SQLite: перед включением worker контроллер должен явно отметить
+эти строки как завершённые без повторной отправки и проверить новые доставки.
+
+Проверка Apidog через CLI не дала доставку: прямое создание endpoint в защищённой
+main отклонено (`403013`, ограничение external AI edits). Контроллер создал
+изолированную AI-ветку, добавил и изменил тестовый endpoint; в 20-секундном окне
+наблюдения VPS не получил HTTP-запросов Apidog, строк Apidog в очереди нет.
+Тестовая AI-ветка архивирована, main не менялась. Это не подтверждает работу
+Notification Events обычной ветки: нужна настоящая доставка после сохранения
+endpoint через UI. Header, fixture и отправка Apidog по-прежнему pending.
