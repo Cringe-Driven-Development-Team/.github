@@ -505,7 +505,21 @@ digest `sha256:4424881b11af1f32a690831d5c9b87351852b4767e182e28f8703e68a90d7622`
 outbox `0`, `integrity_check=ok`, Apidog `0`. Новые ID `>86` нужно сверить отдельно
 перед переключением.
 
-Ни одного подлинного Apidog HTTP webhook пока не получено. Подпись, имя header и
-реальный формат payload ещё не подтверждены; организация по-прежнему использует
-старый Actions sender. Не включать worker и не задавать
-`TELEGRAM_EVENTS_SOURCE=webhook` до live-проверки Apidog и репетиции отката.
+После включения владельцем CLI-доступа к обычной sprint-ветке временный endpoint
+`45845223` создан и обновлён только в `webhook-alerts-smoke-20261025`; `main`
+Apidog не менялась. Настоящий POST достиг сервиса, но старая версия ответила
+`401`: заголовок `X-Apidog-Signature` содержал корректный base64 HMAC-SHA1,
+тогда как старая версия принимала только `sha1=hex`. Реальный payload имеет поля
+`event`, `title`, `content`, `appLink` без устойчивого ID. Исправление и тесты в
+`c49429c` ожидают выкладки и повторной live-доставки; в очереди Apidog пока `0`.
+Организация по-прежнему использует старый Actions sender. Не включать worker и
+не задавать `TELEGRAM_EVENTS_SOURCE=webhook` до проверки исправленной версии и
+репетиции отката.
+
+Следующая граница GitHub shadow-очереди ID `87–102` также сверена независимо:
+`10 already sent`, `6 intentionally silent`, `0 unresolved`. После snapshot и
+Restic backup (`2026-10-25T14:15:40Z`, success) выполнен `Store.prepare(id, [])`
+только для этих 16 строк при совпадающих GUID, sender `false`, пустых
+outbox/review_groups и отсутствии leases. Второй snapshot/backup в
+`14:16:01Z` успешен. На момент проверки: `110` доставок, `102 prepared`,
+outbox `0`, `integrity_check=ok`, Apidog `0`; ID `103+` ещё требуют сверки.
