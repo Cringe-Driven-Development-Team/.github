@@ -54,6 +54,22 @@ test('success sends HTML to the configured topic and persists message_id across 
   expect(await runOnce(deps(reopened, fetcher))).toBe(0);
 });
 
+for (const proxyUrl of [undefined, 'http://proxy.internal:2080', 'https://proxy.internal:2080']) {
+  test(`worker sends with ${proxyUrl === undefined ? 'no explicit proxy' : 'configured Telegram proxy'}`, async () => {
+    const { store, path } = queue();
+    const requests: RequestInit[] = [];
+    const fetcher = (async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      requests.push(init!);
+      return Response.json({ ok: true, result: { message_id: 321 } });
+    }) as unknown as typeof fetch;
+    await runOnce({ ...deps(store, fetcher), send: message => sendMessage(message, { ...config, proxyUrl }, fetcher) });
+    expect(requests).toHaveLength(1);
+    if (proxyUrl === undefined) expect(requests[0]).not.toHaveProperty('proxy');
+    else expect(requests[0]).toHaveProperty('proxy', { url: proxyUrl, respectNoProxy: false });
+    expect(rows(path)[0]).toMatchObject({ status: 'sent', telegram_message_id: 321 });
+  });
+}
+
 for (const [label, fetcher, code] of [
   ['500', fetchResponse(500, { ok: false, error_code: 500, description: 'private server response' }), 'telegram_500'],
   ['network', (async () => { throw new Error('URL with test-secret-token'); }) as unknown as typeof fetch, 'network'],

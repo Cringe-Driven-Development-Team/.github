@@ -3,6 +3,7 @@ import type { OutgoingMessage } from './store';
 export interface TelegramConfig {
   botToken: string;
   chatId: string;
+  proxyUrl?: string;
 }
 
 // Only these safe fields may reach the database or logs. Never return Telegram bodies.
@@ -19,6 +20,7 @@ export async function sendMessage(message: OutgoingMessage, config: TelegramConf
     response = await fetcher(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       signal: AbortSignal.timeout(5000), redirect: 'error',
+      ...(config.proxyUrl === undefined ? {} : { proxy: { url: config.proxyUrl, respectNoProxy: false } }),
       body: JSON.stringify({
         chat_id: config.chatId, message_thread_id: message.topic, text: message.html,
         parse_mode: 'HTML', link_preview_options: { is_disabled: true },

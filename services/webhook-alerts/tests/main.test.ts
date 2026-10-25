@@ -19,6 +19,24 @@ test('startup requires Apidog signature settings and enabled mode requires Teleg
   expect(() => loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001' })).toThrow('TELEGRAM_APIDOG_TOPIC_ID');
 });
 
+for (const proxyUrl of ['http://proxy.internal:2080', 'https://proxy.internal:2080']) {
+  test('enabled config retains an HTTP or HTTPS Telegram proxy', () => {
+    const config = loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_PROXY_URL: proxyUrl });
+    expect(config.telegram).toMatchObject({ proxyUrl });
+  });
+}
+
+for (const proxyUrl of ['socks5h://proxy.internal:2080', 'not-a-url', '', '   ', 'http://', 'http://user:private-password@']) {
+  test('rejects an invalid Telegram proxy without exposing its value', () => {
+    let error: unknown;
+    try { loadConfig({ ...env, TELEGRAM_PROXY_URL: proxyUrl }); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('TELEGRAM_PROXY_URL');
+    if (proxyUrl) expect((error as Error).message).not.toContain(proxyUrl);
+    expect((error as Error).message).not.toContain('private-password');
+  });
+}
+
 test('disabled entrypoint accepts durably without preparation or network calls', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'hooks-disabled-'));
   const path = join(directory, 'queue.sqlite');
@@ -40,7 +58,8 @@ test('disabled entrypoint accepts durably without preparation or network calls',
   finally { reopened.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('enabled entrypoint sends Apidog and grouped GitHub review through real worker', async () => {
+for (const proxyUrl of [undefined, 'http://proxy.internal:2080']) {
+test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'without explicit proxy' : 'with Telegram-only proxy'}`, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'hooks-enabled-'));
   const path = join(directory, 'queue.sqlite');
   const store = openStore(path);
@@ -48,18 +67,29 @@ test('enabled entrypoint sends Apidog and grouped GitHub review through real wor
   store.accept({ source: 'github', event: 'pull_request_review', deliveryId: 'review', raw: new TextEncoder().encode(JSON.stringify({ ...review, review: { ...review.review, user: { ...review.review.user, login: 'IndependentReviewer' } } })), receivedAt: 2 });
   store.close();
   const bodies: Record<string, unknown>[] = [];
+  const requests: { url: string; init: RequestInit | undefined }[] = [];
   const fetcher = (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    expect(String(url)).toBe('https://api.telegram.org/botlocal-token/sendMessage');
+    requests.push({ url: String(url), init });
+    if (String(url).startsWith('https://api.github.com/')) return Response.json([]);
     bodies.push(JSON.parse(String(init?.body)));
     return Response.json({ ok: true, result: { message_id: bodies.length } });
   }) as unknown as typeof fetch;
-  const service = main.startService(loadConfig({ ...env, DATABASE_PATH: path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local-token', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_REVIEW_TOPIC_ID: '77' }), { fetch: fetcher });
+  const service = main.startService(loadConfig({ ...env, DATABASE_PATH: path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local-token', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_REVIEW_TOPIC_ID: '77', TELEGRAM_PROXY_URL: proxyUrl, GITHUB_API_TOKEN: 'local-github-token' }), { fetch: fetcher });
   try {
     const deadline = Date.now() + 3000;
     while (bodies.length < 2 && Date.now() < deadline) await Bun.sleep(5);
   } finally { await service.stop(); }
   try {
     expect(bodies).toHaveLength(2);
+    const githubRequests = requests.filter(request => request.url.startsWith('https://api.github.com/'));
+    const telegramRequests = requests.filter(request => request.url === 'https://api.telegram.org/botlocal-token/sendMessage');
+    expect(githubRequests.length).toBeGreaterThan(0);
+    expect(telegramRequests).toHaveLength(2);
+    for (const request of githubRequests) expect(request.init).not.toHaveProperty('proxy');
+    for (const request of telegramRequests) {
+      if (proxyUrl === undefined) expect(request.init).not.toHaveProperty('proxy');
+      else expect(request.init).toHaveProperty('proxy', { url: 'http://proxy.internal:2080', respectNoProxy: false });
+    }
     expect(bodies.map(body => body.message_thread_id).sort()).toEqual([77, 88]);
     expect(bodies.every(body => body.chat_id === '-1001')).toBe(true);
     const db = new Database(path);
@@ -67,6 +97,8 @@ test('enabled entrypoint sends Apidog and grouped GitHub review through real wor
     finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+}
 
 for (const [name, value] of [
   ['TELEGRAM_TOPIC_ID', '0'], ['TELEGRAM_REVIEW_TOPIC_ID', '12junk'],

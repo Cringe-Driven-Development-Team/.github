@@ -45,8 +45,15 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const githubTopic = topic('TELEGRAM_TOPIC_ID', 26)!;
   const reviewTopic = topic('TELEGRAM_REVIEW_TOPIC_ID', 1513)!;
   const apidogTopic = topic('TELEGRAM_APIDOG_TOPIC_ID');
+  const proxyUrl = env.TELEGRAM_PROXY_URL;
+  if (proxyUrl !== undefined) {
+    try {
+      const url = new URL(proxyUrl);
+      if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error();
+    } catch { throw new Error('TELEGRAM_PROXY_URL must be an HTTP or HTTPS URL with a hostname'); }
+  }
   let telegram: TelegramConfig | undefined;
-  if (sendEnabled) telegram = { botToken: required('TELEGRAM_BOT_TOKEN'), chatId: required('TELEGRAM_CHAT_ID') };
+  if (sendEnabled) telegram = { botToken: required('TELEGRAM_BOT_TOKEN'), chatId: required('TELEGRAM_CHAT_ID'), ...(proxyUrl === undefined ? {} : { proxyUrl }) };
   if (env.TELEGRAM_CHAT_ID !== undefined && !/^-?[1-9]\d*$/.test(env.TELEGRAM_CHAT_ID)) throw new Error('TELEGRAM_CHAT_ID must be an integer ID');
   if (sendEnabled && apidogTopic === undefined) throw new Error('TELEGRAM_APIDOG_TOPIC_ID is required');
   let userMap: Record<string, string | number> = {};
