@@ -13,5 +13,10 @@ export function verifyGithub(raw: Uint8Array, signature: string, secret: string)
 }
 
 export function verifyApidog(raw: Uint8Array, signature: string, secret: string): boolean {
-  return verify(raw, signature, secret, 'sha1');
+  if (signature.startsWith('sha1=')) return verify(raw, signature, secret, 'sha1');
+  if (!/^[A-Za-z0-9+/]{27}=$/.test(signature)) return false;
+  const actual = Buffer.from(signature, 'base64');
+  if (actual.length !== 20 || actual.toString('base64') !== signature) return false;
+  const expected = createHmac('sha1', secret).update(raw).digest();
+  return timingSafeEqual(actual, expected);
 }
