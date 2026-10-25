@@ -5,6 +5,14 @@
 SQLite. При `WEBHOOK_ALERTS_SEND_ENABLED=false` (по умолчанию) worker не запускается:
 приём и `/health` работают без Telegram, payload остаётся для последующей обработки.
 
+Необязательный `TELEGRAM_PROXY_URL` задаёт HTTP/HTTPS-прокси только для отправки
+Telegram (`sendMessage`), например `http://proxy.internal:2080`. `TELEGRAM_PROXY_URL` не применяется к GitHub API. Без этой настройки Telegram отправляется напрямую; пустой URL,
+некорректный адрес и другие схемы (включая SOCKS) останавливают запуск с ошибкой.
+Для настроенного прокси `NO_PROXY` не обходит этот маршрут.
+Используется параметр отдельного запроса Bun `fetch`, а не глобальные переменные
+окружения прокси. Локальному прокси нужен удалённый выход, с которого доступен
+Telegram Bot API: сам по себе локальный listener проблему маршрута не решает.
+
 ## Образ, CI и порядок интеграции
 
 `checks.yml` проверяет `bun test`, `bunx tsc --noEmit`, сборку Docker и настоящий
@@ -229,8 +237,8 @@ pending-доставки в боевой Telegram при проверке. Пе�
 Локальная автоматическая проверка `bun test tests/snapshot.test.ts` оставляет
 исходную WAL-базу открытой, восстанавливает только снимок, сверяет `pending`/`sent`,
 ID и повторную доставку GitHub/Apidog, затем проверяет `/health` и отсутствие
-сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS
-ещё не выполнялось; его результат фиксируется при интеграции infra.
+сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS выполнено в Task 9 с синтетическими
+строками и выключенным sender; результат и ограничения записаны в журнале ниже.
 
 ## Переключение без двойной отправки
 
@@ -352,17 +360,126 @@ worker. При сетевом обрыве или аварии после при
 
 ## Журнал живой приёмки
 
-В этом коммите выполнены только локальные проверки. Для каждого пункта ниже
+Инфраструктурная приёмка выполнена в Task 9 (подробности ниже), без сообщений
+в Telegram. Настоящий GitHub intake проверен ниже; Apidog и переключение ещё
+не приняты. Для каждого пункта ниже
 вписать UTC-время, SHA/digest, идентификаторы доставок/строк, команды и результат
 без ключей, подписей и полного payload. Pending нельзя считать проверкой.
 
 | Проверка | Фактический результат |
 | --- | --- |
-| Публикация SHA в GHCR, pull с VPS | Pending — после merge Task 8 |
-| Infra sub-issue #20 и API-проверка связи | Pending — контроллер Task 8 |
-| GitHub signed delivery, health, duplicate | Pending — Tasks 9–10 |
+| Публикация SHA в GHCR, pull с VPS | SHA `08e7968fa0d39dd5f25fe8495c58d78006a26653`, digest `sha256:30718ed06926bff66627502361185c2ca6ebca78b20b044ce4d8bba92f12e858`; anonymous pull с VPS успешен |
+| Infra sub-issue #20 и API-проверка связи | infra#70 подтверждена через sub_issues API, закрыта после merge PR #73 |
+| GitHub signed delivery, health, duplicate | Task 9: health 200; синтетические GitHub/Apidog: неверная подпись 401, первая доставка 202, повтор 200; конфликт GitHub ID 409. Task 10: настоящий ping/push 202, redelivery push 200; по одной строке на GUID |
 | Apidog live header, fixture и тестовый чат | Pending — Task 10 |
-| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Pending — Task 9 |
+| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Task 9: синтетические pending/sent проверены. Task 10: после сверки ID 1–58 финальный snapshot восстановлен без сети, integrity ok, duplicate rejected, pending/due нет; подробности ниже |
 | Репетиция отката и отсутствие двойной отправки | Pending — до переключения Task 10 |
 | Граница Actions/worker, GitHub/Apidog в боевых темах | Pending — Task 10 |
 | Board, close, reminders после переключения и отката | Pending — Task 10 |
+
+Источник инфраструктурных результатов — [infra RUNBOOK на проверенном main](https://github.com/Cringe-Driven-Development-Team/infra/blob/edc13058522c850c3cac5cfeb46ba278a74c5c10/RUNBOOK.md#фактическая-проверка-infra70-2026-10-24-utc).
+`systemctl start restic-backup` завершился `Result=success`, `ExecMainStatus=0`.
+Snapshot `d8b71852ca25c0c3bedd7faa0f4a47a20c41f20261972cf79785b99f75b8e20e`
+создан `2026-10-24T21:33:58Z` и восстановлен командой:
+
+```sh
+restic restore d8b71852ca25c0c3bedd7faa0f4a47a20c41f20261972cf79785b99f75b8e20e --host auxiliary --target /var/tmp/hooks-restore.K7QIjA --include /var/lib/docker/volumes/hooks_hooks_data/_data/snapshots/queue.sqlite
+```
+
+Изолированная проверка в закреплённом образе с `--network none` без worker дала
+`PRAGMA integrity_check=ok`, сохранённые pending/sent и stable-ID duplicate.
+Синтетический статус sent и message ID были заданы скриптом и не доказывают
+доставку в Telegram. После удаления тестовых строк создан и отдельно восстановлен
+чистый snapshot `837743262111103e2929288a77b24cb46376c94ec3c71c4a55158abdfd7b1088`
+(`2026-10-24T21:37:06Z`): integrity ok, ноль тестовых deliveries/outbox.
+Обычное восстановление выполнять из этого или более позднего чистого snapshot:
+первый тестовый архив содержит синтетическую pending-строку.
+
+Infra PR #73 merged в `edc13058522c850c3cac5cfeb46ba278a74c5c10`;
+[post-merge run 40139285195](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40139285195)
+успешен, включая production apply/verify. Sender оставлен false.
+
+Владелец отдельно разрешил Task 10. После обновления GitHub scopes контроллер
+создал organization hook `702764072`: active, TLS verification включена, URL
+`https://hooks.cellestial.ru/webhooks/github`, события `push`, `issues`,
+`issue_comment`, `pull_request`, `pull_request_review`. Secret взят из Vault.
+Настоящий GitHub ping `a537a93e-d004-11f1-8716-24d99f5d0ff6` и push
+`adba7d2a-d004-11f1-8fad-583c490826f7` получили `202`; повтор push — `200`.
+Контроллер проверил SQLite на VPS: ровно одна строка для каждого GUID.
+Sender остаётся `false`: эти результаты подтверждают intake, отправка worker ещё pending.
+Пограничный push `adba7d2a-d004-11f1-8fad-583c490826f7` (`1e7de41`, ветка
+`automation-20-webhooks-ghcr-fix`) классифицирован как `already sent` старым sender:
+[Actions run 40143875584](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40143875584)
+успешен, в теме `26` подтверждено сообщение `7370` от `2026-10-24T23:43:20Z`.
+Эта доставка включена в завершённую сверку ID `1–67` ниже и не должна
+воспроизводиться worker при переключении.
+Прежний отказ чтения org hooks/variable из-за scope устранён контроллером;
+прежнее состояние variable здесь не утверждается.
+Контроллер read-only подтвердил существующие темы: Apidog `6033`, GitHub `26`,
+Code Review `1513` в чате `-1003713420351`; отправка worker не проверялась.
+Владелец настраивает Apidog target вручную: MCP не предоставляет Notifications.
+Для Apidog остаются нужны настоящая доставка,
+подтверждение signature header (в Vault provisional `X-Apidog-Signature`) и
+обезличенная fixture. #20 пока не закрывать.
+
+Сверка shadow-очереди завершена для фиксированной границы SQLite ID `1–67`:
+`32 already sent`, `35 intentionally silent`, `0 unresolved`. Отправленные события
+сопоставлены с фактическими сообщениями старого bot и Actions; тихие — с triggers
+callers и фильтрами старого sender. Успешный Actions run сам по себе не считался
+подтверждением сообщения. Это сверка старой отправки, не проверка отправки worker.
+
+Контроллер применил `Store.prepare(id, [])` ко всем 67 строкам, сохранив исходные
+доставки и dedupe-ключи; outbox и review_groups остались пустыми (`0`).
+В том числе `Store.prepare(id, [])` применён к ID `66–67`: ID `66`
+(`converted_to_draft`) исключён caller, ID `67` (backend `api-18` push)
+подтверждён сообщением старого bot `7424`. Это завершает проверенные
+shadow-доставки без сообщений нового сервиса.
+
+После сверки прежней границы ID `1–58` создан Restic snapshot
+`0102ab05f313c8c37f5af7f3a365b3b9f81784905565405027132b796cc10c93`
+в `2026-10-25T11:56:28Z`. Его восстановление в изолированном контейнере без сети
+дало `integrity_check=ok`, повтор стабильного delivery ID отвергнут как duplicate,
+нет pending/due обработок. Sender остаётся `false`. Новые доставки после ID `67`
+потребуют отдельной сверки перед включением worker. Настоящая отправка нового
+сервиса в Telegram, Apidog и репетиция rollback по-прежнему pending.
+
+Проверка Apidog через CLI не дала доставку: прямое создание endpoint в защищённой
+main отклонено (`403013`, ограничение external AI edits). Контроллер создал
+изолированную AI-ветку, добавил и изменил тестовый endpoint; в 20-секундном окне
+наблюдения VPS не получил HTTP-запросов Apidog, строк Apidog в очереди нет.
+Первая тестовая AI-ветка архивирована, main не менялась.
+
+Следующая попытка: из-за защиты main и невозможности создать endpoint через UI
+контроллер подготовил AI-ветку
+`ai/20261025-from-main-webhook-alerts-delivery` (`1413089`), endpoint
+`45839509` (`GET /__webhook_alerts_smoke`) и MR `39835`, содержащий только этот
+endpoint. CLI approve завершился `Invalid Parameter`. После возражения владельца
+против добавления временного endpoint в main контроллер закрыл MR `39835`
+(проверен статус `CLOSED`) и архивировал ветку `1413089`. В main проверены только
+10 исходных endpoints, smoke endpoint отсутствует. Поведение уведомлений для
+изменений dev-ветки ещё исследуется; успешной доставки эта попытка не подтверждает.
+Header, настоящая fixture и отправка Apidog по-прежнему pending.
+
+Дополнительная проверка `BRANCH_CREATED` также не подтвердила HTTP-доставку:
+временное правило `43506` удалено (в списке снова только `43505`). Пустая
+стандартная sprint-ветка `webhook-alerts-smoke-20261025` (`1413097`) остаётся
+активной: CLI archive по имени/ID завершился ошибкой, delete требует archive.
+Это отдельная ветка, её очистка остаётся владельцу/контроллеру.
+
+Перед проверкой маршрута Telegram создан Restic pre-route snapshot
+`8728497eda7fdaf1513a698d4d6a0971524c71507947578cf4c068d079edc6ec`
+в `2026-10-25T12:30:34Z`. Временный `extra_hosts` из infra PR `75` не решил
+доступ к Telegram: `getMe` с валидным токеном через `149.154.167.220` с auxiliary
+VPS завершался timeout, тогда как локально возвращал `200`. Прежний no-token
+`404` оказался ложноположительной проверкой и не подтверждает рабочий Bot API.
+
+Контроллер повторно применил роль из main: `extra_hosts=[]`, PR `75` закрыт
+(`CLOSED`), контейнер healthy, sender `false`. Нужен прокси с удалённым выходом,
+как в частном `TP-Prepare/vk-monitoring`; реальная отправка по-прежнему pending.
+
+Последний проверенный Restic snapshot после подготовки ID `1–65` имеет префикс
+`f25294…`, время `2026-10-25T12:40:03Z`; изолированное восстановление для этой
+границы прошло. Snapshot после подготовки ID `67` здесь не подтверждён.
+После подготовки ID `1–67` live-очередь содержит `71` delivery, `67 prepared`,
+ID `68–71` pending, outbox `0`, sender `false`. Эти новые строки требуют
+отдельного аудита перед включением worker.
