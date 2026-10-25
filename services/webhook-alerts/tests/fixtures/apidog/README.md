@@ -1,19 +1,19 @@
 # Apidog fixture status
 
-`synthetic.json` is an invented, anonymized test fixture, **not an observed Apidog delivery**.
-No credential or real project identifier is included. `X-Synthetic-Signature` in tests
-is an arbitrary configured header, not a claim about Apidog's actual header.
+`anonymized-live-structure.json` is anonymized-from-live-structure: its four top-level
+string fields (`event`, `title`, multiline `content`, `appLink`) match a controller-verified
+live endpoint create/update webhook. Values and identifiers are invented; no original
+payload, credential or real project identifier is included. Observed event: `API_UPDATED`;
+observed app host: `app.apidog.com`. No notification ID was present, so rolling raw-body
+hash deduplication applies.
 
-The provisional projection reads `event`, `object.name`, `object.url`, and a string
-`notificationId` as a delivery ID. Generic `id` is deliberately ignored because it
-could identify an endpoint or document rather than a notification. No actor, test
-result, object URL, or API path is inferred. Unknown/missing fields produce a short
-source/event card. Actual project fields must be verified before production use.
+The controller verified `X-Apidog-Signature` as canonical base64 HMAC-SHA1 over exact raw
+bytes. Tests exercise that header, both cryptographic encodings, malformed signatures,
+and mismatched bodies/keys. `X-Synthetic-Signature` remains an arbitrary configured header.
 
-[Official notification documentation](https://share.apidog.com/apidoc/docs-site/544525/notification-settings-616240m0)
-describes HMAC SHA-1 with `sha1=` and supported trigger categories, but does not
-specify the signature header or a JSON payload schema. An available project OpenAPI
-export describes API resources and does not establish notification settings/payloads.
+`synthetic.json` is an older invented fixture used to exercise optional `notificationId`
+deduplication and documented `sha1=<hex>` authentication; it is not a live payload claim.
+Generic object IDs are deliberately ignored.
 
-Live fixture capture, header verification and Telegram acceptance remain pending;
-see the [service runbook](../../../README.md).
+Live acceptance of the fix still awaits redeploy/retry and isolated Telegram verification;
+see the [service runbook](../../../README.md). Sender remains disabled.

@@ -134,29 +134,22 @@ SQLite недоступна — `503`, доставка подлежит пов�
 ## Apidog: приём и незавершённая live-проверка
 
 [Официальные настройки уведомлений Apidog](https://share.apidog.com/apidoc/docs-site/544525/notification-settings-616240m0)
-описывают `Signature Auth` как HMAC SHA-1 с префиксом `sha1=`, но не задают имя
-заголовка и JSON-контракт уведомления. `APIDOG_SIGNATURE_HEADER` выбирается по
-фактически полученному запросу. Значение заголовка в локальных тестах — вымышленное.
+описывают `Signature Auth` как HMAC SHA-1 с префиксом `sha1=`. Контроллер
+подтвердил настоящую доставку обычного create/update endpoint: заголовок
+`X-Apidog-Signature` содержит канонический base64 HMAC SHA-1 от исходных байтов
+тела. Приёмник поддерживает обе кодировки и проверяет подпись до сохранения.
 
-**Live fixture и приёмка пока не выполнены.** Имеющаяся fixture синтетическая;
-проектный OpenAPI export не содержит notification target settings/payload.
-До включения боевых уведомлений:
+Наблюдаемая структура содержит строки `event`, `title`, `content`, `appLink`;
+для обновления API получено `event=API_UPDATED`, `content` содержит переводы строк,
+ссылка ведёт на `app.apidog.com`. Fixture `anonymized-live-structure.json` повторяет
+эту структуру с вымышленными значениями, без сохранения настоящего payload.
+Карточка экранирует и ограничивает title/content, сохраняет переводы строк и
+показывает кнопку только для безопасного `appLink`, в настроенной теме Apidog.
 
-1. В Settings → Notifications → Notification Targets создать канал `Webhook` с
-   URL `https://hooks.cellestial.ru/webhooks/apidog`. При отключённой отправке включить
-   `Signature Auth`, отдельный ключ и нужные endpoint/schema/document события.
-   Для завершения автоматических тестов настроить уведомления сценария Apidog.
-   После сохранения target привязать его к Notification Events нужного проекта.
-2. Получить тестовую доставку, определить имя заголовка без публикации ключа,
-   настроить `APIDOG_SIGNATURE_HEADER` и подтвердить проверку исходных байтов.
-3. Сохранить обезличенный payload с настоящей структурой в `tests/fixtures/apidog/`.
-   Уточнить parser и тесты по фактическим полям; `notificationId`, `event`,
-   `object.name`, `object.url` сейчас являются только синтетическим контрактом.
-4. Подтвердить повтор доставки без новой строки/сообщения и отправку в изолированный
-   тестовый чат с заданным `TELEGRAM_APIDOG_TOPIC_ID`; записать результат здесь.
-
-Проекция берёт только имеющиеся source/event/object/link. Нет объекта или URL —
-короткая карточка без выдуманной ссылки; неизвестное событие остаётся читаемым.
+**Live-приёмка исправления ожидает redeploy и повторной доставки.** Старая версия
+ответила 401 на base64-подпись; это наблюдение ещё не подтверждает успешный приём
+исправленной версией. Контроллер должен повторить событие, проверить дедупликацию
+и доставку в изолированный чат. Отправитель остаётся выключенным до live-приёмки.
 Raw JSON сохраняется целиком, без вывода тела и ключей в лог.
 
 Если подтверждён устойчивый ID уведомления, дедупликация постоянная по
@@ -483,3 +476,50 @@ VPS завершался timeout, тогда как локально возвр�
 После подготовки ID `1–67` live-очередь содержит `71` delivery, `67 prepared`,
 ID `68–71` pending, outbox `0`, sender `false`. Эти новые строки требуют
 отдельного аудита перед включением worker.
+
+### Telegram proxy и следующая граница shadow-очереди — 2026-10-25
+
+[`.github` PR #31](https://github.com/Cringe-Driven-Development-Team/.github/pull/31)
+добавил явный proxy только для Telegram API;
+[infra PR #77](https://github.com/Cringe-Driven-Development-Team/infra/pull/77)
+развернул Xray sidecar на auxiliary VPS. Используется вторая рабочая VLESS Reality
+ссылка владельца, сохранённая в Ansible Vault; исходную ссылку можно подставить
+позже через тот же Vault и повторное применение роли. Образ сервиса закреплён
+digest `sha256:4424881b11af1f32a690831d5c9b87351852b4767e182e28f8703e68a90d7622`.
+До и после повторной выкладки из `main` Telegram `getMe` через sidecar вернул
+`200`; настоящий вызов `sendMessage` нового сервиса отправил только отмеченное
+тестовое сообщение `7437` в тему Apidog `6033`. Другие события новый sender не
+отправлял: `WEBHOOK_ALERTS_SEND_ENABLED=false`. Последующий
+[infra run 40198443651](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40198443651)
+завершился успешно, включая `auxiliary.yml` и `verify.yml`; `/health` и контейнер
+`hooks` healthy, `telegram-proxy` running.
+
+Для границы SQLite ID `68–86` read-only сверка и независимое ревью подтвердили
+`11 already sent`, `8 intentionally silent`, `0 unresolved`: карточки старого бота
+сверены по событию, объекту, времени и Actions; для push совпали SHA. Перед
+изменением очереди снят SQLite snapshot и выполнен Restic backup
+(`2026-10-25T13:45:44Z`, `Result=success`, `ExecMainStatus=0`). При sender `false`,
+пустых outbox/review_groups и совпадающих GUID выполнен `Store.prepare(id, [])`
+только для ID `68–86`. Повторный snapshot и Restic backup
+(`2026-10-25T13:46:29Z`) завершились успешно. Итог: `86` доставок, `86 prepared`,
+outbox `0`, `integrity_check=ok`, Apidog `0`. Новые ID `>86` нужно сверить отдельно
+перед переключением.
+
+После включения владельцем CLI-доступа к обычной sprint-ветке временный endpoint
+`45845223` создан и обновлён только в `webhook-alerts-smoke-20261025`; `main`
+Apidog не менялась. Настоящий POST достиг сервиса, но старая версия ответила
+`401`: заголовок `X-Apidog-Signature` содержал корректный base64 HMAC-SHA1,
+тогда как старая версия принимала только `sha1=hex`. Реальный payload имеет поля
+`event`, `title`, `content`, `appLink` без устойчивого ID. Исправление и тесты в
+`c49429c` ожидают выкладки и повторной live-доставки; в очереди Apidog пока `0`.
+Организация по-прежнему использует старый Actions sender. Не включать worker и
+не задавать `TELEGRAM_EVENTS_SOURCE=webhook` до проверки исправленной версии и
+репетиции отката.
+
+Следующая граница GitHub shadow-очереди ID `87–102` также сверена независимо:
+`10 already sent`, `6 intentionally silent`, `0 unresolved`. После snapshot и
+Restic backup (`2026-10-25T14:15:40Z`, success) выполнен `Store.prepare(id, [])`
+только для этих 16 строк при совпадающих GUID, sender `false`, пустых
+outbox/review_groups и отсутствии leases. Второй snapshot/backup в
+`14:16:01Z` успешен. На момент проверки: `110` доставок, `102 prepared`,
+outbox `0`, `integrity_check=ok`, Apidog `0`; ID `103+` ещё требуют сверки.
