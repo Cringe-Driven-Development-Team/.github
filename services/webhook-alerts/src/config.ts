@@ -8,6 +8,7 @@ export interface Config {
   port: number;
   sendEnabled: boolean;
   telegram?: TelegramConfig;
+  apidogTelegram?: TelegramConfig;
   githubApiToken?: string;
   githubTopic: number;
   reviewTopic: number;
@@ -56,6 +57,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   if (sendEnabled) telegram = { botToken: required('TELEGRAM_BOT_TOKEN'), chatId: required('TELEGRAM_CHAT_ID'), ...(proxyUrl === undefined ? {} : { proxyUrl }) };
   if (env.TELEGRAM_CHAT_ID !== undefined && !/^-?[1-9]\d*$/.test(env.TELEGRAM_CHAT_ID)) throw new Error('TELEGRAM_CHAT_ID must be an integer ID');
   if (sendEnabled && apidogTopic === undefined) throw new Error('TELEGRAM_APIDOG_TOPIC_ID is required');
+  const apidogTelegram = sendEnabled ? { ...telegram!, botToken: required('TELEGRAM_APIDOG_BOT_TOKEN') } : undefined;
   let userMap: Record<string, string | number> = {};
   if (env.TELEGRAM_USER_MAP !== undefined) {
     try {
@@ -66,5 +68,5 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     } catch { throw new Error('TELEGRAM_USER_MAP must map GitHub logins to Telegram user IDs'); }
   }
   return { githubWebhookSecret, apidogSignatureKey, apidogSignatureHeader, databasePath, port, sendEnabled,
-    telegram, githubApiToken: env.GITHUB_API_TOKEN, githubTopic, reviewTopic, apidogTopic, userMap };
+    telegram, apidogTelegram, githubApiToken: env.GITHUB_API_TOKEN, githubTopic, reviewTopic, apidogTopic, userMap };
 }
