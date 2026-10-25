@@ -483,3 +483,36 @@ VPS завершался timeout, тогда как локально возвр�
 После подготовки ID `1–67` live-очередь содержит `71` delivery, `67 prepared`,
 ID `68–71` pending, outbox `0`, sender `false`. Эти новые строки требуют
 отдельного аудита перед включением worker.
+
+### Telegram proxy и следующая граница shadow-очереди — 2026-10-25
+
+[`.github` PR #31](https://github.com/Cringe-Driven-Development-Team/.github/pull/31)
+добавил явный proxy только для Telegram API;
+[infra PR #77](https://github.com/Cringe-Driven-Development-Team/infra/pull/77)
+развернул Xray sidecar на auxiliary VPS. Используется вторая рабочая VLESS Reality
+ссылка владельца, сохранённая в Ansible Vault; исходную ссылку можно подставить
+позже через тот же Vault и повторное применение роли. Образ сервиса закреплён
+digest `sha256:4424881b11af1f32a690831d5c9b87351852b4767e182e28f8703e68a90d7622`.
+До и после повторной выкладки из `main` Telegram `getMe` через sidecar вернул
+`200`; настоящий вызов `sendMessage` нового сервиса отправил только отмеченное
+тестовое сообщение `7437` в тему Apidog `6033`. Другие события новый sender не
+отправлял: `WEBHOOK_ALERTS_SEND_ENABLED=false`. Последующий
+[infra run 40198443651](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40198443651)
+завершился успешно, включая `auxiliary.yml` и `verify.yml`; `/health` и контейнер
+`hooks` healthy, `telegram-proxy` running.
+
+Для границы SQLite ID `68–86` read-only сверка и независимое ревью подтвердили
+`11 already sent`, `8 intentionally silent`, `0 unresolved`: карточки старого бота
+сверены по событию, объекту, времени и Actions; для push совпали SHA. Перед
+изменением очереди снят SQLite snapshot и выполнен Restic backup
+(`2026-10-25T13:45:44Z`, `Result=success`, `ExecMainStatus=0`). При sender `false`,
+пустых outbox/review_groups и совпадающих GUID выполнен `Store.prepare(id, [])`
+только для ID `68–86`. Повторный snapshot и Restic backup
+(`2026-10-25T13:46:29Z`) завершились успешно. Итог: `86` доставок, `86 prepared`,
+outbox `0`, `integrity_check=ok`, Apidog `0`. Новые ID `>86` нужно сверить отдельно
+перед переключением.
+
+Ни одного подлинного Apidog HTTP webhook пока не получено. Подпись, имя header и
+реальный формат payload ещё не подтверждены; организация по-прежнему использует
+старый Actions sender. Не включать worker и не задавать
+`TELEGRAM_EVENTS_SOURCE=webhook` до live-проверки Apidog и репетиции отката.
