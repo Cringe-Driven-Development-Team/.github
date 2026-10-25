@@ -376,7 +376,7 @@ Task 10 ниже фиксируют фактические доставки, п�
 | Граница Actions/worker, GitHub/Apidog в боевых темах | Org variable `TELEGRAM_EVENTS_SOURCE=webhook` видна только `.github`, `backend`, `frontend`, `infra`; старый `notify` skipped. Новый worker отправил GitHub `133/136` как `7509/7510` в тему `26`, Apidog `130/139` как `7508/7511` в тему `6033`; очередь обработана без дублей |
 | Code Review в теме `1513` | Подписанный синтетический `pull_request.review_requested` отправлен на живой localhost-маршрут: HTTP `202`, SQLite delivery `147`, outbox `11 sent`, Telegram `7519` в теме `1513`; повтор того же GUID — `200` без дубля. Это проверка боевого маршрута/отправки, а не настоящего GitHub review от участника |
 | Board, close, reminders после переключения и отката | [Тестовая .github issue #33](https://github.com/Cringe-Driven-Development-Team/.github/issues/33) открыта: [run 40206555327](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40206555327) выполнил `board / add-to-project`, карточка появилась в Scrumban/Backlog. После закрытия issue как completed карточка в Scrumban/Done; GitHub ID `143/144` дали Telegram `7515/7516` в теме `26`, старый `notify` skipped. `board / close` в [infra run 40204386040](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40204386040) и ручной [reminders run 40205201295](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40205201295) также успешны |
-| Временная ветка Apidog | Endpoint `45845223` удалён после проверки `API_DELETED`; sprint-ветка `webhook-alerts-smoke-20261025` (`1413097`) архивирована и удалена. Две тестовые AI-ветки `1412939/1413158` также удалены; `branch list --type all` не показывает smoke-веток. Main Apidog не менялась |
+| Временная ветка Apidog | Endpoint `45845223` удалён после проверки `API_DELETED`; sprint-ветка `webhook-alerts-smoke-20261025` (`1413097`) архивирована и удалена. Три тестовые AI-ветки `1412939/1413089/1413158` также удалены; связанный с `1413089` MR `39835` закрыт без слияния. `branch list --type all` не показывает веток `webhook-alerts`. Main Apidog не менялась |
 | External AI Edit Permissions в Apidog | Владелец решил оставить права редактирования sprint- и AI-веток через CLI/MCP включёнными для студенческих агентов. Прямые изменения main и general-веток остаются выключенными: `main=false`, `sprint=true`, `general=false`, `ai=true`. Дополнительное действие в UI не требуется |
 
 Источник инфраструктурных результатов — [infra RUNBOOK на проверенном main](https://github.com/Cringe-Driven-Development-Team/infra/blob/edc13058522c850c3cac5cfeb46ba278a74c5c10/RUNBOOK.md#фактическая-проверка-infra70-2026-10-24-utc).
@@ -666,9 +666,10 @@ SQLite ID `144` как Telegram `7516` в тему `26`. Отдельный work
 `webhook-alerts-smoke-20261025` (`1413097`). После проверки `API_UPDATED`
 он удалён через Apidog CLI; настоящая `API_DELETED` была принята как SQLite
 delivery `145`, worker отправил Telegram `7517` в тему `6033` с `attempts=1`.
-Sprint-ветка архивирована и удалена. Две тестовые AI-ветки `1412939` и
-`1413158`, ранее архивированные, также удалены. `apidog branch list --type all`
-не содержит веток `webhook-alerts-smoke`; main Apidog за весь тест не менялась.
+Sprint-ветка архивирована и удалена. Три тестовые AI-ветки `1412939`,
+`1413089` и `1413158`, ранее архивированные, также удалены. Связанный с
+`1413089` MR `39835` закрыт без слияния; `apidog branch list --type all`
+не содержит веток `webhook-alerts`. Main Apidog за весь тест не менялась.
 Владелец решил оставить **Allow AI to modify sprint branch content through CLI or MCP**
 включённым для студенческих агентов. Проверенные значения разрешений:
 `main=false`, `sprint=true`, `general=false`, `ai=true`. Изменений main/general
