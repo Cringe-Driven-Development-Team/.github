@@ -140,6 +140,24 @@ describe('transactional preparation and leases', () => {
     expect(reopened.claimUnprepared(2100, 100)).toEqual([]);
   });
 
+  test('a prepared Apidog message retains its source across restart and retry', () => {
+    const path = databasePath();
+    const first = open(path);
+    first.accept({ ...input('apidog-1'), source: 'apidog' });
+    const [delivery] = first.claimUnprepared(1000, 100);
+    first.prepare(delivery!.id, [{ topic: 26, html: 'Apidog update' }]);
+    first.close();
+
+    const reopened = open(path);
+    const [queued] = reopened.claimDue(1100, 100);
+    expect(queued).toMatchObject({ source: 'apidog', topic: 26, html: 'Apidog update', originType: 'delivery' });
+    reopened.markRetry(queued!.id, 1300, 'telegram_429');
+    reopened.close();
+
+    const retried = open(path);
+    expect(retried.claimDue(1300, 100)[0]).toMatchObject({ id: queued!.id, source: 'apidog', attempts: 2 });
+  });
+
   test('preparation rolls back both outbox insertion and completion if one message cannot be inserted', () => {
     const path = databasePath();
     const store = open(path);

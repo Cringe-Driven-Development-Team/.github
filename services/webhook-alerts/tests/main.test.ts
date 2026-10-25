@@ -91,6 +91,11 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
       'https://api.telegram.org/botapidog-token/sendMessage',
       'https://api.telegram.org/botlocal-token/sendMessage',
     ]);
+    const routed = telegramRequests.map(request => ({ url: request.url, body: JSON.parse(String(request.init?.body)) as Record<string, unknown> }));
+    expect(routed.find(request => String(request.body.text).startsWith('<b>Apidog</b>'))?.url)
+      .toBe('https://api.telegram.org/botapidog-token/sendMessage');
+    expect(routed.find(request => !String(request.body.text).startsWith('<b>Apidog</b>'))?.url)
+      .toBe('https://api.telegram.org/botlocal-token/sendMessage');
     for (const request of githubRequests) expect(request.init).not.toHaveProperty('proxy');
     for (const request of telegramRequests) {
       if (proxyUrl === undefined) expect(request.init).not.toHaveProperty('proxy');
