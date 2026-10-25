@@ -104,7 +104,7 @@ describe('Apidog signed intake', () => {
 describe('Apidog cards', () => {
   for (const event of ['API_UPDATED', 'schema.updated', 'document.updated', 'test.completed']) {
     test(`${event} projects only source/event/title/content/link to configured topic`, () => {
-      const [card] = apidog.formatApidog(delivery({ ...observed, event }, event), { apidogTopic: 88 });
+      const [card] = apidog.formatApidog(delivery({ ...observed, event, extra: 'private-extra-field' }, event), { apidogTopic: 88 });
       expect(card!.topic).toBe(88);
       expect(card!.html).toContain('Apidog');
       expect(card!.html).toContain(event);
