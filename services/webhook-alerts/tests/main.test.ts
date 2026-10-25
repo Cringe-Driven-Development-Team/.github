@@ -17,12 +17,14 @@ test('startup requires Apidog signature settings and enabled mode requires Teleg
   expect(() => loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true' })).toThrow('TELEGRAM_BOT_TOKEN');
   expect(() => loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local' })).toThrow('TELEGRAM_CHAT_ID');
   expect(() => loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001' })).toThrow('TELEGRAM_APIDOG_TOPIC_ID');
+  expect(() => loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' })).toThrow('TELEGRAM_APIDOG_BOT_TOKEN');
 });
 
 for (const proxyUrl of ['http://proxy.internal:2080', 'https://proxy.internal:2080']) {
   test('enabled config retains an HTTP or HTTPS Telegram proxy', () => {
-    const config = loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_PROXY_URL: proxyUrl });
+    const config = loadConfig({ ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_APIDOG_BOT_TOKEN: 'apidog-local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_PROXY_URL: proxyUrl });
     expect(config.telegram).toMatchObject({ proxyUrl });
+    expect(config.apidogTelegram).toMatchObject({ botToken: 'apidog-local', chatId: '-1001', proxyUrl });
   });
 }
 
@@ -74,7 +76,7 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
     bodies.push(JSON.parse(String(init?.body)));
     return Response.json({ ok: true, result: { message_id: bodies.length } });
   }) as unknown as typeof fetch;
-  const service = main.startService(loadConfig({ ...env, DATABASE_PATH: path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local-token', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_REVIEW_TOPIC_ID: '77', TELEGRAM_PROXY_URL: proxyUrl, GITHUB_API_TOKEN: 'local-github-token' }), { fetch: fetcher });
+  const service = main.startService(loadConfig({ ...env, DATABASE_PATH: path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local-token', TELEGRAM_APIDOG_BOT_TOKEN: 'apidog-token', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88', TELEGRAM_REVIEW_TOPIC_ID: '88', TELEGRAM_PROXY_URL: proxyUrl, GITHUB_API_TOKEN: 'local-github-token' }), { fetch: fetcher });
   try {
     const deadline = Date.now() + 3000;
     while (bodies.length < 2 && Date.now() < deadline) await Bun.sleep(5);
@@ -82,15 +84,19 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
   try {
     expect(bodies).toHaveLength(2);
     const githubRequests = requests.filter(request => request.url.startsWith('https://api.github.com/'));
-    const telegramRequests = requests.filter(request => request.url === 'https://api.telegram.org/botlocal-token/sendMessage');
+    const telegramRequests = requests.filter(request => request.url.startsWith('https://api.telegram.org/bot'));
     expect(githubRequests.length).toBeGreaterThan(0);
     expect(telegramRequests).toHaveLength(2);
+    expect(telegramRequests.map(request => request.url).sort()).toEqual([
+      'https://api.telegram.org/botapidog-token/sendMessage',
+      'https://api.telegram.org/botlocal-token/sendMessage',
+    ]);
     for (const request of githubRequests) expect(request.init).not.toHaveProperty('proxy');
     for (const request of telegramRequests) {
       if (proxyUrl === undefined) expect(request.init).not.toHaveProperty('proxy');
       else expect(request.init).toHaveProperty('proxy', { url: 'http://proxy.internal:2080', respectNoProxy: false });
     }
-    expect(bodies.map(body => body.message_thread_id).sort()).toEqual([77, 88]);
+    expect(bodies.map(body => body.message_thread_id).sort()).toEqual([88, 88]);
     expect(bodies.every(body => body.chat_id === '-1001')).toBe(true);
     const db = new Database(path);
     try { expect(db.query<{ status: string }, []>('SELECT status FROM outbox').all()).toEqual([{ status: 'sent' }, { status: 'sent' }]); }

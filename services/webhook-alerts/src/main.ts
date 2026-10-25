@@ -9,7 +9,7 @@ import { createProjector, startWorker } from './worker';
 
 export function startService(config: Config, options: { fetch?: typeof fetch } = {}) {
   // Validate before opening storage even when called directly rather than through loadConfig.
-  if (config.sendEnabled && (!config.telegram || config.apidogTopic === undefined)) throw new Error('Telegram sender configuration is required');
+  if (config.sendEnabled && (!config.telegram || !config.apidogTelegram || config.apidogTopic === undefined)) throw new Error('Telegram sender configuration is required');
   mkdirSync(dirname(config.databasePath), { recursive: true });
   const store = openStore(config.databasePath);
   const controller = new AbortController();
@@ -20,7 +20,7 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
     project: createProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {
       githubTopic: config.githubTopic, reviewTopic: config.reviewTopic, userMap: config.userMap, apidogTopic: config.apidogTopic!,
     }),
-    send: message => sendMessage(message, config.telegram!, fetcher),
+    send: message => sendMessage(message, message.source === 'apidog' ? config.apidogTelegram! : config.telegram!, fetcher),
     signal: controller.signal,
   }) : Promise.resolve();
   let stopping: Promise<void> | undefined;

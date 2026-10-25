@@ -40,7 +40,7 @@ describe('configuration', () => {
     expect(config.sendEnabled).toBe(false);
     expect(config.port).toBe(8080);
     expect(config.databasePath).toBe('/data/queue.sqlite');
-    expect(loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' }).sendEnabled).toBe(true);
+    expect(loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_APIDOG_BOT_TOKEN: 'apidog-local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' }).sendEnabled).toBe(true);
   });
 
   test('rejects malformed flags, invalid ports and empty database paths', () => {

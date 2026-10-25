@@ -31,6 +31,7 @@ export interface OutgoingMessage {
 
 export interface DueMessage extends OutgoingMessage {
   id: number;
+  source: Delivery['source'];
   originType: 'delivery' | 'review_group';
   originId: number;
   ordinal: number;
@@ -62,6 +63,7 @@ interface ReviewGroupRow {
 }
 interface OutboxRow {
   id: number;
+  source: Delivery['source'] | null;
   origin_type: DueMessage['originType'];
   origin_id: number;
   ordinal: number;
@@ -82,8 +84,9 @@ function delivery(row: DeliveryRow): Delivery {
   };
 }
 function message(row: OutboxRow): DueMessage {
+  if (row.source !== 'github' && row.source !== 'apidog') throw new Error('outbox origin has no source');
   return {
-    id: row.id, originType: row.origin_type, originId: row.origin_id, ordinal: row.ordinal,
+    id: row.id, source: row.source, originType: row.origin_type, originId: row.origin_id, ordinal: row.ordinal,
     topic: row.topic, html: row.html,
     ...(row.button_json === null ? {} : { button: JSON.parse(row.button_json) as OutgoingMessage['button'] }),
     ...(row.fallback_html === null ? {} : { fallbackHtml: row.fallback_html }),
@@ -235,9 +238,11 @@ export class Store {
   claimDue(now: number, leaseMs: number): DueMessage[] {
     this.checkLease(now, leaseMs);
     return this.db.transaction(() => {
-      const rows = this.db.query<OutboxRow, [number, number, number]>(`SELECT * FROM outbox
-        WHERE (status = 'pending' AND due_at <= ?) OR (status = 'leased' AND lease_until <= ?)
-        ORDER BY id LIMIT ?`).all(now, now, CLAIM_LIMIT);
+      const rows = this.db.query<OutboxRow, [number, number, number]>(`SELECT o.*,
+        CASE WHEN o.origin_type = 'review_group' THEN 'github' ELSE d.source END AS source
+        FROM outbox o LEFT JOIN deliveries d ON o.origin_type = 'delivery' AND o.origin_id = d.id
+        WHERE (o.status = 'pending' AND o.due_at <= ?) OR (o.status = 'leased' AND o.lease_until <= ?)
+        ORDER BY o.id LIMIT ?`).all(now, now, CLAIM_LIMIT);
       const leaseUntil = now + leaseMs;
       for (const row of rows) {
         this.db.query("UPDATE outbox SET status = 'leased', attempts = attempts + 1, lease_until = ? WHERE id = ?").run(leaseUntil, row.id);

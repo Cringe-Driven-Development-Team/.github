@@ -79,6 +79,7 @@ PR Task 9 (образ по digest, snapshot → Restic → restore) → жива
 | `APIDOG_SIGNATURE_HEADER` | Обязательное имя HTTP-заголовка, сверить с реальной доставкой |
 | `WEBHOOK_ALERTS_SEND_ENABLED` | `false` или `true`, по умолчанию `false` |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Обязательны при отправке; chat ID — целое число |
+| `TELEGRAM_APIDOG_BOT_TOKEN` | Обязателен при отправке; бот для уведомлений Apidog в том же чате и теме Apidog |
 | `TELEGRAM_APIDOG_TOPIC_ID` | Обязателен при отправке, положительный ID темы Apidog |
 | `TELEGRAM_TOPIC_ID`, `TELEGRAM_REVIEW_TOPIC_ID` | По умолчанию `26` и `1513` |
 | `TELEGRAM_USER_MAP` | Необязательный JSON GitHub login → Telegram user ID |
@@ -86,7 +87,10 @@ PR Task 9 (образ по digest, snapshot → Restic → restore) → жива
 | `DATABASE_PATH`, `PORT` | По умолчанию `/data/queue.sqlite`, `8080` |
 
 При неверной конфигурации процесс завершается с именем переменной без её значения.
-При отправке работает единый projector GitHub/Apidog с сохранением группировки ревью.
+GitHub и сгруппированные ревью отправляет `TELEGRAM_BOT_TOKEN`, события Apidog —
+`TELEGRAM_APIDOG_BOT_TOKEN`. Оба бота используют общий chat ID и Telegram proxy.
+Источник сообщения хранится в очереди, поэтому повторная отправка после перезапуска
+сохраняет выбор бота. Группировка ревью сохраняется.
 `SIGTERM`/`SIGINT` прекращает приём, дожидается worker и закрывает SQLite.
 
 Организационная Actions variable `TELEGRAM_EVENTS_SOURCE` — отдельная настройка
