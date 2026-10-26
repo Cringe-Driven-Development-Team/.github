@@ -696,7 +696,7 @@ Sprint-ветка архивирована и удалена. Три тесто�
 Для включённого sender обязательны `APIDOG_PROJECT_ID` (положительный числовой
 ID проекта), `APIDOG_TARGET_BRANCH_ID` (ID main), `APIDOG_PROJECT_NAME` (точное
 имя проекта), `APIDOG_CONTRACT_URL` (публичный HTTP/HTTPS URL контракта),
-`APIDOG_ACCESS_TOKEN` (токен чтения MR) и `APIDOG_TELEGRAM_USER_MAP`.
+`APIDOG_ACCESS_TOKEN` (токен чтения MR и sprint-веток) и `APIDOG_TELEGRAM_USER_MAP`.
 Карта — JSON-объект: ключ — числовой Apidog user ID, значение — объект с
 непустым `name` и строковым числовым `telegramId`. Токен и карту храните в
 `vault_hooks_env`; Telegram IDs берите из проверенной карты организации,
@@ -706,3 +706,10 @@ ID проекта), `APIDOG_TARGET_BRANCH_ID` (ID main), `APIDOG_PROJECT_NAME` (
 неоднозначном MR исходная карточка отправляется с кнопкой «Контракт API»;
 точное совпадение ветки, проекта и UTC-времени слияния добавляет участников
 и кнопку «Открыть MR».
+
+Для `BRANCH_CREATED` сервис сопоставляет `SprintBranch`, точное имя проекта и
+`Created at` (UTC до секунды) со списком sprint-веток Apidog. Однозначное
+совпадение добавляет кнопку «Открыть ветку» с адресом по ID ветки. Если
+уведомление неполное, ответ Apidog неоднозначен или API недоступен, остаётся
+обычная карточка без придуманной ссылки; безопасный `appLink` из исходного
+уведомления сохраняется.
