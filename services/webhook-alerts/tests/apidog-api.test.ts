@@ -137,3 +137,8 @@ test('list uses the existing read timeout and network classification', async () 
   await errorCode(createApidogApi({ token, timeoutMs: 5, fetch: (() => new Promise(() => {})) as unknown as typeof fetch }).listMergeRequests(input), 'timeout');
   await errorCode(createApidogApi({ token, fetch: (async () => { throw new Error(token); }) as unknown as typeof fetch }).listMergeRequests(input), 'network');
 });
+
+test('rejects duplicate MR IDs across pages instead of returning a contradictory snapshot', async () => {
+  const { client } = api([list([openMr], 2), list([{ ...openMr, status: 'MERGED', closedAt: '2026-10-26T10:28:47Z', closedById: 1067537 }])]);
+  await errorCode(client.listMergeRequests(input), 'invalid_response');
+});

@@ -59,6 +59,7 @@ export function createApidogApi(options: { token: string; fetch?: typeof fetch; 
       return withRead(async get => {
         if (!id(input.projectId) || !id(input.targetBranchId)) throw new ApidogApiError('invalid_response');
         const result: ApidogMr[] = [];
+        const seenIds = new Set<number>();
         const pages = new Set<number>();
         let page: number | null = 1;
         while (page !== null) {
@@ -73,6 +74,8 @@ export function createApidogApi(options: { token: string; fetch?: typeof fetch; 
               || typeof row.description !== 'string' || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt))
               || (row.closedAt !== null && (typeof row.closedAt !== 'string' || !Number.isFinite(Date.parse(row.closedAt))))
               || (row.closedById !== null && !id(row.closedById))) throw new ApidogApiError('invalid_response');
+            if (seenIds.has(row.id)) throw new ApidogApiError('invalid_response');
+            seenIds.add(row.id);
             result.push({ id: row.id, sourceBranchId: row.sourceBranchId, targetBranchId: input.targetBranchId,
               createdById: row.createdById, reviewerIds: row.reviewerIds, status: row.status, description: row.description,
               createdAt: row.createdAt, closedAt: row.closedAt, closedById: row.closedById });
