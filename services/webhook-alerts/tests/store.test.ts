@@ -140,6 +140,39 @@ describe('transactional preparation and leases', () => {
     expect(reopened.claimUnprepared(2100, 100)).toEqual([]);
   });
 
+  for (const origin of ['delivery', 'review_group'] as const) {
+    test(`${origin} preserves both buttons across reopening alongside a one-button card`, () => {
+      const path = databasePath();
+      const first = open(path);
+      first.accept(input());
+      const [delivery] = first.claimUnprepared(1000, 100);
+      const twoButtons = {
+        topic: 26, html: 'Apidog MR',
+        button: { text: 'Открыть MR', url: 'https://app.apidog.com/...' },
+        secondaryButton: { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' },
+      };
+      if (origin === 'delivery') first.prepare(delivery!.id, [twoButtons, messages[0]!]);
+      else {
+        first.recordReview(delivery!.id, { repository: 'org/repo', number: 1, reviewer: 'alice', id: 1, state: 'approved' }, 1000);
+        const [group] = first.dueReviewGroups(1000);
+        expect(first.releaseReviewGroup(group!.id, group!.revision, [twoButtons, messages[0]!], 1000)).toBe(true);
+      }
+      first.close();
+      const reopened = open(path);
+      const queued = reopened.claimDue(1100, 100);
+      expect(queued).toHaveLength(2);
+      expect(queued[0]!.button).toEqual({ text: 'Открыть MR', url: 'https://app.apidog.com/...' });
+      expect(queued[0]).toHaveProperty('secondaryButton', { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' });
+      expect(queued[1]!.button).toEqual({ text: 'Open issue', url: 'https://github.com/org/repo/issues/1' });
+      expect(queued[1]).not.toHaveProperty('secondaryButton');
+      const inspect = new Database(path);
+      try {
+        expect(inspect.query<{ button_json: string }, []>('SELECT button_json FROM outbox ORDER BY id DESC LIMIT 1').get()!.button_json)
+          .toBe('{"text":"Open issue","url":"https://github.com/org/repo/issues/1"}');
+      } finally { inspect.close(); }
+    });
+  }
+
   test('a prepared Apidog message retains its source across restart and retry', () => {
     const path = databasePath();
     const first = open(path);

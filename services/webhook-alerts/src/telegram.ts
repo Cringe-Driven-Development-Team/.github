@@ -24,7 +24,7 @@ export async function sendMessage(message: OutgoingMessage, config: TelegramConf
       body: JSON.stringify({
         chat_id: config.chatId, message_thread_id: message.topic, text: message.html,
         parse_mode: 'HTML', link_preview_options: { is_disabled: true },
-        ...(message.button ? { reply_markup: { inline_keyboard: [[message.button]] } } : {}),
+        ...(message.button ? { reply_markup: { inline_keyboard: [[message.button, ...(message.secondaryButton ? [message.secondaryButton] : [])]] } } : {}),
       }),
     });
     try {

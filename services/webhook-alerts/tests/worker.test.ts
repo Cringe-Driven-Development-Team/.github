@@ -54,6 +54,29 @@ test('success sends HTML to the configured topic and persists message_id across 
   expect(await runOnce(deps(reopened, fetcher))).toBe(0);
 });
 
+test('worker sends the MR and API contract buttons in one ordered row', async () => {
+  const { store } = queue();
+  const twoButtons = {
+    topic: 26, html: 'Apidog MR',
+    button: { text: 'Открыть MR', url: 'https://app.apidog.com/...' },
+    secondaryButton: { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' },
+  };
+  const requests: unknown[] = [];
+  const fetcher = (async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    requests.push(JSON.parse(String(init!.body)));
+    return Response.json({ ok: true, result: { message_id: 322 } });
+  }) as unknown as typeof fetch;
+  expect(await runOnce({ ...deps(store, fetcher), project: async () => [twoButtons] })).toBe(1);
+  expect(requests).toEqual([{
+    chat_id: '-100123', message_thread_id: 26, text: 'Apidog MR', parse_mode: 'HTML',
+    link_preview_options: { is_disabled: true },
+    reply_markup: { inline_keyboard: [[
+      { text: 'Открыть MR', url: 'https://app.apidog.com/...' },
+      { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' },
+    ]] },
+  }]);
+});
+
 for (const proxyUrl of [undefined, 'http://proxy.internal:2080', 'https://proxy.internal:2080']) {
   test(`worker sends with ${proxyUrl === undefined ? 'no explicit proxy' : 'configured Telegram proxy'}`, async () => {
     const { store, path } = queue();
