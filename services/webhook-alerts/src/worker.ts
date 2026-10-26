@@ -81,8 +81,15 @@ export async function runOnce({ store, project, send, now }: WorkerDeps & { now:
   return messages.length;
 }
 
-export async function startWorker(deps: WorkerDeps & { signal: AbortSignal }): Promise<void> {
+export async function startWorker(deps: WorkerDeps & { signal: AbortSignal; pollApidog?: () => Promise<void> }): Promise<void> {
+  let nextApidogPoll = 0;
   while (!deps.signal.aborted) {
+    if (deps.pollApidog && Date.now() >= nextApidogPoll) {
+      try { await deps.pollApidog(); }
+      catch { console.error(JSON.stringify({ errorCode: 'apidog_mr_poll_failed' })); }
+      nextApidogPoll = Date.now() + 30000;
+    }
+    if (deps.signal.aborted) break;
     try { await runOnce({ ...deps, now: Date.now() }); }
     catch { console.error(JSON.stringify({ errorCode: 'worker_iteration_failed' })); }
     if (deps.signal.aborted) break;

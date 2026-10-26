@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test, spyOn } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,7 +77,7 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
       expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer local-api');
       expect(init).not.toHaveProperty('proxy');
       if (String(url).endsWith('/sprint-branches')) return Response.json({ success: true, data: [{ id: 5, name: 'feature' }] });
-      const row = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, closedById: 2, status: 'MERGED', closedAt: '2026-10-26T10:28:47Z' };
+      const row = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [], description: 'Contract update', createdAt: '2026-10-26T10:00:00Z', closedById: 2, status: 'MERGED', closedAt: '2026-10-26T10:28:47Z' };
       return String(url).includes('?') ? Response.json({ success: true, data: [row], meta: { nextPage: null } }) : Response.json({ success: true, data: row });
     }
     if (String(url).startsWith('https://api.github.com/')) return Response.json([]);
@@ -137,3 +137,62 @@ test('enabled merge config requires token/map and validates IDs without exposing
   for (const name of ['APIDOG_ACCESS_TOKEN', 'APIDOG_TELEGRAM_USER_MAP']) expect(() => loadConfig({ ...enabled, [name]: undefined })).toThrow(name);
   for (const [name, value] of [['APIDOG_PROJECT_ID', '1junk'], ['APIDOG_TARGET_BRANCH_ID', '0'], ['APIDOG_TELEGRAM_USER_MAP', '{"1":{"name":"x","telegramId":"bad"}}'], ['APIDOG_CONTRACT_URL', 'javascript:bad']]) expect(() => loadConfig({ ...enabled, [name!]: value })).toThrow(name!);
 });
+
+test('MR polling baselines before reading, recovers periodically and ignores raw webhooks', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hooks-poll-'));
+  const path = join(directory, 'queue.sqlite');
+  const bodies: Record<string, unknown>[] = [];
+  const realNow = Date.now.bind(Date);
+  const startedAt = realNow();
+  let elapsed = 0;
+  const clock = spyOn(Date, 'now').mockImplementation(() => startedAt + elapsed);
+  let reads = 0;
+  let cutoffSeen = false;
+  let partialVisible = false;
+  const row = { id: 41, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [], status: 'OPEN', description: 'Historical', createdAt: '2020-01-01T00:00:00Z', closedAt: null, closedById: null };
+  const fetcher = (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(url).startsWith('https://api.apidog.com/')) {
+      const db = new Database(path);
+      try {
+        cutoffSeen = !!db.query("SELECT 1 FROM deliveries WHERE delivery_id = 'mr-poll:cutoff'").get();
+        if (String(url).includes('page=2')) {
+          partialVisible = !!db.query("SELECT 1 FROM deliveries WHERE delivery_id = 'mr-poll:42:OPENED'").get();
+          return Response.json({ success: true, data: [], meta: { nextPage: null } });
+        }
+      } finally { db.close(); }
+      reads++;
+      if (reads === 2) return new Response('private failure payload', { status: 503 });
+      return Response.json({ success: true, data: reads === 1 ? [row] : [row, { ...row, id: 42, description: 'New contract', createdAt: new Date(Date.now()).toISOString() }], meta: { nextPage: reads === 1 ? null : 2 } });
+    }
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, result: { message_id: bodies.length } });
+  }) as typeof fetch;
+  const service = main.startService(loadConfig({ ...env, DATABASE_PATH: path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local-token', TELEGRAM_APIDOG_BOT_TOKEN: 'apidog-token', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' }), { fetch: fetcher });
+  try {
+    const raw = new TextEncoder().encode('{"event":"API_UPDATED","title":"Changed","content":"raw webhook"}');
+    expect((await service.app.request('/webhooks/apidog', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-test-signature': `sha1=${createHmac('sha1', env.APIDOG_SIGNATURE_KEY).update(raw).digest('hex')}` } })).status).toBe(202);
+    await Bun.sleep(50);
+    expect(cutoffSeen).toBe(true);
+    expect(reads).toBe(1);
+    expect(bodies).toHaveLength(0);
+    elapsed = 29900;
+    await Bun.sleep(1100);
+    expect(reads).toBe(1);
+    elapsed = 30000;
+    const failureDeadline = realNow() + 2500;
+    while (reads < 2 && realNow() < failureDeadline) await Bun.sleep(10);
+    expect(reads).toBe(2);
+    expect(bodies).toHaveLength(0);
+    elapsed += 30000;
+    const deadline = realNow() + 2500;
+    while (bodies.length === 0 && realNow() < deadline) await Bun.sleep(10);
+    expect(reads).toBe(3);
+    expect(partialVisible).toBe(false);
+    expect(bodies).toHaveLength(1);
+    expect(String(bodies[0]!.text)).toContain('New contract');
+  } finally { await service.stop(); clock.mockRestore(); }
+  const finalReads = reads;
+  await Bun.sleep(1050);
+  expect(reads).toBe(finalReads);
+  rmSync(directory, { recursive: true, force: true });
+}, 10000);
