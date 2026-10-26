@@ -1,29 +1,16 @@
 import type { Delivery, OutgoingMessage } from './store';
 import type { ApidogApi } from './apidog-api';
 import { escapeHtml, fitHtml, truncate } from './format';
+import { parseApidogBranchNotice } from './apidog-notice';
 export interface ApidogMergeConfig {
   projectId: number; targetBranchId: number; projectName: string; contractUrl: string;
   peopleMap: Record<string, { name: string; telegramId: string }>;
 }
 export function parseMergeNotice(payload: unknown, projectName: string): { sourceBranchName: string; mergedAtIso: string } | undefined {
-  if (!payload || typeof payload !== 'object') return;
-  const body = payload as Record<string, unknown>;
-  if (body.event !== 'BRANCH_MERGED' || typeof body.content !== 'string') return;
-  const content = body.content;
-  const field = (label: string): string | undefined => {
-    const values = content.split(/\r?\n/).filter(line => line.startsWith(`${label}:`));
-    if (values.length !== 1) return;
-    return values[0]!.slice(label.length + 1).trim() || undefined;
-  };
-  const sourceBranchName = field('Merge Sprint Branch');
-  const date = field('Updated at');
-  if (!sourceBranchName || field('Project') !== projectName || !date || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(date)) return;
-  const iso = date.replace(' ', 'T') + '.000Z';
-  const parsed = new Date(iso);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== iso) return;
-  return { sourceBranchName, mergedAtIso: iso };
+  const notice = parseApidogBranchNotice(payload, { event: 'BRANCH_MERGED', projectName, branchField: 'Merge Sprint Branch', timeField: 'Updated at' });
+  return notice ? { sourceBranchName: notice.branchName, mergedAtIso: notice.atIso } : undefined;
 }
-export async function formatApidogMerge(delivery: Delivery, base: OutgoingMessage, api: ApidogApi, config: ApidogMergeConfig): Promise<OutgoingMessage> {
+export async function formatApidogMerge(delivery: Delivery, base: OutgoingMessage, api: Pick<ApidogApi, 'findMergedRequest'>, config: ApidogMergeConfig): Promise<OutgoingMessage> {
   if (delivery.source !== 'apidog' || delivery.event !== 'BRANCH_MERGED') return base;
   const { button: _button, secondaryButton: _secondary, ...rest } = base;
   const fallback = { ...rest, button: { text: 'Контракт API', url: config.contractUrl } };

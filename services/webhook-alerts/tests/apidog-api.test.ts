@@ -32,6 +32,28 @@ test('verified detail and authenticated filtered GET requests', async () => {
   expect(urls.map(u => u.pathname)).toEqual(['/api/v1/projects/1382426/sprint-branches', '/api/v1/projects/1382426/sprint-branches/1388508/merge-requests', '/api/v1/projects/1382426/sprint-branches/1388508/merge-requests/39834']);
   expect(Object.fromEntries(urls[1]!.searchParams)).toEqual({ sourceBranchId: '1413082', status: 'MERGED', page: '1', perPage: '100' });
 });
+test('created branch lookup selects the exact project, name, type and creation second', async () => {
+  const { client, urls } = api([{ success: true, data: [
+    { id: 1413937, name: 'delete-security-scheme-folder', projectId: 1382426, type: 'SPRINT', isMain: false, createdAt: '2026-10-26T13:30:32.000Z' },
+    { id: 99, name: 'delete-security-scheme-folder', projectId: 1382426, type: 'SPRINT', isMain: false, createdAt: '2026-10-26T13:30:31.000Z' },
+  ] }]);
+  expect(typeof client.findCreatedBranch).toBe('function');
+  expect(await client.findCreatedBranch({ projectId: 1382426, branchName: 'delete-security-scheme-folder', createdAtIso: '2026-10-26T13:30:32.000Z' })).toEqual({ id: 1413937 });
+  expect(urls.map(url => url.pathname)).toEqual(['/api/v1/projects/1382426/sprint-branches']);
+});
+test('created branch lookup omits ambiguous or unrelated rows', async () => {
+  const input = { projectId: 1382426, branchName: 'delete-security-scheme-folder', createdAtIso: '2026-10-26T13:30:32.000Z' };
+  const row = { id: 1413937, name: input.branchName, projectId: input.projectId, type: 'SPRINT', isMain: false, createdAt: input.createdAtIso };
+  for (const change of [
+    { name: 'another' }, { projectId: 1 }, { type: 'GENERAL' }, { isMain: true }, { createdAt: '2026-10-26T13:30:33.000Z' }, { id: -1 },
+  ]) expect(await api([{ success: true, data: [{ ...row, ...change }] }]).client.findCreatedBranch(input)).toBeUndefined();
+  expect(await api([{ success: true, data: [row, { ...row, id: 1413938 }] }]).client.findCreatedBranch(input)).toBeUndefined();
+});
+test('created branch lookup classifies API failure without leaking response data', async () => {
+  const input = { projectId: 1382426, branchName: 'delete-security-scheme-folder', createdAtIso: '2026-10-26T13:30:32.000Z' };
+  const fetcher = (async () => new Response(`private response ${token}`, { status: 503 })) as unknown as typeof fetch;
+  await errorCode(createApidogApi({ token, fetch: fetcher }).findCreatedBranch(input), 'http_503');
+});
 test('checks local IDs despite ignored filters and follows nextPage', async () => {
   const { client, urls } = api([branches, list([{ ...mr, sourceBranchId: 12 }], 2), list(), { success: true, data: mr }]);
   expect(await client.findMergedRequest(input)).toEqual(mr); expect(urls[2]?.searchParams.get('page')).toBe('2');
