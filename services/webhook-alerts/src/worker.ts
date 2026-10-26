@@ -1,13 +1,12 @@
 import type { ApidogApi } from './apidog-api';
-import { formatApidogMerge, type ApidogMergeConfig } from './apidog-merge';
-import { formatApidogBranchCreated } from './apidog-branch';
+import type { ApidogMergeConfig } from './apidog-merge';
 import { setTimeout } from 'node:timers/promises';
 import type { Store, Delivery, DueMessage, OutgoingMessage } from './store';
 import type { SendResult } from './telegram';
 import { formatGithub, formatGithubReviewGroup, githubReview, type FormatConfig } from './github';
 import type { GithubApi } from './github-api';
 import { ReviewGroups } from './review-groups';
-import { formatApidog, type FormatConfig as ApidogFormatConfig } from './apidog';
+import { formatApidogMr, type FormatConfig as ApidogFormatConfig } from './apidog';
 
 interface Projector {
   (delivery: Delivery): Promise<OutgoingMessage[]>;
@@ -101,7 +100,5 @@ export function createGithubProjector(api: GithubApi, config: FormatConfig = {})
 export function createProjector(api: GithubApi, config: FormatConfig & ApidogFormatConfig, merge?: { api: ApidogApi; config: ApidogMergeConfig }): WorkerDeps['project'] {
   const github = createGithubProjector(api, config);
   return Object.assign(async (delivery: Delivery) => delivery.source === 'apidog'
-    ? Promise.all(formatApidog(delivery, config).map(base => !merge ? base : delivery.event === 'BRANCH_CREATED'
-      ? formatApidogBranchCreated(delivery, base, merge.api, merge.config)
-      : formatApidogMerge(delivery, base, merge.api, merge.config))) : github(delivery), { reviewGroup: github.reviewGroup });
+    ? merge ? formatApidogMr(delivery, { ...config, ...merge.config }) : [] : github(delivery), { reviewGroup: github.reviewGroup });
 }

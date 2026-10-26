@@ -66,7 +66,7 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
   const directory = mkdtempSync(join(tmpdir(), 'hooks-enabled-'));
   const path = join(directory, 'queue.sqlite');
   const store = openStore(path);
-  store.accept({ source: 'apidog', event: 'BRANCH_MERGED', raw: new TextEncoder().encode(JSON.stringify({ event: 'BRANCH_MERGED', content: 'Merge Sprint Branch: feature\nProject: Example\nUpdated at: 2026-10-26 10:28:47' })), receivedAt: 1 });
+  store.accept({ source: 'apidog', deliveryId: 'mr-poll:39834:MERGED', event: 'MR_MERGED', raw: new TextEncoder().encode(JSON.stringify({ id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [], status: 'MERGED', description: 'Contract update', createdAt: '2026-10-26T10:00:00Z', closedAt: '2026-10-26T10:28:47Z', closedById: 2 })), receivedAt: 1 });
   store.accept({ source: 'github', event: 'pull_request_review', deliveryId: 'review', raw: new TextEncoder().encode(JSON.stringify({ ...review, review: { ...review.review, user: { ...review.review.user, login: 'IndependentReviewer' } } })), receivedAt: 2 });
   store.close();
   const bodies: Record<string, unknown>[] = [];

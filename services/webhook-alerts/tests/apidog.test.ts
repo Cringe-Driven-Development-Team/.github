@@ -131,3 +131,35 @@ describe('Apidog cards', () => {
     expect(card!.html.length).toBeLessThan(4096);
   });
 });
+
+const mrConfig = { apidogTopic: 88, projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: { '1': { name: '<Alice>', telegramId: '111' }, '2': { name: 'Bob', telegramId: '222' } } };
+const mr = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [2], status: 'OPEN', description: 'First <script> & detail', createdAt: '2026-10-26T10:00:00Z', closedAt: null, closedById: 2 };
+function mrDelivery(event: string, value = mr): Delivery {
+  return { ...delivery(value, event), deliveryId: `mr-poll:39834:${event.slice(3)}` };
+}
+describe('polled Apidog MR cards', () => {
+  for (const [event, action, role] of [['MR_OPENED', 'Открыт MR #39834', ''], ['MR_CLOSED', 'Закрыт MR #39834', 'Закрыл MR:'], ['MR_MERGED', 'Слит MR #39834', 'Слил MR:']]) {
+    test(`${event} renders escaped details, mapped roles and exact buttons`, () => {
+      const [card] = apidog.formatApidogMr(mrDelivery(event!), mrConfig);
+      expect(card!.topic).toBe(88);
+      expect(card!.html).toContain(action!);
+      expect(card!.html).toContain('First &lt;script&gt; &amp; detail');
+      expect(card!.html).toContain('Создатель MR: <a href="tg://user?id=111">&lt;Alice&gt;</a>');
+      if (role) expect(card!.html).toContain(`${role} <a href="tg://user?id=222">Bob</a>`);
+      else expect(card!.html).not.toContain('tg://user?id=222');
+      expect(card!.button).toEqual({ text: 'Открыть MR', url: 'https://app.apidog.com/project/1382426/branch/1388508/merge-request/39834' });
+      expect(card!.secondaryButton).toEqual({ text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' });
+    });
+  }
+  test('ignores raw webhook events and MR events without the stable poll ID', () => {
+    for (const event of ['API_UPDATED', 'BRANCH_CREATED', 'BRANCH_MERGED', 'notification', 'MR_OPENED']) expect(apidog.formatApidogMr(delivery(observed, event), mrConfig)).toEqual([]);
+    expect(apidog.formatApidogMr({ ...mrDelivery('MR_CLOSED'), deliveryId: 'mr-poll:39834:OPENED' }, mrConfig)).toEqual([]);
+  });
+  test('keeps roles within the HTML limit and pings each person once', () => {
+    const [card] = apidog.formatApidogMr(mrDelivery('MR_MERGED', { ...mr, description: '<>&'.repeat(10000), closedById: 1 }), mrConfig);
+    expect(card!.html.length).toBeLessThan(4096);
+    expect(card!.html).toContain('Слил MR: &lt;Alice&gt;');
+    expect(card!.html.match(/tg:\/\/user/g)).toHaveLength(1);
+    expect(apidog.formatApidogMr(mrDelivery('MR_CLOSED', { ...mr, closedById: 99 }), mrConfig)[0]!.html).toContain('Закрыл MR: Apidog user 99');
+  });
+});
