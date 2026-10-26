@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ApidogMr } from '../src/apidog-api';
 import { createHmac } from 'node:crypto';
 import { createApp } from '../src/http';
 import { loadConfig } from '../src/config';
@@ -255,4 +256,59 @@ test('real HTTP acceptance survives reopening and returns duplicate or conflict 
   reopened.close();
   expect((await next.fetch(request())).status).toBe(503);
   expect((await next.request('/health')).status).toBe(503);
+});
+
+
+describe('Apidog MR monitoring', () => {
+  const mr = (overrides: Partial<ApidogMr> = {}): ApidogMr => ({ id: 7, sourceBranchId: 2, targetBranchId: 1, createdById: 3, reviewerIds: [4], description: 'Review me', status: 'OPEN', createdAt: new Date(999).toISOString(), closedAt: null, closedById: null, ...overrides });
+  test('first cutoff persists across restart, with equality eligible', () => {
+    const path = databasePath(); const first = open(path);
+    first.startApidogMrMonitoring(1000);
+    expect(first.claimUnprepared(1000, 100)).toEqual([]);
+    first.close(); const store = open(path); store.startApidogMrMonitoring(5000);
+    expect(store.recordApidogMergeRequests([mr(), mr({ id: 8, createdAt: new Date(1000).toISOString() })])).toBe(1);
+    expect(store.claimUnprepared(5000, 100).map(row => [row.deliveryId, row.event, row.receivedAt])).toEqual([['mr-poll:8:OPENED', 'MR_OPENED', 1000]]);
+    const inspect = new Database(path);
+    try {
+      expect(inspect.query('SELECT prepared, received_at FROM deliveries WHERE delivery_id = ?').get('mr-poll:cutoff')).toEqual({ prepared: 1, received_at: 1000 });
+      expect(inspect.query('SELECT prepared FROM deliveries WHERE delivery_id = ?').get('mr-poll:7:OPENED')).toEqual({ prepared: 1 });
+    } finally { inspect.close(); }
+  });
+  test('existing OPEN later CLOSED queues only closure, once across restart', () => {
+    const path = databasePath(); const store = open(path); store.startApidogMrMonitoring(1000);
+    expect(store.recordApidogMergeRequests([mr()])).toBe(0);
+    const closed = mr({ status: 'CLOSED', closedAt: new Date(2000).toISOString(), closedById: 4 });
+    expect(store.recordApidogMergeRequests([closed])).toBe(1);
+    store.close(); const reopened = open(path);
+    expect(reopened.recordApidogMergeRequests([closed])).toBe(0);
+    const pending = reopened.claimUnprepared(3000, 100);
+    expect(pending.map(row => [row.deliveryId, row.event, row.receivedAt])).toEqual([['mr-poll:7:CLOSED', 'MR_CLOSED', 2000]]);
+    expect(JSON.parse(new TextDecoder().decode(pending[0]!.raw))).toEqual(closed);
+  });
+  test('new terminal MR records opened then merged and suppresses historical terminal events', () => {
+    const store = open(); store.startApidogMrMonitoring(1000);
+    const merged = mr({ status: 'MERGED', createdAt: new Date(1000).toISOString(), closedAt: new Date(2000).toISOString(), closedById: 4 });
+    expect(store.recordApidogMergeRequests([merged, mr({ id: 8, status: 'CLOSED', closedAt: new Date(999).toISOString(), closedById: 4 })])).toBe(2);
+    expect(store.recordApidogMergeRequests([merged])).toBe(0);
+    expect(store.claimUnprepared(3000, 100).map(row => row.event)).toEqual(['MR_OPENED', 'MR_MERGED']);
+  });
+  test('requires initialization and rejects invalid or partial terminal snapshots atomically', () => {
+    const store = open(); expect(() => store.recordApidogMergeRequests([mr()])).toThrow();
+    expect(() => store.startApidogMrMonitoring(NaN)).toThrow(); store.startApidogMrMonitoring(1000);
+    for (const invalid of [mr({ id: 8, createdAt: 'invalid' }), mr({ id: 8, status: 'CLOSED' }), mr({ id: 8, status: 'MERGED', closedAt: new Date(2000).toISOString() })]) {
+      expect(() => store.recordApidogMergeRequests([mr({ createdAt: new Date(1000).toISOString() }), invalid])).toThrow();
+      expect(store.claimUnprepared(3000, 100)).toEqual([]);
+    }
+    expect(store.recordApidogMergeRequests([mr({ createdAt: new Date(1000).toISOString() })])).toBe(1);
+  });
+  test('database insert failure rolls back the entire snapshot', () => {
+    const path = databasePath(); const store = open(path); store.startApidogMrMonitoring(1000); const inspect = new Database(path);
+    try {
+      inspect.exec("CREATE TRIGGER reject_terminal BEFORE INSERT ON deliveries WHEN NEW.event = 'MR_MERGED' BEGIN SELECT RAISE(ABORT, 'test write failure'); END");
+      const merged = mr({ status: 'MERGED', createdAt: new Date(1000).toISOString(), closedAt: new Date(2000).toISOString(), closedById: 4 });
+      expect(() => store.recordApidogMergeRequests([merged])).toThrow();
+      expect(store.claimUnprepared(3000, 100)).toEqual([]);
+      inspect.exec('DROP TRIGGER reject_terminal'); expect(store.recordApidogMergeRequests([merged])).toBe(2);
+    } finally { inspect.close(); }
+  });
 });

@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import type { ApidogMr } from './apidog-api';
 import { githubReview } from './github';
 
 export type AcceptResult = 'accepted' | 'duplicate' | 'conflict';
@@ -104,6 +105,10 @@ function message(row: OutboxRow): DueMessage {
   };
 }
 
+function hash(raw: Uint8Array): string {
+  return createHash('sha256').update(raw).digest('hex');
+}
+
 const HASH_WINDOW_MS = 5 * 60 * 1000;
 const CLAIM_LIMIT = 10;
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
@@ -114,7 +119,7 @@ export class Store {
 
   accept(input: DeliveryInput): AcceptResult {
     if (!input.deliveryId?.trim() && input.source !== 'apidog') throw new Error('delivery ID required');
-    const bodyHash = createHash('sha256').update(input.raw).digest('hex');
+    const bodyHash = hash(input.raw);
     const receivedAt = input.receivedAt ?? Date.now();
     const fallback = !input.deliveryId?.trim();
     const deliveryId = fallback ? `sha256:${bodyHash}:${receivedAt}` : input.deliveryId!;
@@ -134,6 +139,49 @@ export class Store {
         (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(input.source, deliveryId, fallback ? 'body_hash' : 'id', input.event, input.raw, bodyHash, receivedAt);
       return 'accepted';
+    }).immediate();
+  }
+
+  startApidogMrMonitoring(now: number): void {
+    if (!Number.isSafeInteger(now)) throw new Error('invalid monitoring cutoff');
+    const raw = new TextEncoder().encode('{}');
+    this.db.query(`INSERT INTO deliveries
+      (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
+      VALUES ('apidog', 'mr-poll:cutoff', 'id', 'MR_MONITORING_STARTED', ?, ?, ?, 1)
+      ON CONFLICT (source, delivery_id) DO NOTHING`).run(raw, hash(raw), now);
+  }
+
+  recordApidogMergeRequests(rows: ApidogMr[]): number {
+    return this.db.transaction(() => {
+      const cutoff = this.db.query<{ received_at: number }, []>(
+        "SELECT received_at FROM deliveries WHERE source = 'apidog' AND delivery_id = 'mr-poll:cutoff'",
+      ).get();
+      if (!cutoff) throw new Error('Apidog MR monitoring not started');
+      const insert = this.db.query(`INSERT INTO deliveries
+        (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
+        VALUES ('apidog', ?, 'id', ?, ?, ?, ?, ?)
+        ON CONFLICT (source, delivery_id) DO NOTHING`);
+      let count = 0;
+      for (const row of rows) {
+        const createdAt = Date.parse(row.createdAt);
+        const closedAt = row.closedAt === null ? null : Date.parse(row.closedAt);
+        if (!Number.isSafeInteger(row.id) || row.id <= 0 || !Number.isFinite(createdAt)
+          || !['OPEN', 'CLOSED', 'MERGED'].includes(row.status)
+          || (closedAt !== null && !Number.isFinite(closedAt))
+          || (row.status !== 'OPEN' && (closedAt === null || !Number.isSafeInteger(row.closedById) || row.closedById! <= 0))) {
+          throw new Error('invalid Apidog MR snapshot');
+        }
+        const raw = new TextEncoder().encode(JSON.stringify(row));
+        const bodyHash = hash(raw);
+        const events: [string, number][] = [['OPENED', createdAt]];
+        if (row.status !== 'OPEN') events.push([row.status, closedAt!]);
+        for (const [event, timestamp] of events) {
+          const prepared = timestamp < cutoff.received_at ? 1 : 0;
+          const result = insert.run(`mr-poll:${row.id}:${event}`, `MR_${event}`, raw, bodyHash, timestamp, prepared);
+          if (!prepared) count += result.changes;
+        }
+      }
+      return count;
     }).immediate();
   }
 
