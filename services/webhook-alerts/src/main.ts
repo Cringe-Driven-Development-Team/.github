@@ -1,3 +1,4 @@
+import { createApidogApi } from './apidog-api';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { loadConfig, type Config } from './config';
@@ -10,6 +11,7 @@ import { createProjector, startWorker } from './worker';
 export function startService(config: Config, options: { fetch?: typeof fetch } = {}) {
   // Validate before opening storage even when called directly rather than through loadConfig.
   if (config.sendEnabled && (!config.telegram || !config.apidogTelegram || config.apidogTopic === undefined)) throw new Error('Telegram sender configuration is required');
+  if (config.sendEnabled && (!config.apidogMerge || !config.apidogAccessToken?.trim())) throw new Error('Apidog merge configuration is required');
   mkdirSync(dirname(config.databasePath), { recursive: true });
   const store = openStore(config.databasePath);
   const controller = new AbortController();
@@ -19,7 +21,7 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
     store,
     project: createProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {
       githubTopic: config.githubTopic, reviewTopic: config.reviewTopic, userMap: config.userMap, apidogTopic: config.apidogTopic!,
-    }),
+    }, { api: createApidogApi({ token: config.apidogAccessToken!, fetch: fetcher }), config: config.apidogMerge! }),
     send: message => sendMessage(message, message.source === 'apidog' ? config.apidogTelegram! : config.telegram!, fetcher),
     signal: controller.signal,
   }) : Promise.resolve();

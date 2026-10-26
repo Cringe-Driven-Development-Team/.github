@@ -6,7 +6,8 @@ import { loadConfig } from '../src/config';
 import { createApp, type AcceptDelivery, type IncomingDelivery } from '../src/http';
 
 const secret = 'local-test-secret';
-const apidogEnv = { APIDOG_SIGNATURE_KEY: 'test-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
+const mergeEnv = { APIDOG_PROJECT_ID: '1382426', APIDOG_TARGET_BRANCH_ID: '1388508', APIDOG_PROJECT_NAME: 'Example', APIDOG_CONTRACT_URL: 'https://vb78fyael1.apidog.io/', APIDOG_ACCESS_TOKEN: 'local-api', APIDOG_TELEGRAM_USER_MAP: '{}' };
+const apidogEnv = { ...mergeEnv, APIDOG_SIGNATURE_KEY: 'test-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
 const config = loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret });
 const encoder = new TextEncoder();
 const json = encoder.encode('{ "message": "Привет 🌍" }\n');
@@ -193,4 +194,13 @@ describe('health', () => {
     expect(response.status).toBe(503);
     expect(await response.text()).toBe('{"error":"storage_unavailable"}');
   });
+});
+
+test('sender configuration rejects malformed Apidog identities without echoing map', () => {
+  const enabled = { ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_APIDOG_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' };
+  for (const [name, value] of [['APIDOG_ACCESS_TOKEN', undefined], ['APIDOG_TELEGRAM_USER_MAP', undefined], ['APIDOG_TELEGRAM_USER_MAP', '{"private":{"name":"secret-name","telegramId":"1"}}'], ['APIDOG_PROJECT_ID', '1.5']]) {
+    let message = '';
+    try { loadConfig({ ...enabled, [name!]: value }); } catch (error) { message = (error as Error).message; }
+    expect(message).toContain(name!); expect(message).not.toContain('secret-name');
+  }
 });

@@ -8,7 +8,8 @@ import { loadConfig } from '../src/config';
 import { openStore } from '../src/store';
 import * as main from '../src/main';
 import review from './fixtures/github/review-submitted.json';
-const env = { GITHUB_WEBHOOK_SECRET: 'local-github', APIDOG_SIGNATURE_KEY: 'local-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
+const mergeEnv = { APIDOG_PROJECT_ID: '1382426', APIDOG_TARGET_BRANCH_ID: '1388508', APIDOG_PROJECT_NAME: 'Example', APIDOG_CONTRACT_URL: 'https://vb78fyael1.apidog.io/', APIDOG_ACCESS_TOKEN: 'local-api', APIDOG_TELEGRAM_USER_MAP: '{}' };
+const env = { ...mergeEnv, GITHUB_WEBHOOK_SECRET: 'local-github', APIDOG_SIGNATURE_KEY: 'local-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
 
 test('startup requires Apidog signature settings and enabled mode requires Telegram config/topic', () => {
   expect(() => loadConfig({ GITHUB_WEBHOOK_SECRET: 'local' })).toThrow('APIDOG_SIGNATURE_KEY');
@@ -65,13 +66,20 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
   const directory = mkdtempSync(join(tmpdir(), 'hooks-enabled-'));
   const path = join(directory, 'queue.sqlite');
   const store = openStore(path);
-  store.accept({ source: 'apidog', event: 'test.completed', raw: new TextEncoder().encode('{"event":"test.completed"}'), receivedAt: 1 });
+  store.accept({ source: 'apidog', event: 'BRANCH_MERGED', raw: new TextEncoder().encode(JSON.stringify({ event: 'BRANCH_MERGED', content: 'Merge Sprint Branch: feature\nProject: Example\nUpdated at: 2026-10-26 10:28:47' })), receivedAt: 1 });
   store.accept({ source: 'github', event: 'pull_request_review', deliveryId: 'review', raw: new TextEncoder().encode(JSON.stringify({ ...review, review: { ...review.review, user: { ...review.review.user, login: 'IndependentReviewer' } } })), receivedAt: 2 });
   store.close();
   const bodies: Record<string, unknown>[] = [];
   const requests: { url: string; init: RequestInit | undefined }[] = [];
   const fetcher = (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
     requests.push({ url: String(url), init });
+    if (String(url).startsWith('https://api.apidog.com/')) {
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer local-api');
+      expect(init).not.toHaveProperty('proxy');
+      if (String(url).endsWith('/sprint-branches')) return Response.json({ success: true, data: [{ id: 5, name: 'feature' }] });
+      const row = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, closedById: 2, status: 'MERGED', closedAt: '2026-10-26T10:28:47Z' };
+      return String(url).includes('?') ? Response.json({ success: true, data: [row], meta: { nextPage: null } }) : Response.json({ success: true, data: row });
+    }
     if (String(url).startsWith('https://api.github.com/')) return Response.json([]);
     bodies.push(JSON.parse(String(init?.body)));
     return Response.json({ ok: true, result: { message_id: bodies.length } });
@@ -83,6 +91,9 @@ test(`enabled entrypoint sends through real worker ${proxyUrl === undefined ? 'w
   } finally { await service.stop(); }
   try {
     expect(bodies).toHaveLength(2);
+    const apidogBody = bodies.find(body => String(body.text).startsWith('<b>Apidog</b>'))!;
+    expect(apidogBody.reply_markup).toEqual({ inline_keyboard: [[{ text: 'Открыть MR', url: 'https://app.apidog.com/project/1382426/branch/1388508/merge-request/39834' }, { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' }]] });
+    expect(JSON.stringify(bodies)).not.toContain('local-api');
     const githubRequests = requests.filter(request => request.url.startsWith('https://api.github.com/'));
     const telegramRequests = requests.filter(request => request.url.startsWith('https://api.telegram.org/bot'));
     expect(githubRequests.length).toBeGreaterThan(0);
@@ -120,3 +131,9 @@ for (const [name, value] of [
     expect(() => loadConfig({ ...env, [name]: value })).toThrow(name);
   });
 }
+
+test('enabled merge config requires token/map and validates IDs without exposing values', () => {
+  const enabled = { ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_APIDOG_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' };
+  for (const name of ['APIDOG_ACCESS_TOKEN', 'APIDOG_TELEGRAM_USER_MAP']) expect(() => loadConfig({ ...enabled, [name]: undefined })).toThrow(name);
+  for (const [name, value] of [['APIDOG_PROJECT_ID', '1junk'], ['APIDOG_TARGET_BRANCH_ID', '0'], ['APIDOG_TELEGRAM_USER_MAP', '{"1":{"name":"x","telegramId":"bad"}}'], ['APIDOG_CONTRACT_URL', 'javascript:bad']]) expect(() => loadConfig({ ...enabled, [name!]: value })).toThrow(name!);
+});
