@@ -1,13 +1,12 @@
 import type { ApidogApi } from './apidog-api';
-import { formatApidogMerge, type ApidogMergeConfig } from './apidog-merge';
-import { formatApidogBranchCreated } from './apidog-branch';
+import type { ApidogMergeConfig } from './apidog-merge';
 import { setTimeout } from 'node:timers/promises';
 import type { Store, Delivery, DueMessage, OutgoingMessage } from './store';
 import type { SendResult } from './telegram';
 import { formatGithub, formatGithubReviewGroup, githubReview, type FormatConfig } from './github';
 import type { GithubApi } from './github-api';
 import { ReviewGroups } from './review-groups';
-import { formatApidog, type FormatConfig as ApidogFormatConfig } from './apidog';
+import { formatApidogMr, type FormatConfig as ApidogFormatConfig } from './apidog';
 
 interface Projector {
   (delivery: Delivery): Promise<OutgoingMessage[]>;
@@ -82,8 +81,15 @@ export async function runOnce({ store, project, send, now }: WorkerDeps & { now:
   return messages.length;
 }
 
-export async function startWorker(deps: WorkerDeps & { signal: AbortSignal }): Promise<void> {
+export async function startWorker(deps: WorkerDeps & { signal: AbortSignal; pollApidog?: () => Promise<void> }): Promise<void> {
+  let nextApidogPoll = 0;
   while (!deps.signal.aborted) {
+    if (deps.pollApidog && Date.now() >= nextApidogPoll) {
+      try { await deps.pollApidog(); }
+      catch { console.error(JSON.stringify({ errorCode: 'apidog_mr_poll_failed' })); }
+      nextApidogPoll = Date.now() + 30000;
+    }
+    if (deps.signal.aborted) break;
     try { await runOnce({ ...deps, now: Date.now() }); }
     catch { console.error(JSON.stringify({ errorCode: 'worker_iteration_failed' })); }
     if (deps.signal.aborted) break;
@@ -101,7 +107,5 @@ export function createGithubProjector(api: GithubApi, config: FormatConfig = {})
 export function createProjector(api: GithubApi, config: FormatConfig & ApidogFormatConfig, merge?: { api: ApidogApi; config: ApidogMergeConfig }): WorkerDeps['project'] {
   const github = createGithubProjector(api, config);
   return Object.assign(async (delivery: Delivery) => delivery.source === 'apidog'
-    ? Promise.all(formatApidog(delivery, config).map(base => !merge ? base : delivery.event === 'BRANCH_CREATED'
-      ? formatApidogBranchCreated(delivery, base, merge.api, merge.config)
-      : formatApidogMerge(delivery, base, merge.api, merge.config))) : github(delivery), { reviewGroup: github.reviewGroup });
+    ? merge ? formatApidogMr(delivery, { ...config, ...merge.config }) : [] : github(delivery), { reviewGroup: github.reviewGroup });
 }

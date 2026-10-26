@@ -227,3 +227,22 @@ test('retry_after starts after the Telegram response rather than at the beginnin
   } });
   expect(Number(rows(path)[0]!.due_at)).toBeGreaterThanOrEqual(2040);
 });
+
+test('projector prepares only polled MR deliveries while raw Apidog webhooks remain silent', async () => {
+  const { createProjector } = await import('../src/worker');
+  const { store, path } = queue();
+  // Complete the helper's GitHub row before exercising the Apidog queue.
+  for (const delivery of store.claimUnprepared(1000, 1000)) store.prepare(delivery.id, []);
+  const mr = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [], status: 'OPEN', description: 'Contract change', createdAt: '2026-10-26T10:00:00Z', closedAt: null, closedById: null };
+  for (const [deliveryId, event] of [['raw-api', 'API_UPDATED'], ['raw-branch', 'BRANCH_CREATED'], ['mr-poll:39834:OPENED', 'MR_OPENED']]) {
+    store.accept({ source: 'apidog', deliveryId: deliveryId!, event: event!, raw: new TextEncoder().encode(JSON.stringify(mr)), receivedAt: 1000 });
+  }
+  const githubApi = { getIssue: async () => undefined } as unknown as import('../src/github-api').GithubApi;
+  const project = createProjector(githubApi, { apidogTopic: 88 }, { api: {} as import('../src/apidog-api').ApidogApi,
+    config: { projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: {} } });
+  const sent: OutgoingMessage[] = [];
+  expect(await runOnce({ store, project, now: 1000, send: async message => { sent.push(message); return { kind: 'sent', telegramMessageId: 321 }; } })).toBe(1);
+  expect(sent[0]!.html).toContain('Открыт MR #39834');
+  expect(sent[0]!.secondaryButton?.url).toBe('https://vb78fyael1.apidog.io/');
+  expect(rows(path)).toHaveLength(1);
+});

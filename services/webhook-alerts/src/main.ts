@@ -17,13 +17,19 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
   const controller = new AbortController();
   const app = createApp({ config, checkDb: () => store.checkHealth(), accept: delivery => store.accept(delivery) });
   const fetcher = options.fetch ?? fetch;
+  const apidogApi = config.sendEnabled ? createApidogApi({ token: config.apidogAccessToken!, fetch: fetcher }) : undefined;
+  if (config.sendEnabled) store.startApidogMrMonitoring(Date.now());
   const worker = config.sendEnabled ? startWorker({
     store,
     project: createProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {
       githubTopic: config.githubTopic, reviewTopic: config.reviewTopic, userMap: config.userMap, apidogTopic: config.apidogTopic!,
-    }, { api: createApidogApi({ token: config.apidogAccessToken!, fetch: fetcher }), config: config.apidogMerge! }),
+    }, { api: apidogApi!, config: config.apidogMerge! }),
     send: message => sendMessage(message, message.source === 'apidog' ? config.apidogTelegram! : config.telegram!, fetcher),
     signal: controller.signal,
+    pollApidog: async () => {
+      const rows = await apidogApi!.listMergeRequests(config.apidogMerge!);
+      if (!controller.signal.aborted) store.recordApidogMergeRequests(rows);
+    },
   }) : Promise.resolve();
   let stopping: Promise<void> | undefined;
   return { app, stop: () => stopping ??= (async () => { controller.abort(); await worker; store.close(); })() };
