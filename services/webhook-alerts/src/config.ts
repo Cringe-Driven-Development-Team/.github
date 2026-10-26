@@ -1,6 +1,10 @@
+import type { ApidogMergeConfig } from './apidog-merge';
+import { safeUrl } from './format';
 import type { TelegramConfig } from './telegram';
 
 export interface Config {
+  apidogMerge?: ApidogMergeConfig;
+  apidogAccessToken?: string;
   githubWebhookSecret: string;
   apidogSignatureKey: string;
   apidogSignatureHeader: string;
@@ -67,6 +71,30 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
       userMap = value as typeof userMap;
     } catch { throw new Error('TELEGRAM_USER_MAP must map GitHub logins to Telegram user IDs'); }
   }
-  return { githubWebhookSecret, apidogSignatureKey, apidogSignatureHeader, databasePath, port, sendEnabled,
+  let apidogMerge: ApidogMergeConfig | undefined;
+  let apidogAccessToken: string | undefined;
+  if (sendEnabled) {
+    apidogAccessToken = required('APIDOG_ACCESS_TOKEN');
+    const projectId = topic('APIDOG_PROJECT_ID');
+    const targetBranchId = topic('APIDOG_TARGET_BRANCH_ID');
+    if (!projectId) throw new Error('APIDOG_PROJECT_ID is required');
+    if (!targetBranchId) throw new Error('APIDOG_TARGET_BRANCH_ID is required');
+    const projectName = required('APIDOG_PROJECT_NAME');
+    const contractUrl = safeUrl(required('APIDOG_CONTRACT_URL'));
+    if (!contractUrl) throw new Error('APIDOG_CONTRACT_URL must be an HTTP or HTTPS URL');
+    const rawMap = required('APIDOG_TELEGRAM_USER_MAP');
+    let peopleMap: ApidogMergeConfig['peopleMap'];
+    try {
+      const value = JSON.parse(rawMap);
+      if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.entries(value).every(([id, entry]) => {
+        const person = entry as Record<string, unknown> | null;
+        return /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)) && person && typeof person === 'object' && !Array.isArray(person)
+          && typeof person.name === 'string' && !!person.name.trim() && typeof person.telegramId === 'string' && /^[1-9]\d{0,19}$/.test(person.telegramId);
+      })) throw new Error();
+      peopleMap = value;
+    } catch { throw new Error('APIDOG_TELEGRAM_USER_MAP must map numeric Apidog IDs to name and numeric telegramId strings'); }
+    apidogMerge = { projectId, targetBranchId, projectName, contractUrl, peopleMap };
+  }
+  return { apidogMerge, apidogAccessToken, githubWebhookSecret, apidogSignatureKey, apidogSignatureHeader, databasePath, port, sendEnabled,
     telegram, apidogTelegram, githubApiToken: env.GITHUB_API_TOKEN, githubTopic, reviewTopic, apidogTopic, userMap };
 }

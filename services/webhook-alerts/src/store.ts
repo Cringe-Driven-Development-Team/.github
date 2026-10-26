@@ -26,6 +26,7 @@ export interface OutgoingMessage {
   topic: number;
   html: string;
   button?: { text: string; url: string };
+  secondaryButton?: { text: string; url: string };
   fallbackHtml?: string;
 }
 
@@ -83,12 +84,21 @@ function delivery(row: DeliveryRow): Delivery {
     prepared: row.prepared === 1, leaseUntil: row.lease_until,
   };
 }
+function buttonJson(item: OutgoingMessage): string | null {
+  return item.button ? JSON.stringify({
+    ...item.button,
+    ...(item.secondaryButton ? { secondaryButton: item.secondaryButton } : {}),
+  }) : null;
+}
+
 function message(row: OutboxRow): DueMessage {
   if (row.source !== 'github' && row.source !== 'apidog') throw new Error('outbox origin has no source');
+  const buttons = row.button_json === null ? undefined : JSON.parse(row.button_json) as NonNullable<OutgoingMessage['button']> & Pick<OutgoingMessage, 'secondaryButton'>;
   return {
     id: row.id, source: row.source, originType: row.origin_type, originId: row.origin_id, ordinal: row.ordinal,
     topic: row.topic, html: row.html,
-    ...(row.button_json === null ? {} : { button: JSON.parse(row.button_json) as OutgoingMessage['button'] }),
+    ...(buttons ? { button: { text: buttons.text, url: buttons.url } } : {}),
+    ...(buttons?.secondaryButton ? { secondaryButton: buttons.secondaryButton } : {}),
     ...(row.fallback_html === null ? {} : { fallbackHtml: row.fallback_html }),
     status: 'leased', attempts: row.attempts, dueAt: row.due_at, leaseUntil: row.lease_until,
   };
@@ -168,7 +178,7 @@ export class Store {
         (origin_type, origin_id, ordinal, topic, html, button_json, fallback_html, due_at)
         VALUES ('delivery', ?, ?, ?, ?, ?, ?, ?)`);
       messages.forEach((item, ordinal) => {
-        insert.run(id, ordinal, item.topic, item.html, item.button ? JSON.stringify(item.button) : null,
+        insert.run(id, ordinal, item.topic, item.html, buttonJson(item),
           item.fallbackHtml ?? null, row.received_at);
       });
       this.db.query('UPDATE deliveries SET prepared = 1, lease_until = NULL WHERE id = ?').run(id);
@@ -230,7 +240,7 @@ export class Store {
         (origin_type, origin_id, ordinal, topic, html, button_json, fallback_html, due_at)
         VALUES ('review_group', ?, ?, ?, ?, ?, ?, ?)`);
       messages.forEach((item, ordinal) => insert.run(id, ordinal, item.topic, item.html,
-        item.button ? JSON.stringify(item.button) : null, item.fallbackHtml ?? null, now));
+        buttonJson(item), item.fallbackHtml ?? null, now));
       return true;
     }).immediate();
   }

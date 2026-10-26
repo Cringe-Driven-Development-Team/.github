@@ -1,0 +1,80 @@
+export interface ApidogMergedRequest {
+  id: number; sourceBranchId: number; targetBranchId: number;
+  createdById: number; closedById: number; closedAt: string; status: 'MERGED';
+}
+export interface ApidogApi {
+  findMergedRequest(input: { projectId: number; targetBranchId: number; sourceBranchName: string; mergedAtIso: string }): Promise<ApidogMergedRequest | undefined>;
+}
+type ErrorCode = `http_${number}` | 'timeout' | 'invalid_response' | 'pagination_limit' | 'network';
+export class ApidogApiError extends Error {
+  constructor(public readonly code: ErrorCode) { super(code); this.name = 'ApidogApiError'; }
+}
+type Row = Record<string, unknown>;
+function object(value: unknown): Row {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ApidogApiError('invalid_response');
+  return value as Row;
+}
+const id = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+function rows(value: unknown): Row[] {
+  if (!Array.isArray(value)) throw new ApidogApiError('invalid_response');
+  return value.map(object);
+}
+export function createApidogApi(options: { token: string; fetch?: typeof fetch; timeoutMs?: number }): ApidogApi {
+  const fetcher = options.fetch ?? fetch;
+  return { async findMergedRequest(input) {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new ApidogApiError('timeout')); }, options.timeoutMs ?? 5000);
+    });
+    async function get(path: string): Promise<Row> {
+      if (controller.signal.aborted) throw new ApidogApiError('timeout');
+      let response: Response;
+      try {
+        response = await fetcher(`https://api.apidog.com${path}`, {
+          method: 'GET', redirect: 'error', signal: controller.signal,
+          headers: { Authorization: `Bearer ${options.token}`, 'X-Apidog-Api-Version': '2026-05-28' },
+        });
+      } catch { throw new ApidogApiError(controller.signal.aborted ? 'timeout' : 'network'); }
+      if (!response.ok) throw new ApidogApiError(`http_${response.status}`);
+      let body: Row;
+      try { body = object(await response.json()); } catch { throw new ApidogApiError('invalid_response'); }
+      if (controller.signal.aborted) throw new ApidogApiError('timeout');
+      if (body.success !== true) throw new ApidogApiError('invalid_response');
+      return body;
+    }
+    async function lookup(): Promise<ApidogMergedRequest | undefined> {
+      if (!id(input.projectId) || !id(input.targetBranchId) || !Number.isFinite(Date.parse(input.mergedAtIso))) throw new ApidogApiError('invalid_response');
+      const base = `/api/v1/projects/${input.projectId}/sprint-branches`;
+      const branches = rows((await get(base)).data).filter(branch => branch.name === input.sourceBranchName);
+      if (branches.length !== 1) return;
+      const sourceBranchId = branches[0]!.id;
+      if (!id(sourceBranchId)) throw new ApidogApiError('invalid_response');
+      const path = `${base}/${input.targetBranchId}/merge-requests`;
+      const matches = new Map<number, ApidogMergedRequest>();
+      const pages = new Set<number>();
+      let page: number | null = 1;
+      while (page !== null) {
+        if (pages.has(page) || pages.size >= 20) throw new ApidogApiError('pagination_limit');
+        pages.add(page);
+        const query = new URLSearchParams({ sourceBranchId: String(sourceBranchId), status: 'MERGED', page: String(page), perPage: '100' });
+        const body = await get(`${path}?${query}`);
+        for (const candidate of rows(body.data)) {
+          if (candidate.sourceBranchId !== sourceBranchId || candidate.targetBranchId !== input.targetBranchId || candidate.status !== 'MERGED') continue;
+          if (!id(candidate.id)) throw new ApidogApiError('invalid_response');
+          const detail = object((await get(`${path}/${candidate.id}`)).data);
+          if (detail.id !== candidate.id || detail.sourceBranchId !== sourceBranchId || detail.targetBranchId !== input.targetBranchId || detail.status !== 'MERGED') continue;
+          if (!id(detail.createdById) || !id(detail.closedById) || typeof detail.closedAt !== 'string' || !Number.isFinite(Date.parse(detail.closedAt))) throw new ApidogApiError('invalid_response');
+          if (Math.floor(Date.parse(detail.closedAt) / 1000) !== Math.floor(Date.parse(input.mergedAtIso) / 1000)) continue;
+          matches.set(candidate.id, { id: candidate.id, sourceBranchId, targetBranchId: input.targetBranchId, createdById: detail.createdById, closedById: detail.closedById, closedAt: detail.closedAt, status: 'MERGED' });
+        }
+        const next = object(body.meta).nextPage;
+        if (next !== null && !id(next)) throw new ApidogApiError('invalid_response');
+        page = next;
+      }
+      return matches.size === 1 ? matches.values().next().value : undefined;
+    }
+    try { return await Promise.race([lookup(), timeout]); }
+    finally { clearTimeout(timer); }
+  } };
+}
