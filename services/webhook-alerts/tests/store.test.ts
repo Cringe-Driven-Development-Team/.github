@@ -312,3 +312,23 @@ describe('Apidog MR monitoring', () => {
     } finally { inspect.close(); }
   });
 });
+
+test('manual retry cannot reactivate suppressed Apidog messages but still retries other failures', () => {
+  const path = databasePath();
+  const store = open(path);
+  const inspect = new Database(path);
+  try {
+    inspect.exec(`INSERT INTO outbox (origin_type, origin_id, ordinal, topic, html, status, error_code, due_at) VALUES
+      ('delivery', 1, 0, 88, 'suppressed', 'failed', 'APIDOG_RAW_SUPPRESSED', 1),
+      ('delivery', 2, 0, 26, 'retryable', 'failed', 'telegram_400', 1),
+      ('delivery', 3, 0, 26, 'retryable without code', 'failed', NULL, 1)`);
+    expect(store.retryFailed(1, 1000)).toBe(false);
+    expect(store.retryFailed(2, 1000)).toBe(true);
+    expect(store.retryFailed(3, 1000)).toBe(true);
+    expect(inspect.query('SELECT status, error_code FROM outbox ORDER BY id').all()).toEqual([
+      { status: 'failed', error_code: 'APIDOG_RAW_SUPPRESSED' },
+      { status: 'pending', error_code: null },
+      { status: 'pending', error_code: null },
+    ]);
+  } finally { inspect.close(); }
+});

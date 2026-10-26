@@ -24,6 +24,7 @@
 - An API failure or malformed later page leaves no partial state.
 - A restart while the first API call is failing retains the original cutoff.
 - Raw `API_UPDATED`, `BRANCH_CREATED` and `BRANCH_MERGED` webhook deliveries produce no Telegram message.
+- Before an enabled worker starts, suppress existing raw Apidog delivery-origin outbox in `pending`, `leased` or `failed`: retain rows as `failed`, clear leases and use fixed `APIDOG_RAW_SUPPRESSED`; reject manual retry of this code. Preserve sent rows, GitHub/review groups and synthetic `mr-poll:` MR outbox. Disabled startup leaves the queue intact.
 
 ---
 
@@ -41,7 +42,7 @@
 
 **Files:** `services/webhook-alerts/src/store.ts`, `services/webhook-alerts/tests/store.test.ts`
 
-**Interface:** Add `Store.startApidogMrMonitoring(now: number): void` and `Store.recordApidogMergeRequests(rows: ApidogMr[]): number`. Store the first start as a prepared sentinel delivery. For each MR, insert stable `mr-poll:<id>:OPENED` plus the terminal status delivery when applicable. Events before cutoff are inserted prepared; events at/after cutoff are unprepared. Run all inserts for one snapshot in one immediate transaction. `record...` returns new unprepared count.
+**Interface:** Add `Store.startApidogMrMonitoring(now: number): void` and `Store.recordApidogMergeRequests(rows: ApidogMr[]): number`. Store the first start as a prepared sentinel delivery. On every sender-enabled startup, `startApidogMrMonitoring` also suppresses unsent raw Apidog outbox as described above; `retryFailed` cannot reactivate suppressed rows. For each MR, insert stable `mr-poll:<id>:OPENED` plus the terminal status delivery when applicable. Events before cutoff are inserted prepared; events at/after cutoff are unprepared. Run all inserts for one snapshot in one immediate transaction. `record...` returns new unprepared count.
 
 - [ ] Write tests for first-start cutoff, existing OPEN later CLOSED, new terminal MR, duplicate poll/restart, and invalid/partial snapshot rollback; run red.
 - [ ] Implement with current SQLite table and hash helper; run focused tests green and `bunx tsc --noEmit`.
@@ -61,9 +62,9 @@
 
 **Files:** `services/webhook-alerts/src/main.ts`, `services/webhook-alerts/src/worker.ts`, `services/webhook-alerts/tests/main.test.ts`, `services/webhook-alerts/README.md`.
 
-**Interface:** Start the cutoff before the first read. Poll every 30 seconds without overlapping calls, log fixed error codes on failure, and insert the complete snapshot before `runOnce`. Stop on abort. Reuse configured API token, project ID and target branch ID. Update README to state only MR alerts are sent.
+**Interface:** Start the cutoff and suppress the old raw Apidog outbox before the first read and worker. Poll every 30 seconds without overlapping calls, log fixed error codes on failure, and insert the complete snapshot before `runOnce`. Stop on abort. Reuse configured API token, project ID and target branch ID. Update README to state only MR alerts are sent.
 
-- [ ] Write failing service tests for baseline, periodic poll, API failure/recovery and no raw-webhook Telegram output.
+- [ ] Write failing service tests for baseline, periodic poll, API failure/recovery, no raw-webhook Telegram output and startup cutover of prepared pending/leased/failed raw outbox; verify persistence, denied retry and preservation of sent/GitHub/MR/review-group rows.
 - [ ] Implement the loop and docs; run full `bun test` and `bunx tsc --noEmit`.
 - [ ] Commit the task.
 

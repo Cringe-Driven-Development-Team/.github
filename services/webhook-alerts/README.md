@@ -16,6 +16,9 @@ MR целевой ветки читается с пагинацией и ато�
 повторяет чтение, лог содержит только `apidog_mr_poll_failed`. Остановка прекращает
 новые опросы и ожидает текущий ограниченный таймаутом запрос. Apidog использует
 отдельного бота `TELEGRAM_APIDOG_BOT_TOKEN` и тему `TELEGRAM_APIDOG_TOPIC_ID`.
+При старте включённого sender старые raw Apidog outbox со статусом `pending`,
+`leased` или `failed` становятся `failed` с кодом `APIDOG_RAW_SUPPRESSED` и без
+возможности ручного retry; `sent`, GitHub и синтетические `mr-poll:` MR не меняются.
 
 Необязательный `TELEGRAM_PROXY_URL` задаёт HTTP/HTTPS-прокси только для отправки
 Telegram (`sendMessage`), например `http://proxy.internal:2080`. `TELEGRAM_PROXY_URL` не применяется к GitHub API. Без этой настройки Telegram отправляется напрямую; пустой URL,

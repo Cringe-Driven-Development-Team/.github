@@ -144,6 +144,9 @@ export class Store {
 
   startApidogMrMonitoring(now: number): void {
     if (!Number.isSafeInteger(now)) throw new Error('invalid monitoring cutoff');
+    this.db.query(`UPDATE outbox SET status = 'failed', lease_until = NULL, error_code = 'APIDOG_RAW_SUPPRESSED'
+      WHERE status IN ('pending', 'leased', 'failed') AND origin_type = 'delivery'
+      AND origin_id IN (SELECT id FROM deliveries WHERE source = 'apidog' AND delivery_id NOT GLOB 'mr-poll:*')`).run();
     const raw = new TextEncoder().encode('{}');
     this.db.query(`INSERT INTO deliveries
       (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
@@ -328,7 +331,7 @@ export class Store {
   }
 
   retryFailed(id: number, now: number): boolean {
-    return this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'failed'").run(now, id).changes === 1;
+    return this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'failed' AND error_code IS NOT 'APIDOG_RAW_SUPPRESSED'").run(now, id).changes === 1;
   }
 
   checkHealth(): void { this.db.query('SELECT 1 FROM deliveries LIMIT 1').get(); }

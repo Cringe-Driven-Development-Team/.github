@@ -196,3 +196,72 @@ test('MR polling baselines before reading, recovers periodically and ignores raw
   expect(reads).toBe(finalReads);
   rmSync(directory, { recursive: true, force: true });
 }, 10000);
+
+test('enabled startup suppresses old raw Apidog outbox durably while preserving sent, GitHub and MR messages', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hooks-cutover-'));
+  const path = join(directory, 'queue.sqlite');
+  const store = openStore(path);
+  const seeds = [
+    ['apidog', 'raw-pending', 'API_UPDATED', 'pending', null],
+    ['apidog', 'raw-leased', 'BRANCH_CREATED', 'leased', 1],
+    ['apidog', 'raw-active-lease', 'BRANCH_MERGED', 'leased', Number.MAX_SAFE_INTEGER],
+    ['apidog', 'raw-failed', 'API_UPDATED', 'failed', null],
+    ['apidog', 'raw-sent', 'API_UPDATED', 'sent', null],
+    ['github', 'github-pending', 'issues', 'pending', null],
+    ['apidog', 'mr-poll:123:OPENED', 'MR_OPENED', 'leased', 1],
+  ] as const;
+  for (const [source, deliveryId, event] of seeds) {
+    store.accept({ source, deliveryId, event, raw: new TextEncoder().encode('{}'), receivedAt: 1 });
+  }
+  store.close();
+  const db = new Database(path);
+  for (const [, deliveryId, , status, lease] of seeds) {
+    db.query(`INSERT INTO outbox (origin_type, origin_id, ordinal, topic, html, status, due_at, lease_until, error_code, telegram_message_id)
+      SELECT 'delivery', id, 0, 88, delivery_id, ?, 1, ?, ?, ? FROM deliveries WHERE delivery_id = ?`)
+      .run(status, lease, status === 'failed' ? 'telegram_400' : null, status === 'sent' ? 99 : null, deliveryId);
+  }
+  db.exec("UPDATE deliveries SET prepared = 1");
+  db.exec("INSERT INTO outbox (origin_type, origin_id, ordinal, topic, html, due_at) VALUES ('review_group', 1, 0, 88, 'github-review-group', 1)");
+  db.close();
+  const bodies: string[] = [];
+  const fetcher = (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(url).startsWith('https://api.apidog.com/')) return Response.json({ success: true, data: [], meta: { nextPage: null } });
+    bodies.push(JSON.parse(String(init?.body)).text);
+    return Response.json({ ok: true, result: { message_id: bodies.length } });
+  }) as typeof fetch;
+  const config = loadConfig({ ...env, DATABASE_PATH: path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_APIDOG_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' });
+  const disabled = main.startService({ ...config, sendEnabled: false }, { fetch: fetcher });
+  await disabled.stop();
+  const before = new Database(path);
+  try { expect(before.query('SELECT status FROM outbox ORDER BY id').all()).toEqual([
+    { status: 'pending' }, { status: 'leased' }, { status: 'leased' }, { status: 'failed' },
+    { status: 'sent' }, { status: 'pending' }, { status: 'leased' }, { status: 'pending' },
+  ]); } finally { before.close(); }
+  const service = main.startService(config, { fetch: fetcher });
+  try {
+    const deadline = Date.now() + 3000;
+    while (bodies.length < 3 && Date.now() < deadline) await Bun.sleep(5);
+  } finally { await service.stop(); }
+  try {
+    expect(bodies).toEqual(['github-pending', 'mr-poll:123:OPENED', 'github-review-group']);
+    const inspect = new Database(path);
+    try {
+      expect(inspect.query('SELECT html, status, lease_until, error_code, telegram_message_id FROM outbox ORDER BY id').all()).toEqual([
+        { html: 'raw-pending', status: 'failed', lease_until: null, error_code: 'APIDOG_RAW_SUPPRESSED', telegram_message_id: null },
+        { html: 'raw-leased', status: 'failed', lease_until: null, error_code: 'APIDOG_RAW_SUPPRESSED', telegram_message_id: null },
+        { html: 'raw-active-lease', status: 'failed', lease_until: null, error_code: 'APIDOG_RAW_SUPPRESSED', telegram_message_id: null },
+        { html: 'raw-failed', status: 'failed', lease_until: null, error_code: 'APIDOG_RAW_SUPPRESSED', telegram_message_id: null },
+        { html: 'raw-sent', status: 'sent', lease_until: null, error_code: null, telegram_message_id: 99 },
+        { html: 'github-pending', status: 'sent', lease_until: null, error_code: null, telegram_message_id: 1 },
+        { html: 'mr-poll:123:OPENED', status: 'sent', lease_until: null, error_code: null, telegram_message_id: 2 },
+        { html: 'github-review-group', status: 'sent', lease_until: null, error_code: null, telegram_message_id: 3 },
+      ]);
+    } finally { inspect.close(); }
+    const reopened = openStore(path);
+    try {
+      for (const id of [1, 2, 3, 4]) expect(reopened.retryFailed(id, Date.now())).toBe(false);
+      reopened.startApidogMrMonitoring(Date.now());
+      expect(reopened.claimDue(Number.MAX_SAFE_INTEGER - 1000, 100)).toEqual([]);
+    } finally { reopened.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
