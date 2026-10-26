@@ -17,7 +17,7 @@ function projector(api: ApidogApi) {
 test('BRANCH_CREATED links the exact created sprint branch', async () => {
   const calls: unknown[] = [];
   const api = {
-    findMergedRequest: async () => undefined,
+    listMergeRequests: async () => [], findMergedRequest: async () => undefined,
     findCreatedBranch: async (input: unknown) => { calls.push(input); return { id: 1413937 }; },
   } as ApidogApi;
   const [card] = await projector(api)(delivery());
@@ -27,7 +27,7 @@ test('BRANCH_CREATED links the exact created sprint branch', async () => {
 });
 
 test('invalid branch ID never becomes a Telegram URL', async () => {
-  const api = { findMergedRequest: async () => undefined, findCreatedBranch: async () => ({ id: -1 }) } as ApidogApi;
+  const api = { listMergeRequests: async () => [], findMergedRequest: async () => undefined, findCreatedBranch: async () => ({ id: -1 }) } as ApidogApi;
   const [card] = await projector(api)(delivery());
   expect(card?.button).toBeUndefined();
 });
@@ -43,7 +43,7 @@ test('creation notice requires unique anchored fields and a valid UTC second', a
     notice.content + '\nCreated at: 2026-10-26 13:30:32',
   ];
   const calls: unknown[] = [];
-  const api = { findMergedRequest: async () => undefined, findCreatedBranch: async (input: unknown) => { calls.push(input); return { id: 1413937 }; } } as ApidogApi;
+  const api = { listMergeRequests: async () => [], findMergedRequest: async () => undefined, findCreatedBranch: async (input: unknown) => { calls.push(input); return { id: 1413937 }; } } as ApidogApi;
   for (const content of invalid) {
     expect(parseCreatedBranchNotice({ ...notice, content }, settings.projectName)).toBeUndefined();
     expect((await projector(api)(delivery({ ...notice, content })))[0]?.button).toBeUndefined();
@@ -53,12 +53,12 @@ test('creation notice requires unique anchored fields and a valid UTC second', a
 
 test('lookup absence and failure preserve any safe existing app link without leaking errors', async () => {
   const body = { ...notice, appLink: 'https://app.apidog.com/project/1382426' };
-  const missing = { findMergedRequest: async () => undefined, findCreatedBranch: async () => undefined } as ApidogApi;
+  const missing = { listMergeRequests: async () => [], findMergedRequest: async () => undefined, findCreatedBranch: async () => undefined } as ApidogApi;
   expect((await projector(missing)(delivery(body)))[0]?.button?.url).toBe(body.appLink);
   const logged: string[] = [];
   const log = spyOn(console, 'error').mockImplementation(value => { logged.push(String(value)); });
   try {
-    const failing = { findMergedRequest: async () => undefined, findCreatedBranch: async () => { throw new Error('private-token'); } } as ApidogApi;
+    const failing = { listMergeRequests: async () => [], findMergedRequest: async () => undefined, findCreatedBranch: async () => { throw new Error('private-token'); } } as ApidogApi;
     expect((await projector(failing)(delivery(body)))[0]?.button?.url).toBe(body.appLink);
   } finally { log.mockRestore(); }
   expect(logged).toEqual(['{"errorCode":"apidog_branch_lookup_failed"}']);

@@ -91,3 +91,49 @@ test('timeout includes body parsing and entire lookup', async () => {
   const fetcher = (async () => ({ ok: true, json: () => new Promise(() => {}) })) as unknown as typeof fetch;
   await errorCode(createApidogApi({ token, timeoutMs: 5, fetch: fetcher }).findMergedRequest(input), 'timeout');
 });
+
+const openMr = { id: 39836, sourceBranchId: 1413082, targetBranchId: 1388508, createdById: 1066826, reviewerIds: [1067537], status: 'OPEN' as const, description: 'Review this change', createdAt: '2026-10-26T10:00:00Z', closedAt: null, closedById: null };
+test('lists all MR statuses across nextPage without source or status filtering', async () => {
+  const merged = { ...openMr, ...mr };
+  const closed = { ...merged, id: 39837, status: 'CLOSED' as const, reviewerIds: [] };
+  const { client, urls } = api([list([openMr], 3), list([merged, closed])]);
+  expect(await client.listMergeRequests(input)).toEqual([openMr, merged, closed]);
+  expect(urls.map(url => url.pathname)).toEqual(Array(2).fill('/api/v1/projects/1382426/sprint-branches/1388508/merge-requests'));
+  expect(urls.map(url => Object.fromEntries(url.searchParams))).toEqual([{ page: '1', perPage: '100' }, { page: '3', perPage: '100' }]);
+});
+test('rejects malformed MR fields and rows from another target', async () => {
+  for (const change of [
+    { id: 0 }, { sourceBranchId: '1' }, { targetBranchId: 1 }, { createdById: -1 },
+    { reviewerIds: null }, { reviewerIds: [0] }, { status: 'DRAFT' }, { description: null },
+    { createdAt: 'invalid' }, { closedAt: 'invalid' }, { closedById: 0 },
+    { closedAt: undefined }, { closedById: undefined },
+  ]) await errorCode(api([list([{ ...openMr, ...change }])]).client.listMergeRequests(input), 'invalid_response');
+  for (const body of [{}, list([null]), list([], 0), { success: true, data: [] }]) {
+    await errorCode(api([body]).client.listMergeRequests(input), 'invalid_response');
+  }
+});
+test('rejects invalid list input before requesting data', async () => {
+  for (const invalid of [{ ...input, projectId: 0 }, { ...input, targetBranchId: -1 }]) {
+    const { client, urls } = api([]);
+    await errorCode(client.listMergeRequests(invalid), 'invalid_response');
+    expect(urls).toHaveLength(0);
+  }
+});
+test('does not return partial MR results when page two fails', async () => {
+  let calls = 0;
+  const client = createApidogApi({ token, fetch: (async () => ++calls === 1
+    ? Response.json(list([openMr], 2)) : new Response(`private response ${token}`, { status: 503 })) as unknown as typeof fetch });
+  await errorCode(client.listMergeRequests(input), 'http_503');
+  expect(calls).toBe(2);
+});
+test('bounds list pagination cycles and pages while accepting exactly twenty pages', async () => {
+  await errorCode(api([list([], 1)]).client.listMergeRequests(input), 'pagination_limit');
+  const { client, urls } = api(Array.from({ length: 20 }, (_, i) => list([], i + 2)));
+  await errorCode(client.listMergeRequests(input), 'pagination_limit');
+  expect(urls).toHaveLength(20);
+  expect(await api(Array.from({ length: 20 }, (_, i) => list([], i === 19 ? null : i + 2))).client.listMergeRequests(input)).toEqual([]);
+});
+test('list uses the existing read timeout and network classification', async () => {
+  await errorCode(createApidogApi({ token, timeoutMs: 5, fetch: (() => new Promise(() => {})) as unknown as typeof fetch }).listMergeRequests(input), 'timeout');
+  await errorCode(createApidogApi({ token, fetch: (async () => { throw new Error(token); }) as unknown as typeof fetch }).listMergeRequests(input), 'network');
+});

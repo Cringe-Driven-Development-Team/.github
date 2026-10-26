@@ -3,7 +3,13 @@ export interface ApidogMergedRequest {
   createdById: number; closedById: number; closedAt: string; status: 'MERGED';
 }
 export interface ApidogCreatedBranch { id: number }
+export interface ApidogMr {
+  id: number; sourceBranchId: number; targetBranchId: number; createdById: number;
+  reviewerIds: number[]; status: 'OPEN' | 'CLOSED' | 'MERGED'; description: string;
+  createdAt: string; closedAt: string | null; closedById: number | null;
+}
 export interface ApidogApi {
+  listMergeRequests(input: { projectId: number; targetBranchId: number }): Promise<ApidogMr[]>;
   findMergedRequest(input: { projectId: number; targetBranchId: number; sourceBranchName: string; mergedAtIso: string }): Promise<ApidogMergedRequest | undefined>;
   findCreatedBranch(input: { projectId: number; branchName: string; createdAtIso: string }): Promise<ApidogCreatedBranch | undefined>;
 }
@@ -49,6 +55,35 @@ export function createApidogApi(options: { token: string; fetch?: typeof fetch; 
     finally { clearTimeout(timer); }
   }
   return {
+    async listMergeRequests(input) {
+      return withRead(async get => {
+        if (!id(input.projectId) || !id(input.targetBranchId)) throw new ApidogApiError('invalid_response');
+        const result: ApidogMr[] = [];
+        const pages = new Set<number>();
+        let page: number | null = 1;
+        while (page !== null) {
+          if (pages.has(page) || pages.size >= 20) throw new ApidogApiError('pagination_limit');
+          pages.add(page);
+          const query = new URLSearchParams({ page: String(page), perPage: '100' });
+          const body = await get(`/api/v1/projects/${input.projectId}/sprint-branches/${input.targetBranchId}/merge-requests?${query}`);
+          for (const row of rows(body.data)) {
+            if (!id(row.id) || !id(row.sourceBranchId) || row.targetBranchId !== input.targetBranchId || !id(row.createdById)
+              || !Array.isArray(row.reviewerIds) || !row.reviewerIds.every(id)
+              || (row.status !== 'OPEN' && row.status !== 'CLOSED' && row.status !== 'MERGED')
+              || typeof row.description !== 'string' || typeof row.createdAt !== 'string' || !Number.isFinite(Date.parse(row.createdAt))
+              || (row.closedAt !== null && (typeof row.closedAt !== 'string' || !Number.isFinite(Date.parse(row.closedAt))))
+              || (row.closedById !== null && !id(row.closedById))) throw new ApidogApiError('invalid_response');
+            result.push({ id: row.id, sourceBranchId: row.sourceBranchId, targetBranchId: input.targetBranchId,
+              createdById: row.createdById, reviewerIds: row.reviewerIds, status: row.status, description: row.description,
+              createdAt: row.createdAt, closedAt: row.closedAt, closedById: row.closedById });
+          }
+          const next = object(body.meta).nextPage;
+          if (next !== null && !id(next)) throw new ApidogApiError('invalid_response');
+          page = next;
+        }
+        return result;
+      });
+    },
     async findCreatedBranch(input) {
       return withRead(async get => {
         if (!id(input.projectId) || !input.branchName || !Number.isFinite(Date.parse(input.createdAtIso))) throw new ApidogApiError('invalid_response');
