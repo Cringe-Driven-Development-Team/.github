@@ -53,11 +53,11 @@ Monitoring переключается независимо: repository var `COUR
 
 | Файл | Что делает |
 |---|---|
-| `.github/workflows/telegram.yml` | шлёт в Telegram пуши в ветки, задачи, комментарии, PR и ревью |
+| `.github/workflows/telegram.yml` | прежний sender событий GitHub; job `notify` пропускается при `TELEGRAM_EVENTS_SOURCE=webhook` |
 | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску; после мержа PR закрывает задачи организации, на которые он ссылается |
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
 | `.github/workflows/reminders.yml` | в 10:00 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува; в 10:00, 15:00 и 20:00 сообщает о сбоях самих уведомлений и о новых репозиториях организации |
-| `services/webhook-alerts/` | GitHub/Apidog → постоянная очередь SQLite → Telegram; отправка по умолчанию выключена |
+| `services/webhook-alerts/` | работающий sender GitHub и Apidog MR → постоянная очередь SQLite → Telegram |
 | `.github/workflows/webhook-alerts-image.yml` | после push в main публикует GHCR образ с полным SHA коммита |
 | `scripts/reminders.sh` | логика напоминаний и служебных проверок; здесь же список репозиториев |
 | `scripts/sprint.sh` | смена спринта: перенос незакрытых задач и сообщение в чат |
@@ -66,14 +66,14 @@ Monitoring переключается независимо: repository var `COUR
 
 Почему всё устроено так — [спека](docs/superpowers/specs/2026-09-18-central-workflows-design.md).
 
-Сервис уведомлений пока готовится к переключению: настройки GitHub organization
-webhook, Apidog, `vault_hooks_env`, контракт образа/снимка, shadow intake,
-восстановление, граница отправителей и проверка отката — в
-[runbook сервиса](services/webhook-alerts/README.md). Старый sender остаётся
-включённым, пока organization variable `TELEGRAM_EVENTS_SOURCE` не равна
-`webhook`. Флаг выключает только `notify` в `telegram.yml`; доска, закрытие задач,
-напоминания и релизные сообщения продолжают работать. Worker сервиса включается
-отдельно через `WEBHOOK_ALERTS_SEND_ENABLED=true` после сверки очереди.
+События GitHub отправляет работающий webhook worker. Organization variable
+`TELEGRAM_EVENTS_SOURCE=webhook` с `visibility=selected` доступна всем восьми
+callers: `.github`, `backend`, `frontend`, `infra`, `docs`, `frontend-packages`,
+`figma`, `static`. Она выключает только `notify` в `telegram.yml`; доска,
+закрытие задач, напоминания и релизные сообщения продолжают работать.
+Настройки GitHub organization webhook, Apidog, `vault_hooks_env`,
+восстановление, порядок расширения охвата и фактический журнал переключения — в
+[runbook сервиса](services/webhook-alerts/README.md).
 
 ## Как подключить репозиторий
 
@@ -115,6 +115,15 @@ jobs:
   - `TELEGRAM_USER_MAP` — JSON `{"github-логин": "telegram id"}`: логины из карты упоминаются кликабельно.
 
 Репозитории этой организации получают их с уровня организации. Репозиториям других организаций их нужно завести в настройках самого репозитория.
+
+Organization webhook уже охватывает репозитории организации; дополнительный
+repository hook для тех же событий не нужен. При подключении нового caller
+добавьте его ID к selected repositories существующей organization variable
+`TELEGRAM_EVENTS_SOURCE=webhook`, сохранив прежний список и `visibility=selected`.
+Проверьте отсутствие repository/environment overrides и на тестовом push
+убедитесь, что `telegram / notify=skipped`, а webhook создал ровно одну карточку.
+Порядок проверки при включённом worker — в
+[runbook](services/webhook-alerts/README.md#расширение-охвата-при-включённом-worker).
 
 ## Задачи фронта и бэка
 
