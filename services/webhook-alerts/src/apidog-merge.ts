@@ -4,6 +4,7 @@ import { escapeHtml, fitHtml, truncate } from './format';
 import { parseApidogBranchNotice } from './apidog-notice';
 export interface ApidogMergeConfig {
   projectId: number; targetBranchId: number; projectName: string; contractUrl: string;
+  reviewers: { name: string; telegramId: string }[];
   peopleMap: Record<string, { name: string; telegramId: string }>;
 }
 export function parseMergeNotice(payload: unknown, projectName: string): { sourceBranchName: string; mergedAtIso: string } | undefined {

@@ -6,7 +6,7 @@ import { loadConfig } from '../src/config';
 import { createApp, type AcceptDelivery, type IncomingDelivery } from '../src/http';
 
 const secret = 'local-test-secret';
-const mergeEnv = { APIDOG_PROJECT_ID: '1382426', APIDOG_TARGET_BRANCH_ID: '1388508', APIDOG_PROJECT_NAME: 'Example', APIDOG_CONTRACT_URL: 'https://vb78fyael1.apidog.io/', APIDOG_ACCESS_TOKEN: 'local-api', APIDOG_TELEGRAM_USER_MAP: '{}' };
+const mergeEnv = { APIDOG_PROJECT_ID: '1382426', APIDOG_TARGET_BRANCH_ID: '1388508', APIDOG_PROJECT_NAME: 'Example', APIDOG_CONTRACT_URL: 'https://vb78fyael1.apidog.io/', APIDOG_ACCESS_TOKEN: 'local-api', APIDOG_TELEGRAM_USER_MAP: '{}', APIDOG_MR_REVIEWERS: '[{"name":"Reviewer One","telegramId":"333"},{"name":"Reviewer Two","telegramId":"444"}]' };
 const apidogEnv = { ...mergeEnv, APIDOG_SIGNATURE_KEY: 'test-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
 const config = loadConfig({ ...apidogEnv, GITHUB_WEBHOOK_SECRET: secret });
 const encoder = new TextEncoder();

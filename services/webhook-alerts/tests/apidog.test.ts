@@ -132,7 +132,7 @@ describe('Apidog cards', () => {
   });
 });
 
-const mrConfig = { apidogTopic: 88, projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: { '1': { name: '<Alice>', telegramId: '111' }, '2': { name: 'Bob', telegramId: '222' } } };
+const mrConfig = { reviewers: [{ name: 'Reviewer One', telegramId: '333' }, { name: 'Reviewer Two', telegramId: '444' }], apidogTopic: 88, projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: { '1': { name: '<Alice>', telegramId: '111' }, '2': { name: 'Bob', telegramId: '222' } } };
 const mr = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [2], status: 'OPEN', description: 'First <script> & detail', createdAt: '2026-10-26T10:00:00Z', closedAt: null, closedById: 2 };
 function mrDelivery(event: string, value = mr): Delivery {
   return { ...delivery(value, event), deliveryId: `mr-poll:39834:${event.slice(3)}` };
@@ -147,6 +147,7 @@ describe('polled Apidog MR cards', () => {
       expect(card!.html).toContain('Создатель MR: <a href="tg://user?id=111">&lt;Alice&gt;</a>');
       if (role) expect(card!.html).toContain(`${role} <a href="tg://user?id=222">Bob</a>`);
       else expect(card!.html).not.toContain('tg://user?id=222');
+      if (event !== 'MR_OPENED') expect(card!.html).not.toContain('Ревьюверы:');
       expect(card!.button).toEqual({ text: 'Открыть MR', url: 'https://app.apidog.com/project/1382426/branch/1388508/merge-request/39834' });
       expect(card!.secondaryButton).toEqual({ text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' });
     });
@@ -162,4 +163,25 @@ describe('polled Apidog MR cards', () => {
     expect(card!.html.match(/tg:\/\/user/g)).toHaveLength(1);
     expect(apidog.formatApidogMr(mrDelivery('MR_CLOSED', { ...mr, closedById: 99 }), mrConfig)[0]!.html).toContain('Закрыл MR: Apidog user 99');
   });
+});
+
+
+test('opened MR always mentions the fixed reviewers in order regardless of Apidog assignment', () => {
+  for (const reviewerIds of [[], [2], [99, 1]]) {
+    const [card] = apidog.formatApidogMr(mrDelivery('MR_OPENED', { ...mr, reviewerIds }), mrConfig);
+    expect(card!.html).toContain('\nРевьюверы: <a href="tg://user?id=333">Reviewer One</a>, <a href="tg://user?id=444">Reviewer Two</a>');
+  }
+});
+
+test('opened MR escapes reviewer names and avoids a second ping for the creator', () => {
+  const [card] = apidog.formatApidogMr(mrDelivery('MR_OPENED'), { ...mrConfig,
+    reviewers: [{ name: '<Alice>', telegramId: '111' }, { name: 'Bob & "Two"', telegramId: '444' }] });
+  expect(card!.html).toContain('Ревьюверы: &lt;Alice&gt;, <a href="tg://user?id=444">Bob &amp; &quot;Two&quot;</a>');
+  expect(card!.html.match(/tg:\/\/user\?id=111/g)).toHaveLength(1);
+});
+
+test('opened MR reserves both reviewers when truncating long descriptions', () => {
+  const [card] = apidog.formatApidogMr(mrDelivery('MR_OPENED', { ...mr, description: '<>&'.repeat(10000) }), mrConfig);
+  expect(card!.html.length).toBeLessThan(4096);
+  expect(card!.html).toEndWith('Ревьюверы: <a href="tg://user?id=333">Reviewer One</a>, <a href="tg://user?id=444">Reviewer Two</a>');
 });

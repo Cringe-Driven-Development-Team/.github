@@ -93,7 +93,18 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
       })) throw new Error();
       peopleMap = value;
     } catch { throw new Error('APIDOG_TELEGRAM_USER_MAP must map numeric Apidog IDs to name and numeric telegramId strings'); }
-    apidogMerge = { projectId, targetBranchId, projectName, contractUrl, peopleMap };
+    const rawReviewers = required('APIDOG_MR_REVIEWERS');
+    let reviewers: ApidogMergeConfig['reviewers'];
+    try {
+      const value: unknown = JSON.parse(rawReviewers);
+      if (!Array.isArray(value) || value.length !== 2 || !value.every(person =>
+        person && typeof person === 'object' && !Array.isArray(person)
+        && typeof person.name === 'string' && !!person.name.trim()
+        && typeof person.telegramId === 'string' && /^[1-9]\d{0,19}$/.test(person.telegramId))
+        || value[0].telegramId === value[1].telegramId) throw new Error();
+      reviewers = value;
+    } catch { throw new Error('APIDOG_MR_REVIEWERS must contain exactly two names and distinct numeric telegramId strings'); }
+    apidogMerge = { projectId, targetBranchId, projectName, contractUrl, peopleMap, reviewers };
   }
   return { apidogMerge, apidogAccessToken, githubWebhookSecret, apidogSignatureKey, apidogSignatureHeader, databasePath, port, sendEnabled,
     telegram, apidogTelegram, githubApiToken: env.GITHUB_API_TOKEN, githubTopic, reviewTopic, apidogTopic, userMap };

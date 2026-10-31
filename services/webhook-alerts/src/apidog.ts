@@ -36,16 +36,19 @@ export function formatApidogMr(delivery: Delivery, config: FormatConfig & Apidog
     || typeof mr.description !== 'string' || delivery.deliveryId !== `mr-poll:${mr.id}:${delivery.event.slice(3)}`
     || (delivery.event !== 'MR_OPENED' && mr.closedById !== null && !validId(mr.closedById))) return [];
   const seen = new Set<string>();
-  const person = (id: number): string => {
-    const entry = Object.hasOwn(config.peopleMap, String(id)) ? config.peopleMap[String(id)] : undefined;
-    if (!entry) return `Apidog user ${id}`;
+  const reviewer = (entry: ApidogMergeConfig['reviewers'][number]): string => {
     const name = truncate(entry.name, 100);
     const html = mention(name, seen.has(entry.telegramId) ? {} : { [name]: entry.telegramId });
     seen.add(entry.telegramId);
     return html;
   };
+  const person = (id: number): string => {
+    const entry = Object.hasOwn(config.peopleMap, String(id)) ? config.peopleMap[String(id)] : undefined;
+    return entry ? reviewer(entry) : `Apidog user ${id}`;
+  };
   const action = delivery.event === 'MR_OPENED' ? 'Открыт' : delivery.event === 'MR_CLOSED' ? 'Закрыт' : 'Слит';
   const roles = [`Создатель MR: ${person(mr.createdById)}`];
+  if (delivery.event === 'MR_OPENED') roles.push(`Ревьюверы: ${config.reviewers.map(reviewer).join(', ')}`);
   if (delivery.event !== 'MR_OPENED' && validId(mr.closedById)) roles.push(`${delivery.event === 'MR_CLOSED' ? 'Закрыл' : 'Слил'} MR: ${person(mr.closedById)}`);
   const footer = roles.join('\n');
   const summary = `<b>Apidog</b> · ${action} MR #${mr.id}\n${escapeHtml(truncate(mr.description, 2000))}`;

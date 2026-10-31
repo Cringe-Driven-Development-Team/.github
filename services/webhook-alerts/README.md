@@ -711,7 +711,21 @@ Sprint-ветка архивирована и удалена. Три тесто�
 Для включённого sender обязательны `APIDOG_PROJECT_ID` (положительный числовой
 ID проекта), `APIDOG_TARGET_BRANCH_ID` (ID main), `APIDOG_PROJECT_NAME` (точное
 имя проекта), `APIDOG_CONTRACT_URL` (публичный HTTP/HTTPS URL контракта),
-`APIDOG_ACCESS_TOKEN` (токен чтения MR и sprint-веток) и `APIDOG_TELEGRAM_USER_MAP`.
+`APIDOG_ACCESS_TOKEN` (токен чтения MR и sprint-веток), `APIDOG_TELEGRAM_USER_MAP`
+и `APIDOG_MR_REVIEWERS`. Последняя настройка — JSON-массив ровно из двух объектов
+с непустым `name` и разными положительными десятичными строками `telegramId`
+(до 20 цифр, без ведущих нулей). Пример с синтетическими IDs:
+
+```json
+[{"name":"Reviewer One","telegramId":"333"},{"name":"Reviewer Two","telegramId":"444"}]
+```
+
+Храните `APIDOG_MR_REVIEWERS` в `vault_hooks_env`. При каждом `MR_OPENED`
+после создателя появляется строка «Ревьюверы» в порядке настройки, независимо
+от `reviewerIds` Apidog. Совпадение с создателем не вызывает повторный пинг.
+В `MR_CLOSED` и `MR_MERGED` эта строка не добавляется.
+
+
 Карта — JSON-объект: ключ — числовой Apidog user ID, значение — объект с
 непустым `name` и строковым числовым `telegramId`. Токен и карту храните в
 `vault_hooks_env`; Telegram IDs берите из проверенной карты организации,
