@@ -331,6 +331,39 @@ ID и повторную доставку GitHub/Apidog, затем провер
    reminders. Только после этого записать приёмку; #20 пока не закрывать до
    фиксации всех live результатов в финальном PR.
 
+## Расширение охвата при включённом worker
+
+Этот порядок нужен для нового caller, когда сервис уже отправляет сообщения.
+Worker остаётся включённым; рабочую очередь не редактировать, старые сообщения
+не воспроизводить и не удалять. Порядок первого переключения выше здесь не применять.
+
+1. Сохранить UTC, образ, health, `integrity_check`, состояние deliveries/outbox
+   и незавершённых review groups. Прочитать org variable
+   `TELEGRAM_EVENTS_SOURCE` и selected repositories, проверить callers на
+   актуальном main и отсутствие repository/environment overrides. Org hook
+   должен быть активен и охватывать репозиторий.
+2. Проверить queued/in-progress automation runs новых callers и дождаться
+   завершения их `notify`, включая серии ревью, без отмены. Сопоставить
+   пограничные GUID/события и Telegram message IDs; успех job сам по себе
+   отправку не доказывает. Неразрешённые deliveries/outbox/review groups сверять
+   по событиям, не меняя очередь; при `unresolved` приёмку не объявлять.
+3. Перед каждым добавлением перечитать variable: `value=webhook`,
+   `visibility=selected`. Добавить только отсутствующий repository ID через
+   `PUT /orgs/Cringe-Driven-Development-Team/actions/variables/TELEGRAM_EVENTS_SOURCE/repositories/{repository_id}`,
+   после каждого проверить API. Не заменять весь список и не менять
+   value/visibility; прежние selected repositories сохранить.
+4. Для каждого нового caller создать временную ветку от текущего main и
+   отправить один пустой коммит. Сверить repo/ref/before/after SHA и GUID:
+   org delivery HTTP `202`, `telegram / notify=skipped`, одна prepared delivery,
+   ровно один outbox `sent` с topic `26` и ненулевым Telegram message ID.
+   После окончания Actions и worker повторить подсчёт. Событие создания ветки
+   сверить отдельно: без новых коммитов оно не создаёт карточку.
+5. Перед удалением своей ветки проверить точное имя и ожидаемый head SHA.
+   Delete push должен стать prepared без outbox. Повторить selected repos,
+   overrides, health и проверку незавершённой очереди; сверить неизменность
+   независимых workflow. Записать UTC, GUID/run/job/message IDs и очистку.
+   Deploy/release и новые issue для push-проверки не нужны.
+
 ## Откат и повтор доставки
 
 Откат сначала отрепетировать в изолированном чате/экземпляре и проверить в живом
@@ -733,3 +766,86 @@ ID проекта), `APIDOG_TARGET_BRANCH_ID` (ID main), `APIDOG_PROJECT_NAME` (
 реальные значения в репозитории или логах. Пустая карта `{}` допустима:
 неизвестные участники отображаются без пинга. Карточка MR содержит кнопки
 «Открыть MR» и «Контракт API»; данные MR берутся из полного снимка API.
+
+### Завершение охвата GitHub callers — 2026-10-31 UTC
+
+В `17:36:11.152Z` worker уже включён и healthy, `integrity_check=ok`:
+853 prepared deliveries (GitHub 785, Apidog 68), 378 `sent` outbox;
+unprepared, остальные статусы outbox и незавершённые review groups — `0`.
+Образ до и после:
+`ghcr.io/cringe-driven-development-team/webhook-alerts@sha256:09fd5908e8c90e246a1aaa61a773499cb44ced4b57bc4beeed5829b1448dd8db`.
+Worker не останавливался; очередь не редактировалась, старые сообщения не
+воспроизводились и не удалялись.
+
+Исходный API-снимок `17:31:03.930267Z`: organization variable
+`TELEGRAM_EVENTS_SOURCE=webhook`, `visibility=selected`, repositories `.github`
+(1375675360), `backend` (1393814417), `frontend` (1393814114), `infra` (1374133166).
+Добавлены только четыре ID штатными additive `PUT`, каждый ответил HTTP `204`:
+
+| Repository | ID | Интервал PUT UTC |
+| --- | --- | --- |
+| docs | 1369785278 | 17:36:55.199614–17:37:03.836882 |
+| frontend-packages | 1403014726 | 17:37:03.836882–17:37:55; точные времена запроса не сохранены после сбоя контрольного GET |
+| figma | 1375950508 | 17:39:13.829228–17:39:18.899289 |
+| static | 1374136555 | 17:39:34.595716–17:39:39.341154 |
+
+После сбоя GET повторное чтение подтвердило `frontend-packages` в selected;
+его PUT не повторялся. Итоговый снимок `17:42:30.095458Z`: ровно восемь
+перечисленных callers, прежние четыре сохранены, value/visibility неизменны,
+repository/environment overrides отсутствуют во всех девяти репозиториях.
+Org hook `702764072` остался active, JSON, HTTPS/SSL verification, события
+`push`, `issues`, `issue_comment`, `pull_request`, `pull_request_review`.
+
+На границе выполняющихся automation runs четырёх callers не было; перед
+добавлением проверено повторно. Последние завершённые `notify`: docs job
+`124603715717` — `2026-10-31T17:17:54Z`, frontend-packages `124544506712` —
+`2026-10-31T13:02:20Z`, figma `121898921152` — `2026-10-26T22:56:13Z`, static
+`120879983698` — `2026-10-24T13:04:35Z`. Ничего не отменялось. Известный дубль
+docs PR #113 подтверждён: GUID `c2619620-d53e-11f1-9aeb-5eefc9b4b647`,
+delivery `846` / outbox `374` / worker message `8501`; Actions run
+`41214480655`, job `124576022152` вернул Telegram `result.message_id=8502`,
+topic `26`. Вложенный `reply_to_message.message_id=26` не является второй отправкой.
+
+В каждом caller создана временная ветка от актуального main и отправлен один
+пустой коммит; tree до/после совпадает, main не менялся. Все четыре контрольных
+org deliveries получили HTTP `202`; `telegram / notify=skipped`, одна prepared
+delivery и ровно один `sent` outbox, topic `26`, attempts `1`:
+
+| Repository | GUID | Actions run / notify job | SQLite delivery / outbox | Telegram message |
+| --- | --- | --- | --- | --- |
+| docs | `1e5643d2-d552-11f1-8494-b5889a271c19` | [41225640915](https://github.com/Cringe-Driven-Development-Team/docs/actions/runs/41225640915) / `124609100410` | 855 / 379 | 8510 |
+| frontend-packages | `35706a34-d552-11f1-9757-5a24a8a0c5cc` | [41225693887](https://github.com/Cringe-Driven-Development-Team/frontend-packages/actions/runs/41225693887) / `124609252325` | 857 / 380 | 8511 |
+| figma | `4009c4fe-d552-11f1-8ec1-5ab1b636aa85` | [41225717491](https://github.com/Cringe-Driven-Development-Team/figma/actions/runs/41225717491) / `124609322446` | 859 / 381 | 8512 |
+| static | `49269ecc-d552-11f1-99c8-68c6f7ed2f17` | [41225737723](https://github.com/Cringe-Driven-Development-Team/static/actions/runs/41225737723) / `124609403831` | 861 / 382 | 8513 |
+
+| Repository | Временная ветка | Parent SHA → after SHA |
+| --- | --- | --- |
+| docs | `webhook-cutover-20261031-docs-173954` | `ad48546d5278240e6b09be10903f0a8fa8ab96d9` → `641ea7e6dfebc52b3addbede3c9df2f68b167f61` |
+| frontend-packages | `webhook-cutover-20261031-frontend-packages-174016` | `fa65157b5f6957fbf30fa2ebd4b3b75af19cc955` → `a789adfe2e538cff271396376a6853003dda86d6` |
+| figma | `webhook-cutover-20261031-figma-174053` | `30e87b67a4cab77c84dd9f0405f6320a207d3f18` → `b0b5699e70d5b6fb3a6db418f2d76035d9e4b3a6` |
+| static | `webhook-cutover-20261031-static-174112` | `a0cea30d81d00f2e7d915b7fa0c92a25851b4e87` → `1784b7c7a3a08e8d18f7dcf9be437db50efcb98c` |
+
+После завершения всех Actions уникальность проверена повторно, затем ветки
+удалены только после точного совпадения имени/head SHA. Создание и удаление
+каждой ветки сверены отдельно: HTTP `202`, prepared, без outbox.
+
+| Repository | Создание: GUID / SQLite ID | Удаление: GUID / SQLite ID | Отсутствие ветки проверено UTC |
+| --- | --- | --- | --- |
+| docs | `1aed8048-d552-11f1-9361-efe224413147` / 854 | `66e46746-d552-11f1-902b-1e1e985550a4` / 862 | 17:42:12.180850 |
+| frontend-packages | `32991dd8-d552-11f1-9f3d-6da1511cdb02` / 856 | `6923a616-d552-11f1-9573-4bd933706750` / 863 | 17:42:16.009559 |
+| figma | `3d707b02-d552-11f1-9a54-e32e4b4c1957` / 858 | `6b7535d8-d552-11f1-9bba-cd2d7222dc87` / 864 | 17:42:19.840124 |
+| static | `475a5336-d552-11f1-836d-8386cdcb65ed` / 860 | `6df9a37a-d552-11f1-8bb3-b449d36b1802` / 865 | 17:42:23.950825 |
+
+Финальная readonly-проверка `17:42:54.612Z`: worker=true, health ok, integrity ok,
+865 prepared deliveries (GitHub 797, Apidog 68), 382 `sent`; unprepared,
+unsent и незавершённые review groups — `0`. После очистки все четыре
+контрольных события по-прежнему имеют ровно один outbox и тот же message ID.
+Main SHA и blob SHA всех workflow во всех девяти репозиториях совпали до/после;
+board/close/reminders/course-sync/release/deploy и Apidog не менялись.
+Deploy/release вручную не запускались.
+
+Проверки: `bun test tests/webhook-workflows.test.ts` — 15 pass;
+`bash tests/telegram.sh` — 134 ok; `bash tests/reminders.sh` — 121 ok;
+`bash tests/close.sh` — 22 ok; `bash tests/lint.sh` — lint ok.
+Исторические дубли остались в чате. При потере ответа Telegram абсолютная
+exactly-once доставка не гарантируется; проверены четыре контрольных события.
