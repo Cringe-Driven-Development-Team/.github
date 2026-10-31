@@ -8,7 +8,7 @@ import { loadConfig } from '../src/config';
 import { openStore } from '../src/store';
 import * as main from '../src/main';
 import review from './fixtures/github/review-submitted.json';
-const mergeEnv = { APIDOG_PROJECT_ID: '1382426', APIDOG_TARGET_BRANCH_ID: '1388508', APIDOG_PROJECT_NAME: 'Example', APIDOG_CONTRACT_URL: 'https://vb78fyael1.apidog.io/', APIDOG_ACCESS_TOKEN: 'local-api', APIDOG_TELEGRAM_USER_MAP: '{}' };
+const mergeEnv = { APIDOG_PROJECT_ID: '1382426', APIDOG_TARGET_BRANCH_ID: '1388508', APIDOG_PROJECT_NAME: 'Example', APIDOG_CONTRACT_URL: 'https://vb78fyael1.apidog.io/', APIDOG_ACCESS_TOKEN: 'local-api', APIDOG_TELEGRAM_USER_MAP: '{}', APIDOG_MR_REVIEWERS: '[{"name":"Reviewer One","telegramId":"333"},{"name":"Reviewer Two","telegramId":"444"}]' };
 const env = { ...mergeEnv, GITHUB_WEBHOOK_SECRET: 'local-github', APIDOG_SIGNATURE_KEY: 'local-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' };
 
 test('startup requires Apidog signature settings and enabled mode requires Telegram config/topic', () => {
@@ -264,4 +264,18 @@ test('enabled startup suppresses old raw Apidog outbox durably while preserving 
       expect(reopened.claimDue(Number.MAX_SAFE_INTEGER - 1000, 100)).toEqual([]);
     } finally { reopened.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('enabled config requires a valid ordered pair of fixed reviewers', () => {
+  const enabled = { ...env, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'local', TELEGRAM_APIDOG_BOT_TOKEN: 'local', TELEGRAM_CHAT_ID: '-1001', TELEGRAM_APIDOG_TOPIC_ID: '88' };
+  const first = { name: 'Reviewer One', telegramId: '333' };
+  const second = { name: 'Reviewer Two', telegramId: '444' };
+  for (const value of [undefined, '', '{bad', 'null', '{}', '[]', JSON.stringify([first]), JSON.stringify([first, second, first]),
+    ...[null, [], {}, { ...second, name: '' }, { ...second, name: '   ' }, { ...second, name: 42 },
+      ...['0', '-1', '1.5', '1junk', '01', '123456789012345678901', ''].map(telegramId => ({ ...second, telegramId })),
+      { ...second, telegramId: 444 }, { ...second, telegramId: first.telegramId }].map(entry => JSON.stringify([first, entry]))]) {
+    expect(() => loadConfig({ ...enabled, APIDOG_MR_REVIEWERS: value })).toThrow('APIDOG_MR_REVIEWERS');
+  }
+  expect(loadConfig(enabled).apidogMerge!.reviewers).toEqual([first, second]);
 });

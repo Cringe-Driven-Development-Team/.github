@@ -5,7 +5,7 @@ import type { Delivery } from '../src/store';
 import type { GithubApi } from '../src/github-api';
 import type { ApidogApi } from '../src/apidog-api';
 
-const settings = { projectId: 1382426, targetBranchId: 1388508, projectName: '2026_2_Cringe_Driven_Development', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: {} };
+const settings = { projectId: 1382426, targetBranchId: 1388508, projectName: '2026_2_Cringe_Driven_Development', contractUrl: 'https://vb78fyael1.apidog.io/', reviewers: [{ name: 'Reviewer One', telegramId: '333' }, { name: 'Reviewer Two', telegramId: '444' }], peopleMap: {} };
 const notice = { event: 'BRANCH_CREATED', title: 'Create Sprint Branch', content: 'Create Sprint Branch\nTeam: Personal Team\nProject: 2026_2_Cringe_Driven_Development\nSprintBranch: delete-security-scheme-folder\nCreator: yaroslav7689\nCreated at: 2026-10-26 13:30:32' };
 function delivery(body: Record<string, unknown> = notice): Delivery {
   return { source: 'apidog', event: String(body.event), raw: new TextEncoder().encode(JSON.stringify(body)) } as Delivery;

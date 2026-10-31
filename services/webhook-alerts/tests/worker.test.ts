@@ -239,7 +239,7 @@ test('projector prepares only polled MR deliveries while raw Apidog webhooks rem
   }
   const githubApi = { getIssue: async () => undefined } as unknown as import('../src/github-api').GithubApi;
   const project = createProjector(githubApi, { apidogTopic: 88 }, { api: {} as import('../src/apidog-api').ApidogApi,
-    config: { projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: {} } });
+    config: { projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', reviewers: [{ name: 'Reviewer One', telegramId: '333' }, { name: 'Reviewer Two', telegramId: '444' }], peopleMap: {} } });
   const sent: OutgoingMessage[] = [];
   expect(await runOnce({ store, project, now: 1000, send: async message => { sent.push(message); return { kind: 'sent', telegramMessageId: 321 }; } })).toBe(1);
   expect(sent[0]!.html).toContain('Открыт MR #39834');

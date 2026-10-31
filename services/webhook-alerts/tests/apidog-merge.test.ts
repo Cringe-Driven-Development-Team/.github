@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { parseMergeNotice, formatApidogMerge } from '../src/apidog-merge';
 import { formatApidog } from '../src/apidog';
 import type { Delivery } from '../src/store';
-const config = { projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', peopleMap: { '1': { name: '<Alice>', telegramId: '111' }, '2': { name: 'Bob', telegramId: '222' } } };
+const config = { projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', reviewers: [{ name: 'Reviewer One', telegramId: '333' }, { name: 'Reviewer Two', telegramId: '444' }], peopleMap: { '1': { name: '<Alice>', telegramId: '111' }, '2': { name: 'Bob', telegramId: '222' } } };
 const payload = { event: 'BRANCH_MERGED', title: 'Merge', content: 'Merge Sprint Branch: feature  \nProject: Example \nUpdated at: 2026-10-26 10:28:47  ' };
 const delivery = (body = payload): Delivery => ({ source: 'apidog', event: body.event, raw: new TextEncoder().encode(JSON.stringify(body)) }) as Delivery;
 const mr = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, closedById: 2, closedAt: '2026-10-26T10:28:47Z', status: 'MERGED' as const };
