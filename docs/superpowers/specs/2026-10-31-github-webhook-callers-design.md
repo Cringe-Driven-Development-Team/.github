@@ -35,8 +35,9 @@ release/deploy notifications не меняются. Worker остаётся вк
   `ghcr.io/cringe-driven-development-team/webhook-alerts@sha256:09fd5908e8c90e246a1aaa61a773499cb44ced4b57bc4beeed5829b1448dd8db`.
 - Docs PR #113: GUID `c2619620-d53e-11f1-9aeb-5eefc9b4b647`, delivery 846,
   outbox 374, сообщение 8501 в теме 26, `sent`; Actions job
-  `124576022152` в run `41214480655` тоже `success`. Второй Telegram ID из
-  Actions пока не установлен; не считать его подтверждённым только по success.
+  `124576022152` в run `41214480655` тоже `success`. Из JSON-ответа Telegram
+  в логе Actions извлечён `result.message_id=8502`, topic 26: двойная отправка
+  этого события подтверждена двумя разными Telegram message IDs.
 
 ## Подход
 
