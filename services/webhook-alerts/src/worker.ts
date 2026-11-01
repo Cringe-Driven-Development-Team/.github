@@ -1,7 +1,7 @@
 import type { ApidogApi } from './apidog-api';
 import type { ApidogMergeConfig } from './apidog-merge';
 import { setTimeout } from 'node:timers/promises';
-import type { Store, Delivery, DueMessage, OutgoingMessage } from './store';
+import type { Store, Delivery, DueMessage, OutgoingMessage, DeliveryLane, ReleaseNotice } from './store';
 import type { SendResult } from './telegram';
 import { formatGithub, formatGithubReviewGroup, githubReview, type FormatConfig } from './github';
 import type { GithubApi } from './github-api';
@@ -17,6 +17,8 @@ interface WorkerDeps {
   store: Store;
   project: Projector;
   send: (message: DueMessage) => Promise<SendResult>;
+  releaseProject?: Projector;
+  beforeReleaseSend?: (notice:ReleaseNotice)=>Promise<'send'|'skip'|'retry'>;
 }
 
 // One worker, at most ten claimed messages; even two 5s requests per row fit this lease.
@@ -30,17 +32,16 @@ async function sendSafely(send: WorkerDeps['send'], message: DueMessage): Promis
   catch { return { kind: 'retry', errorCode: 'network', ambiguous:true }; }
 }
 
-export async function runOnce({ store, project, send, now }: WorkerDeps & { now: number }): Promise<number> {
-  const startedAt = performance.now();
+export async function prepareOnce({store,project,now,lane='ordinary'}: Pick<WorkerDeps,'store'|'project'> & {now:number;lane?:DeliveryLane}): Promise<void> {
   const groups = new ReviewGroups(store);
   // Drain accepted deliveries before releasing timers: a queued verdict may be
   // beyond the first claim batch and must supersede its comments first.
   for (;;) {
-    const batch = store.claimUnprepared(now, LEASE_MS);
+    const batch = store.claimUnprepared(now, LEASE_MS,lane);
     if (!batch.length) break;
     for (const delivery of batch) {
       try {
-        if (githubReview(delivery)) {
+        if (lane === 'ordinary' && githubReview(delivery)) {
           if (!project.reviewGroup) throw new Error('review group projector required');
           groups.record(delivery, delivery.receivedAt);
           store.prepare(delivery.id, []);
@@ -52,19 +53,30 @@ export async function runOnce({ store, project, send, now }: WorkerDeps & { now:
       }
     }
   }
-  if (project.reviewGroup) {
+  if (lane === 'ordinary' && project.reviewGroup) {
     try { await groups.releaseDue(now, project.reviewGroup); }
     catch { console.error(JSON.stringify({ errorCode: 'review_group_preparation_failed' })); }
   }
-  return deliverOnce({store,send,now,startedAt});
 }
 
-export async function deliverOnce({store,send,now,startedAt=performance.now()}: Pick<WorkerDeps,'store'|'send'> & {now:number;startedAt?:number}): Promise<number> {
+export async function runOnce(deps:WorkerDeps & {now:number}):Promise<number> {
+  const startedAt=performance.now();
+  await prepareOnce({...deps,lane:'ordinary'});
+  return deliverOnce({...deps,startedAt});
+}
+
+export async function deliverOnce({store,send,beforeReleaseSend,now,startedAt=performance.now()}: Pick<WorkerDeps,'store'|'send'|'beforeReleaseSend'> & {now:number;startedAt?:number}): Promise<number> {
   let count=0;
   for (let i=0;i<10;i++) {
     const message=store.claimDue(now, LEASE_MS, 1)[0];
     if (!message) break;
     count++;
+    if (message.release && beforeReleaseSend) {
+      let guard:'send'|'skip'|'retry';
+      try {guard=await beforeReleaseSend(message.release);} catch {guard='retry';}
+      if (guard === 'skip') {store.skipRelease(message.id,'stale');continue;}
+      if (guard === 'retry') {store.markRetry(message.id,now+Math.ceil(performance.now()-startedAt)+backoff(message.attempts),'release_guard_unavailable');continue;}
+    }
     if (message.release && !store.beginReleaseSend(message.id, now + Math.floor(performance.now()-startedAt))) continue;
     let result = await sendSafely(send, message);
     if (result.kind === 'entities' && message.fallbackHtml !== undefined) {
@@ -91,20 +103,27 @@ export async function deliverOnce({store,send,now,startedAt=performance.now()}: 
 }
 
 export async function startWorker(deps: WorkerDeps & { signal: AbortSignal; pollApidog?: () => Promise<void> }): Promise<void> {
-  let nextApidogPoll = 0;
-  while (!deps.signal.aborted) {
-    if (deps.pollApidog && Date.now() >= nextApidogPoll) {
-      try { await deps.pollApidog(); }
-      catch { console.error(JSON.stringify({ errorCode: 'apidog_mr_poll_failed' })); }
-      nextApidogPoll = Date.now() + 30000;
+  let nextApidogPoll=0,wake=new AbortController();
+  async function loop(task:()=>Promise<void>,sender=false):Promise<void> {
+    while(!deps.signal.aborted){
+      try {await task();} catch {console.error(JSON.stringify({errorCode:'worker_iteration_failed'}));}
+      if(deps.signal.aborted)break;
+      if(sender){
+        const current=wake;
+        if(!current.signal.aborted)try {await setTimeout(1000,undefined,{signal:AbortSignal.any([deps.signal,current.signal])});}catch{}
+        if(wake===current)wake=new AbortController();
+      }else try {await setTimeout(1000,undefined,{signal:deps.signal});}catch{}
     }
-    if (deps.signal.aborted) break;
-    try { await runOnce({ ...deps, now: Date.now() }); }
-    catch { console.error(JSON.stringify({ errorCode: 'worker_iteration_failed' })); }
-    if (deps.signal.aborted) break;
-    try { await setTimeout(1000, undefined, { signal: deps.signal }); }
-    catch { if (deps.signal.aborted) break; }
   }
+  const preparations=[loop(async()=>{
+    if(deps.pollApidog&&Date.now()>=nextApidogPoll){try{await deps.pollApidog();}catch{console.error(JSON.stringify({errorCode:'apidog_mr_poll_failed'}));}nextApidogPoll=Date.now()+30000;}
+    if(deps.signal.aborted)return;
+    await prepareOnce({...deps,now:Date.now(),lane:'ordinary'});wake.abort();
+  })];
+  if(deps.releaseProject)for(const lane of ['release-queue','release-operation'] as const)preparations.push(loop(async()=>{
+    await prepareOnce({store:deps.store,project:deps.releaseProject!,now:Date.now(),lane});wake.abort();
+  }));
+  await Promise.all([...preparations,loop(async()=>{await deliverOnce({...deps,now:Date.now()});},true)]);
 }
 
 export function createGithubProjector(api: GithubApi, config: FormatConfig = {}): WorkerDeps['project'] {

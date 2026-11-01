@@ -28,6 +28,7 @@ export interface Delivery extends DeliveryInput {
   receivedAt: number;
   prepared: boolean;
   leaseUntil: number | null;
+  releaseRecovery?: boolean;
 }
 
 export interface OutgoingMessage {
@@ -62,6 +63,7 @@ interface DeliveryRow {
   received_at: number;
   prepared: number;
   lane: DeliveryLane;
+  recovery_allowed?: number;
   lease_until: number | null;
 }
 interface ReviewGroupRow {
@@ -95,6 +97,7 @@ function delivery(row: DeliveryRow): Delivery {
     id: row.id, source: row.source, deliveryId: row.delivery_id, event: row.event,
     raw: new Uint8Array(row.raw), bodyHash: row.body_hash, receivedAt: row.received_at,
     prepared: row.prepared === 1, leaseUntil: row.lease_until,
+    ...(row.recovery_allowed === 1 ? {releaseRecovery:true} : {}),
   };
 }
 function buttonJson(item: OutgoingMessage): string | null {
@@ -221,7 +224,7 @@ export class Store {
       const cutoff=this.releaseActivation();
       if (selectedLane !== 'ordinary' && cutoff === null) return [];
       const pending = this.db.query<DeliveryRow, [string, number]>(
-        `SELECT * FROM deliveries WHERE prepared = 0 AND lane = ?
+        `SELECT *, EXISTS(SELECT 1 FROM release_recovery r WHERE r.delivery_id=deliveries.id) AS recovery_allowed FROM deliveries WHERE prepared = 0 AND lane = ?
          AND (lane = 'ordinary' OR received_at >= ? OR id IN (SELECT delivery_id FROM release_recovery)) ORDER BY received_at, id`,
       ).all(selectedLane,cutoff ?? 0);
       const rows: DeliveryRow[] = [];
