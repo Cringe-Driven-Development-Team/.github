@@ -27,7 +27,7 @@ function backoff(attempts: number): number {
 }
 async function sendSafely(send: WorkerDeps['send'], message: DueMessage): Promise<SendResult> {
   try { return await send(message); }
-  catch { return { kind: 'retry', errorCode: 'network' }; }
+  catch { return { kind: 'retry', errorCode: 'network', ambiguous:true }; }
 }
 
 export async function runOnce({ store, project, send, now }: WorkerDeps & { now: number }): Promise<number> {
@@ -56,8 +56,16 @@ export async function runOnce({ store, project, send, now }: WorkerDeps & { now:
     try { await groups.releaseDue(now, project.reviewGroup); }
     catch { console.error(JSON.stringify({ errorCode: 'review_group_preparation_failed' })); }
   }
-  const messages = store.claimDue(now, LEASE_MS);
-  for (const message of messages) {
+  return deliverOnce({store,send,now,startedAt});
+}
+
+export async function deliverOnce({store,send,now,startedAt=performance.now()}: Pick<WorkerDeps,'store'|'send'> & {now:number;startedAt?:number}): Promise<number> {
+  let count=0;
+  for (let i=0;i<10;i++) {
+    const message=store.claimDue(now, LEASE_MS, 1)[0];
+    if (!message) break;
+    count++;
+    if (message.release && !store.beginReleaseSend(message.id, now + Math.floor(performance.now()-startedAt))) continue;
     let result = await sendSafely(send, message);
     if (result.kind === 'entities' && message.fallbackHtml !== undefined) {
       // Persist the reduced card before retrying, so later retries never restore the quote.
@@ -66,6 +74,7 @@ export async function runOnce({ store, project, send, now }: WorkerDeps & { now:
       result = await sendSafely(send, { ...card, html: fallbackHtml });
     }
     if (result.kind === 'sent') store.markSent(message.id, result.telegramMessageId);
+    else if (result.kind === 'retry' && result.ambiguous && message.release) store.markFailed(message.id,'release_uncertain');
     else if (result.kind === 'retry') {
       // Rate-limit windows start at the response, even for slow requests or earlier rows.
       const completedAt = now + Math.ceil(performance.now() - startedAt);
@@ -74,11 +83,11 @@ export async function runOnce({ store, project, send, now }: WorkerDeps & { now:
       store.markRetry(message.id, completedAt + delay, result.errorCode);
     } else store.markFailed(message.id, result.errorCode);
     console.info(JSON.stringify({ outboxId: message.id, originType: message.originType, originId: message.originId,
-      attempt: message.attempts, result: result.kind,
+      attempt: message.attempts, result: result.kind === 'retry' && result.ambiguous && message.release ? 'uncertain' : result.kind,
       ...(result.kind === 'sent' ? { httpStatus: 200 } : { errorCode: result.errorCode, httpStatus: result.httpStatus }) }));
     // At least once: a crash after Telegram accepts but before markSent may send a duplicate.
   }
-  return messages.length;
+  return count;
 }
 
 export async function startWorker(deps: WorkerDeps & { signal: AbortSignal; pollApidog?: () => Promise<void> }): Promise<void> {
