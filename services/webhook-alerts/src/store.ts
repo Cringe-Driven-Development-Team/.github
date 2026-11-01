@@ -7,7 +7,7 @@ import { githubReview } from './github';
 export type DeliveryLane = 'ordinary' | 'release-queue' | 'release-operation';
 export type ReleaseNotice = { key: string } & (
   {kind:'queue';prNumber:number;queueEntryId:string} | {kind:'dequeue';prNumber:number} |
-  {kind:'ready';sha:string} | {kind:'start'|'result';deploymentId:number;runId:number} |
+  {kind:'ready';sha:string;operationKey:string} | {kind:'start'|'result';deploymentId:number;runId:number} |
   {kind:'job-error'|'retention';runId:number;attempt:number;jobId:number}
 );
 
@@ -263,9 +263,23 @@ export class Store {
         VALUES ('delivery', ?, ?, ?, ?, ?, ?, ?, ?)`);
       messages.forEach((item, ordinal) => {
         if (item.release && this.db.query('SELECT outbox_id FROM release_notices WHERE notice_key = ?').get(item.release.key)) return;
+        const operationKey = item.release?.kind === 'ready' ? item.release.operationKey
+          : item.release?.kind === 'result' || item.release?.kind === 'job-error' ? item.release.key : null;
+        const previous = operationKey ? this.db.query<{outbox_id:number;metadata_json:string;sending_at:number|null;status:string;error_code:string|null},[string]>(`SELECT n.*,o.status,o.error_code FROM release_notices n
+          JOIN outbox o ON o.id=n.outbox_id WHERE operation_key=?`).get(operationKey) : null;
+        if (previous) {
+          if (item.release?.kind === 'ready' && JSON.parse(previous.metadata_json).kind === 'job-error'
+            && previous.sending_at === null && (['pending','leased'].includes(previous.status) || previous.error_code === 'release_skipped')) {
+            this.db.query(`UPDATE outbox SET topic=?,html=?,button_json=?,fallback_html=?,keyboard_json=?,status='pending',due_at=?,lease_until=NULL,error_code=NULL WHERE id=?`)
+              .run(item.topic,item.html,buttonJson(item),item.fallbackHtml??null,item.keyboard?JSON.stringify(item.keyboard):null,row.received_at,previous.outbox_id);
+            this.db.query('UPDATE release_notices SET notice_key=?,metadata_json=?,skip_reason=NULL WHERE outbox_id=?')
+              .run(item.release.key,JSON.stringify(item.release),previous.outbox_id);
+          }
+          return;
+        }
         const inserted=insert.run(id, ordinal, item.topic, item.html, buttonJson(item),
           item.fallbackHtml ?? null, item.keyboard ? JSON.stringify(item.keyboard) : null, row.received_at);
-        if (item.release) this.db.query('INSERT INTO release_notices (notice_key,outbox_id,metadata_json) VALUES (?,?,?)').run(item.release.key,inserted.lastInsertRowid,JSON.stringify(item.release));
+        if (item.release) this.db.query('INSERT INTO release_notices (notice_key,operation_key,outbox_id,metadata_json) VALUES (?,?,?,?)').run(item.release.key,operationKey,inserted.lastInsertRowid,JSON.stringify(item.release));
       });
       this.db.query('UPDATE deliveries SET prepared = 1, lease_until = NULL WHERE id = ?').run(id);
     }).immediate();
@@ -331,17 +345,18 @@ export class Store {
     }).immediate();
   }
 
-  claimDue(now: number, leaseMs: number, limit = CLAIM_LIMIT): DueMessage[] {
+  claimDue(now: number, leaseMs: number, limit = CLAIM_LIMIT, lane?: DeliveryLane): DueMessage[] {
     this.checkLease(now, leaseMs);
     return this.db.transaction(() => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > CLAIM_LIMIT) throw new Error('invalid claim limit');
       this.db.query(`UPDATE outbox SET status='failed',lease_until=NULL,error_code='release_uncertain' WHERE status='leased' AND lease_until <= ? AND id IN (SELECT outbox_id FROM release_notices WHERE sending_at IS NOT NULL)`).run(now);
-      const rows = this.db.query<OutboxRow, [number, number, number]>(`SELECT o.*, n.metadata_json,
+      const rows = this.db.query<OutboxRow, [number, number, DeliveryLane | null, DeliveryLane | null, number]>(`SELECT o.*, n.metadata_json,
         CASE WHEN o.origin_type = 'review_group' THEN 'github' ELSE d.source END AS source
         FROM outbox o LEFT JOIN deliveries d ON o.origin_type = 'delivery' AND o.origin_id = d.id
         LEFT JOIN release_notices n ON n.outbox_id=o.id
-        WHERE (o.status = 'pending' AND o.due_at <= ?) OR (o.status = 'leased' AND o.lease_until <= ?)
-        ORDER BY o.id LIMIT ?`).all(now, now, limit);
+        WHERE ((o.status = 'pending' AND o.due_at <= ?) OR (o.status = 'leased' AND o.lease_until <= ?))
+        AND (? IS NULL OR COALESCE(d.lane, 'ordinary') = ?)
+        ORDER BY o.id LIMIT ?`).all(now, now, lane ?? null, lane ?? null, limit);
       const leaseUntil = now + leaseMs;
       for (const row of rows) {
         this.db.query("UPDATE outbox SET status = 'leased', attempts = attempts + 1, lease_until = ? WHERE id = ?").run(leaseUntil, row.id);
@@ -356,8 +371,18 @@ export class Store {
     this.db.query("UPDATE outbox SET status = 'sent', telegram_message_id = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'leased'").run(telegramMessageId, id);
   }
 
+  renewSendLease(id: number, previousLease: number, now: number, leaseMs: number): boolean {
+    this.checkLease(now, leaseMs);
+    return this.db.query(`UPDATE outbox SET lease_until=? WHERE id=? AND status='leased' AND lease_until=?
+      AND NOT EXISTS (SELECT 1 FROM release_notices WHERE outbox_id=? AND sending_at IS NOT NULL)`)
+      .run(now + leaseMs, id, previousLease, id).changes === 1;
+  }
+
   markRetry(id: number, dueAt: number, errorCode: string): void {
-    this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = ? WHERE id = ? AND status = 'leased'").run(dueAt, errorCode, id);
+    this.db.transaction(() => {
+      const updated = this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = ? WHERE id = ? AND status = 'leased'").run(dueAt, errorCode, id);
+      if (updated.changes) this.db.query('UPDATE release_notices SET sending_at=NULL WHERE outbox_id=?').run(id);
+    }).immediate();
   }
 
   markFailed(id: number, errorCode: string): void {

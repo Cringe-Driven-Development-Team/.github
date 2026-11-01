@@ -121,7 +121,12 @@ async function operationMessage(
       [{ text: 'Выкатить', url: `${REPO_URL}/actions/workflows/cd.yml` }],
       ...prButtons(report, op.notification.report_url),
     ];
-    notice = { kind: 'ready', key: `ready:${REPO}:${op.sha}`, sha: op.sha };
+    notice = {
+      kind: 'ready',
+      key: `ready:${REPO}:${op.sha}`,
+      sha: op.sha,
+      operationKey: resultKey(op.kind, run),
+    };
   } else {
     header = [
       `<b>${op.state === 'success' ? '✅' : '❌'} ${label} фронта: ${op.state === 'success' ? 'успешно' : 'ошибка'}</b>`,
@@ -311,6 +316,11 @@ export async function checkReleaseNotice(
     }
     if (notice.kind === 'start')
       return (await api.operation(notice.deploymentId)).state === 'in_progress' ? 'send' : 'skip';
+    if (notice.kind === 'job-error') {
+      const job = await api.job(notice.jobId);
+      if (job.conclusion === 'success' || job.conclusion === 'skipped' || job.operation?.state === 'success')
+        return 'skip';
+    }
     if (notice.kind === 'ready') {
       for (const production of await api.production())
         if (production.everSucceeded && (await api.isAncestor(notice.sha, production.sha))) return 'skip';

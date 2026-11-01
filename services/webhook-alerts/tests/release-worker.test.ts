@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, expect, spyOn, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -107,7 +108,13 @@ test('queue_sends_while_release_enrichment_waits', async () => {
       }),
     ]);
     const q = enqueue();
-    s.accept({ source: 'github', event: q.event, deliveryId: 'fast', raw: q.raw, receivedAt: 1001 });
+    s.accept({
+      source: 'github',
+      event: q.event,
+      deliveryId: 'fast',
+      raw: q.raw,
+      receivedAt: 1001,
+    });
     await Promise.race([
       sent,
       Bun.sleep(3000).then(() => {
@@ -135,4 +142,128 @@ test('activation_requires_release_topic_and_token_at_service_start', async () =>
       }),
     ),
   ).toThrow('release');
+});
+
+test('blocked_ready_guard_does_not_hold_queue_or_ordinary_sends_and_transport_stays_serial', async () => {
+  const s = store(),
+    f = releaseFixture(),
+    controller = new AbortController();
+  f.operation.kind = 'publish';
+  let unblock!: () => void, entered!: () => void, queueSent!: () => void, ordinarySent!: () => void;
+  const blocked = new Promise<void>((resolve) => (unblock = resolve));
+  const checking = new Promise<void>((resolve) => (entered = resolve));
+  const queueDone = new Promise<void>((resolve) => (queueSent = resolve));
+  const ordinaryDone = new Promise<void>((resolve) => (ordinarySent = resolve));
+  f.api.production = async () => {
+    entered();
+    await blocked;
+    return [];
+  };
+  const d = status('success', 'release-artifacts');
+  s.accept({ source: 'github', event: d.event, deliveryId: 'ready', raw: d.raw, receivedAt: 1000 });
+  await prepareOnce({
+    store: s,
+    project: (input) => projectRelease(input, f.api, config),
+    now: 1000,
+    lane: 'release-operation',
+  });
+  let active = 0,
+    maxActive = 0;
+  const worker = startWorker({
+    store: s,
+    signal: controller.signal,
+    project: async () => [{ topic: 26, html: 'Ordinary' }],
+    releaseProject: (input) => projectRelease(input, f.api, config),
+    beforeReleaseSend: (notice) => checkReleaseNotice(notice, f.api),
+    send: async (message) => {
+      maxActive = Math.max(maxActive, ++active);
+      await Bun.sleep(20);
+      active--;
+      if (message.release?.kind === 'queue') queueSent();
+      if (!message.release) ordinarySent();
+      return { kind: 'sent', telegramMessageId: 1 };
+    },
+  });
+  try {
+    await checking;
+    const q = enqueue();
+    s.accept({
+      source: 'github',
+      event: q.event,
+      deliveryId: 'queue',
+      raw: q.raw,
+      receivedAt: 1001,
+    });
+    s.accept({
+      source: 'github',
+      event: 'issues',
+      deliveryId: 'ordinary',
+      raw: new TextEncoder().encode('{}'),
+      receivedAt: 1002,
+    });
+    await Promise.race([
+      Promise.all([queueDone, ordinaryDone]),
+      Bun.sleep(2500).then(() => {
+        throw new Error('ready history blocked unrelated delivery');
+      }),
+    ]);
+    expect(maxActive).toBe(1);
+  } finally {
+    unblock();
+    controller.abort();
+    await worker;
+  }
+});
+
+test('send_lease_and_next_claim_use_time_after_slow_guard', async () => {
+  const s = store(),
+    d = status();
+  s.accept({
+    source: 'github',
+    event: d.event,
+    deliveryId: 'slow-guard',
+    raw: d.raw,
+    receivedAt: 1000,
+  });
+  s.prepare(s.claimUnprepared(1000, 100, 'release-operation')[0]!.id, [
+    {
+      topic: 88,
+      html: 'Ready',
+      release: {
+        kind: 'ready',
+        key: 'ready',
+        sha: 'b'.repeat(40),
+        operationKey: 'result:publish:10:1',
+      },
+    },
+  ]);
+  let elapsed = 0;
+  const clock = spyOn(performance, 'now').mockImplementation(() => elapsed);
+  const claim = spyOn(s, 'claimDue');
+  const db = new Database(resources.at(-1)!.dir + '/queue.sqlite');
+  try {
+    let sent = 0;
+    await deliverOnce({
+      store: s,
+      now: 1000,
+      startedAt: 0,
+      beforeReleaseSend: async () => {
+        elapsed = 130000;
+        return 'send';
+      },
+      send: async () => {
+        expect(
+          db.query<{ lease_until: number }, []>('SELECT lease_until FROM outbox').get()!.lease_until,
+        ).toBeGreaterThan(elapsed + 1000);
+        sent++;
+        return { kind: 'sent', telegramMessageId: 1 };
+      },
+    });
+    expect(sent).toBe(1);
+    expect(claim.mock.calls[1]![0]).toBe(131000);
+  } finally {
+    db.close();
+    claim.mockRestore();
+    clock.mockRestore();
+  }
 });

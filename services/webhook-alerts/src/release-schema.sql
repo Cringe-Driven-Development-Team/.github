@@ -2,6 +2,7 @@ ALTER TABLE deliveries ADD COLUMN lane TEXT NOT NULL DEFAULT 'ordinary' CHECK (l
 ALTER TABLE outbox ADD COLUMN keyboard_json TEXT;
 CREATE TABLE release_notices (
   notice_key TEXT PRIMARY KEY,
+  operation_key TEXT UNIQUE,
   outbox_id INTEGER NOT NULL UNIQUE REFERENCES outbox(id),
   metadata_json TEXT NOT NULL,
   sending_at INTEGER,

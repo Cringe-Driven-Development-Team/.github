@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openStore, type OutgoingMessage, type Store } from '../src/store';
-import { runOnce } from '../src/worker';
+import { deliverOnce, runOnce } from '../src/worker';
 import { sendMessage } from '../src/telegram';
 const dirs: string[] = [],
   stores: Store[] = [];
@@ -86,6 +86,22 @@ test('semantic_key_is_unique_across_distinct_deliveries', () => {
   accept(s, 'second');
   for (const d of s.claimUnprepared(1000, 100, 'release-queue')) s.prepare(d.id, [card]);
   expect(s.claimDue(1000, 100)).toHaveLength(1);
+});
+test('confirmed_429_retries_current_release_and_persists_success', async () => {
+  const s = open();
+  s.activateReleases(500);
+  accept(s);
+  s.prepare(s.claimUnprepared(1000, 100, 'release-queue')[0]!.id, [card]);
+  let sends = 0;
+  const send = async () =>
+    ++sends === 1
+      ? { kind: 'retry' as const, errorCode: 'telegram_429', retryAfterMs: 1000 }
+      : { kind: 'sent' as const, telegramMessageId: 42 };
+  await deliverOnce({ store: s, now: 1000, send, beforeReleaseSend: async () => 'send' });
+  await deliverOnce({ store: s, now: 3000, send, beforeReleaseSend: async () => 'send' });
+  expect(sends).toBe(2);
+  expect(s.claimDue(125000, 1000)).toHaveLength(0);
+  expect(s.retryFailed(1, 126000)).toBe(false);
 });
 test('keyboard_round_trips_ordered_rows', async () => {
   const s = open();
@@ -191,7 +207,9 @@ test('activation_and_recovery_cli_validate_and_persist', () => {
     TELEGRAM_RELEASES_TOPIC_ID: '88',
     GITHUB_API_TOKEN: 'test',
   };
-  const activated = Bun.spawnSync(['bun', cli, 'release-activate', '1970-01-01T00:00:01.100Z'], { env });
+  const activated = Bun.spawnSync(['bun', cli, 'release-activate', '1970-01-01T00:00:01.100Z'], {
+    env,
+  });
   expect(activated.exitCode).toBe(0);
   expect(s.releaseActivation()).toBe(1100);
   const recovered = Bun.spawnSync(['bun', cli, 'release-recover', '1'], { env });
@@ -265,7 +283,9 @@ test('skipped_release_keeps_reason_and_cannot_be_manually_retried', () => {
   const message = s.claimDue(1000, 100)[0]!;
   s.skipRelease(message.id, 'stale');
   const db = new Database(file);
-  expect(db.query('SELECT skip_reason FROM release_notices').get()).toEqual({ skip_reason: 'stale' });
+  expect(db.query('SELECT skip_reason FROM release_notices').get()).toEqual({
+    skip_reason: 'stale',
+  });
   db.close();
   expect(s.retryFailed(message.id, 1100)).toBe(false);
 });

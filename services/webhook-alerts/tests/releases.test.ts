@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test';
 import { projectRelease, checkReleaseNotice } from '../src/releases';
+import { openStore } from '../src/store';
+import { deliverOnce } from '../src/worker';
 import { releaseFixture, enqueue, status, delivery, REPO, A, B, C } from './helpers/release';
 const config = { topic: 88, siteUrl: 'https://cellestial.ru', userMap: {} };
 test('enqueue_uses_only_current_pr_and_rechecks_before_send', async () => {
@@ -57,6 +59,143 @@ test('ready_uses_success_record_while_ci_running', async () => {
   expect(m!.html).toContain('ждёт выкатки');
   expect(m!.keyboard!.flat().some((b) => b.text === 'Выкатить')).toBe(true);
 });
+for (const readyFirst of [false, true])
+  test(`publication_ready_and_lagging_job_fallback_have_one_result_ready_first_${readyFirst}`, async () => {
+    const f = releaseFixture(),
+      s = openStore(':memory:');
+    f.operation.kind = 'publish';
+    f.operation.run.workflow = 'CI';
+    f.operation.run.event = 'push';
+    f.job.name = 'Publish release';
+    const job = delivery(
+      'workflow_job',
+      {
+        action: 'completed',
+        workflow_job: { id: 100, name: 'Publish release', conclusion: 'failure' },
+      },
+      2,
+    );
+    const ready = status('success', 'release-artifacts');
+    try {
+      s.activateReleases(500);
+      for (const d of readyFirst ? [ready, job] : [job, ready]) {
+        s.accept({
+          source: d.source,
+          deliveryId: d.deliveryId,
+          event: d.event,
+          raw: d.raw,
+          receivedAt: 1000,
+        });
+        s.prepare(
+          s.claimUnprepared(1000, 100, 'release-operation')[0]!.id,
+          await projectRelease(d, f.api, config),
+        );
+      }
+      const messages = s.claimDue(1000, 100);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]!.html).toContain('ждёт выкатки');
+    } finally {
+      s.close();
+    }
+  });
+test('pending_publication_fallback_is_skipped_when_success_becomes_visible_before_send', async () => {
+  const f = releaseFixture();
+  f.job.run.workflow = 'CI';
+  f.job.run.event = 'push';
+  f.job.name = 'Publish release';
+  const [message] = await projectRelease(
+    delivery('workflow_job', {
+      action: 'completed',
+      workflow_job: { id: 100, name: 'Publish release', conclusion: 'failure' },
+    }),
+    f.api,
+    config,
+  );
+  f.operation.kind = 'publish';
+  f.job.operation = f.operation;
+  expect(await checkReleaseNotice(message!.release!, f.api)).toBe('skip');
+});
+test('ready_replaces_fallback_waiting_for_guard_without_sending_its_old_content', async () => {
+  const f = releaseFixture(),
+    s = openStore(':memory:');
+  f.operation.kind = 'publish';
+  f.operation.run.workflow = 'CI';
+  f.operation.run.event = 'push';
+  f.job.name = 'Publish release';
+  let release!: () => void, entered!: () => void;
+  const blocked = new Promise<void>((resolve) => (release = resolve));
+  const checking = new Promise<void>((resolve) => (entered = resolve));
+  const sent: string[] = [];
+  try {
+    s.activateReleases(500);
+    const job = delivery(
+      'workflow_job',
+      {
+        action: 'completed',
+        workflow_job: { id: 100, name: 'Publish release', conclusion: 'failure' },
+      },
+      2,
+    );
+    s.accept({
+      source: job.source,
+      deliveryId: job.deliveryId,
+      event: job.event,
+      raw: job.raw,
+      receivedAt: 1000,
+    });
+    s.prepare(
+      s.claimUnprepared(1000, 100, 'release-operation')[0]!.id,
+      await projectRelease(job, f.api, config),
+    );
+    const sending = deliverOnce({
+      store: s,
+      now: 1000,
+      beforeReleaseSend: async () => {
+        entered();
+        await blocked;
+        return 'send';
+      },
+      send: async (message) => {
+        sent.push(message.html);
+        return { kind: 'sent', telegramMessageId: 1 };
+      },
+    });
+    await checking;
+    const ready = status('success', 'release-artifacts');
+    s.accept({
+      source: ready.source,
+      deliveryId: ready.deliveryId,
+      event: ready.event,
+      raw: ready.raw,
+      receivedAt: 1000,
+    });
+    s.prepare(
+      s.claimUnprepared(1000, 100, 'release-operation')[0]!.id,
+      await projectRelease(ready, f.api, config),
+    );
+    release();
+    await sending;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('ждёт выкатки');
+    const repeat = status('success', 'release-artifacts');
+    f.operation.run.id = 11;
+    s.accept({
+      source: repeat.source,
+      deliveryId: 'republish',
+      event: repeat.event,
+      raw: repeat.raw,
+      receivedAt: 1000,
+    });
+    s.prepare(
+      s.claimUnprepared(1000, 100, 'release-operation')[0]!.id,
+      await projectRelease(repeat, f.api, config),
+    );
+    expect(s.claimDue(1001, 100)).toHaveLength(0);
+  } finally {
+    release?.();
+    s.close();
+  }
+});
 test('foreign_repo_and_release_automation_cannot_recurse', async () => {
   const f = releaseFixture();
   expect(
@@ -84,7 +223,12 @@ test('ready_already_present_in_production_is_skipped_even_after_rollback', async
     createdAt: '2026-11-01T19:00:00Z',
     runId: 9,
   });
-  expect(await checkReleaseNotice({ kind: 'ready', key: 'ready', sha: B }, f.api)).toBe('skip');
+  expect(
+    await checkReleaseNotice(
+      { kind: 'ready', key: 'ready', sha: B, operationKey: 'result:publish:10:1' },
+      f.api,
+    ),
+  ).toBe('skip');
 });
 test('completed_operation_start_is_skipped', async () => {
   const f = releaseFixture();
@@ -186,7 +330,12 @@ test('late_old_enqueue_and_job_before_activation_are_not_sent', async () => {
   expect(await projectRelease(enqueue(), f.api, { ...config, cutoffMs })).toEqual([]);
   const old = delivery('workflow_job', {
     action: 'completed',
-    workflow_job: { id: 100, name: 'CD', conclusion: 'failure', completed_at: '2026-11-01T20:00:00Z' },
+    workflow_job: {
+      id: 100,
+      name: 'CD',
+      conclusion: 'failure',
+      completed_at: '2026-11-01T20:00:00Z',
+    },
   });
   expect(await projectRelease(old, f.api, { ...config, cutoffMs })).toEqual([]);
   const recovered = enqueue();
