@@ -28,8 +28,7 @@ jobs:
       (github.repository == 'Cringe-Driven-Development-Team/frontend' ||
        github.repository == 'Cringe-Driven-Development-Team/backend') &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      vars.COURSE_SYNC_ENABLED == 'true'
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     concurrency:
       group: course-sync-${{ github.repository }}
