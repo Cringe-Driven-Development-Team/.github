@@ -69,7 +69,8 @@ async function state(input: Input, token: string) {
   }
   // Connections are chronological; array order also resolves equal timestamps.
   const latest = events.at(-1);
-  if (latest.__typename !== 'ClosedEvent' || latest.createdAt !== input.closedAt) return null;
+  // GitHub may create the timeline event after issue.closedAt; the issue above identifies the cycle.
+  if (latest.__typename !== 'ClosedEvent' || timestamp(latest.createdAt) < timestamp(input.closedAt)) return null;
   requireData(Object.hasOwn(latest, 'closer'), 'Missing closer');
   const closer = latest.closer;
   requireData(closer === null || typeof closer?.__typename === 'string', 'Invalid closer');

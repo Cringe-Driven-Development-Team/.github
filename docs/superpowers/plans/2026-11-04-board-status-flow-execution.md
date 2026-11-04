@@ -28,3 +28,6 @@ Task 5 pending: merge permission, actual cutover and remaining live acceptance. 
 Final commit ranges: .github 644eb71..3b19101; frontend 3f780a9..7a7cbe5; agent-plugins 3ee04ec..6108547; agent-plugins-private f309c43..1cdb6ea. Fixes committed and pushed; worktrees clean.
 Final review gate: no remaining Important/Critical findings after verified fix pass. No deferred minors. External task 5 remains incomplete; do not mark plan achieved or claim Item closed disabled.
 Finishing: draft PR route already authorized by implementation plan; preserving worktrees for feedback and cutover. Execution ledger archived below docs before deleting only this plan's scratch workspace.
+
+Live acceptance follow-up (user authorized merge): all four PRs merged; frontend main/course copy dc03761, .github 6cbdc68, plugins 2bca06a/9c03162. Post-merge checks and publication pass. User disabled Item closed; API confirms enabled=false and other workflows preserved.
+Live finding: Issue.closedAt 19:45:26Z differs from ClosedEvent.createdAt 19:45:27Z on frontend#152. Exact equality incorrectly skipped valid closure. Reproduced in unit test (34 pass /1 fail); use current Issue.closedAt as cycle identity, reject timeline older than that cycle, permit later event creation. This is a live correctness fix, not a second review pass.

@@ -123,9 +123,9 @@ test.each(['timeline', 'closer', 'permission', 'option', 'timestamp', 'id'])('in
   expect(f.writes).toEqual([]);
 });
 
-test('latest timeline closure must match the triggering event', async () => {
+test('timeline from an earlier closure cannot describe the current cycle', async () => {
   const f = fixture();
-  f.events.push({ ...f.events[0], createdAt: '2026-11-04T19:00:00Z' });
+  f.events[0].createdAt = '2026-11-04T18:00:00Z';
   expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('skipped');
   expect(f.writes).toEqual([]);
 });
@@ -152,4 +152,21 @@ test('CLI ignores unrelated events and rejects foreign or mismatched repositorie
     expect(imported.exitCode).toBe(0);
     expect(imported.stdout.toString()).toBe('');
   } finally { rmSync(dir, { recursive: true }); }
+});
+
+
+test('GitHub may record ClosedEvent one second after issue.closedAt', async () => {
+  const f = fixture();
+  f.events[0].createdAt = '2026-11-04T18:29:48Z';
+  expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('changed');
+  expect(f.writes).toEqual([{ item: 'card-119', status: 'Ready for build' }]);
+  expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('unchanged');
+});
+
+test('later timeline timestamp does not let an old payload write a new closure', async () => {
+  const f = fixture();
+  f.issue.closedAt = '2026-11-04T19:00:00Z';
+  f.events[0].createdAt = '2026-11-04T19:00:01Z';
+  expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('skipped');
+  expect(f.writes).toEqual([]);
 });
