@@ -7,12 +7,13 @@
 Дизайн и границы переключения — в [спецификации](docs/superpowers/specs/2026-10-17-team-repositories-migration-design.md).
 
 Workflow принимает полный SHA проверенного коммита (`sha`), его push CI run
-(`ci_run_id`) и полный SHA общей автоматики (`automation_ref`). В caller нужно
-закрепить один и тот же reviewed commit `.github` в `uses` и `automation_ref`.
+(`ci_run_id`) и ref общей автоматики (`automation_ref`): `main` или полный SHA.
+В caller `uses` и `automation_ref` указывают на один ref `.github`; frontend
+берёт `main`, чтобы обновления не требовали PR с заменой SHA.
 Проверки берутся из `CI` самого основного репозитория; успех deploy не требуется.
 Назначение выбирается только из фиксированной карты frontend/backend.
 Проверку исходного CI run и обязательных jobs выполняет локальное Node 24 action
-`actions/course-sync-context/`, загруженное из закреплённого `automation_ref`.
+`actions/course-sync-context/`, загруженное из `automation_ref`.
 Оно читает GitHub API с паузами до 5 секунд в пределах 60 секунд и при отказе
 называет конкретное несовпавшее поле или job. Git/SSH-копирование остаётся в
 `scripts/course-sync-git.sh`; во время sync пакеты npm не устанавливаются.
