@@ -1,10 +1,10 @@
 # Подключение статусов доски
 
-Состояние на 2026-11-04: локальная реализация и независимое ревью готовы; в main и настройках
-Projects изменений ещё нет. Родитель: [.github#54](https://github.com/Cringe-Driven-Development-Team/.github/issues/54),
+Состояние на 2026-11-04: все четыре PR влиты в main по поручению пользователя. Post-merge CI, публикация
+frontend и course-sync успешны. Item closed выключен пользователем и подтверждён через API; живая приёмка продолжается. Родитель: [.github#54](https://github.com/Cringe-Driven-Development-Team/.github/issues/54),
 sub-issue: [frontend#152](https://github.com/Cringe-Driven-Development-Team/frontend/issues/152).
 
-## Подготовленные изменения
+## Влитые изменения
 
 | Репозиторий | Base main | Изменения |
 | --- | --- | --- |
@@ -29,11 +29,37 @@ Board очищает и выставляет тот же Status, затем пр
 Четыре новые регрессии прошли RED→GREEN, включая сбой между clear/set и повтор.
 Это не транзакция: после сбоя Status может остаться пустым до повторного Board.
 
-Read-only API: Item closed №7 остаётся enabled=true; остальные проверенные
+Read-only API после пользовательского переключения: Item closed №7 enabled=false; остальные проверенные
 включённые правила — Auto-close issue, Item reopened, Pull request linked to issue,
 Pull request merged. Их конфигурация через API недоступна. Доступный браузер на
 странице проекта показывает Sign in, поэтому изменить/проверить настройки может
 пользователь в своей авторизованной сессии (после готовности всей замены).
+
+## Проверено после merge
+
+- Frontend #153: `dc03761bb09425f48818a700eab1b60ee06f45a6`, merge queue прошла
+  [проверку](https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/41899783386).
+- .github #55: `6cbdc68e95e22caaeb12b8b728de5d68d981e0f7`;
+  [post-merge Checks](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/41900092751) успешны.
+- agent-plugins #28: `2bca06a86e3faf85767611f0ff578ea0f4102555`.
+- agent-plugins-private #4: `9c03162b95681d194c5bef252a857d93ca02eec7`.
+- [Frontend CI](https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/41900012085):
+  Check, Publish release и course-sync / sync успешны. Командный и учебный main
+  совпадают: `dc03761bb09425f48818a700eab1b60ee06f45a6`.
+- Release-artifacts deployment `7556100974` создан после проверки S3 и GHCR.
+- [Board](https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/41900209131)
+  выполняется; frontend#152 закрыта мержем. Её первичный Done поставил ещё включённый
+  Item closed. Событие issues.closed случилось до мержа общего обработчика,
+  поэтому не является проверкой нового перехода Ready for build.
+
+## Исправление, найденное при живой проверке
+
+У frontend#152 GraphQL Issue.closedAt = `2026-11-04T19:45:26Z`, а
+ClosedEvent.createdAt = `2026-11-04T19:45:27Z`. Их равенство не гарантируется.
+Обработчик сравнивает payload с актуальным Issue.closedAt для идентификации цикла,
+а последнее событие timeline должно быть ClosedEvent не старше этого закрытия.
+Предыдущее строгое равенство пропускало такое событие. Регрессия воспроизведена
+RED→GREEN; старый payload нового цикла по-прежнему пропускается.
 
 ## Порядок подключения
 
@@ -72,7 +98,5 @@ gh workflow run release-status.yml -R Cringe-Driven-Development-Team/frontend --
 
 ## Ожидающие проверки
 
-- CI актуальных PR heads после исправления ревью.
-- Merge и фактическое отключение Item closed.
 - Конфигурация остальных встроенных workflows в авторизованном UI.
 - Живые переходы и очередь Actions, затем Done при следующей выкатке.
