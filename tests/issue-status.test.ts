@@ -72,7 +72,7 @@ test('null Status and pagination of timeline, cards and fields', async () => {
   expect(f.writes[0].status).toBe('Ready for build');
 });
 
-test.each(['Ready for release', 'Done'])('late close preserves %s only for the current cycle', async status => {
+test.each(['Ready for release', 'Done', 'Rollback from production'])('late close preserves %s only for the current cycle', async status => {
   const f = fixture(); f.card.fieldValueByName = { name: status, updatedAt: when };
   expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('unchanged');
   f.card.fieldValueByName.updatedAt = '2026-11-03T00:00:00Z';
