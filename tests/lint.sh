@@ -9,9 +9,10 @@ cd "$ROOT"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-actionlint -no-color -oneline -shellcheck= -pyflakes=
+# shortcut: actionlint 1.7.12 lacks queue; remove when supported (rhysd/actionlint#657).
+actionlint -ignore '^unexpected key "queue" for "concurrency" section\.' -no-color -oneline -shellcheck= -pyflakes=
 # Check the event gate and execute the publisher with a local Docker boundary stub.
-bun test tests/webhook-workflows.test.ts
+bun test tests/webhook-workflows.test.ts tests/issue-status-workflow.test.ts
 
 # каждый блок run: | по очереди — в add-to-project.yml их два
 for wf in .github/workflows/*.yml; do

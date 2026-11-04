@@ -108,6 +108,37 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 ```
 
+### Статусы закрытых задач
+
+Общий job `issue-status` обрабатывает только `issues.closed` этой организации,
+читает доверенный `.github/main` и меняет существующую issue-карточку Scrumban №1.
+
+| Закрытие / выпуск | Status |
+| --- | --- |
+| frontend: merge PR в default branch, сборка/публикация ещё идут | Ready for build |
+| frontend: подтверждены статика S3 и образ BFF GHCR | Ready for release |
+| frontend: успешная выкатка production | Done |
+| frontend: вручную без закрывающего PR или not planned | Done |
+| Любой другой рабочий репозиторий: закрытие issue | Done |
+
+Callers `automation.yml`: `.github`, `frontend`, `backend`, `docs`, `infra`,
+`figma`, `static`, `frontend-packages`. Для `agent-plugins` и
+`agent-plugins-private` предусмотрен `issue-status.yml` только с `issues.closed`.
+Учебные копии frontend/backend не подключаются, Actions там выключены.
+
+Frontend Board и общий обработчик используют job concurrency `release-board`
+в контексте frontend с `queue: max`, `cancel-in-progress: false`. В других
+репозиториях группа адресная: `issue-status-<issue node ID>`. Очередь вмещает
+до 100 ожидающих jobs; отменённый сверх лимита job нужно повторить адресно.
+Повтор failed `issues.closed` job безопасен; устаревший цикл закрытия пропускается.
+Для опубликованных frontend-карточек доступен ручной запуск Board.
+Задержки Actions допустимы, мгновенный переход не гарантируется.
+
+Встроенный Projects workflow `Item closed` нужно выключить после подключения
+всех callers и новой версии frontend Board: иначе он преждевременно пишет Done.
+Фактическое подключение и оставшиеся проверки фиксируются в
+[runbook](docs/board-status-flow-runbook.md).
+
 Репозиторию должны быть доступны:
 
 - секреты `TELEGRAM_BOT_TOKEN` и `ADD_TO_PROJECT_PAT`;
@@ -213,3 +244,13 @@ gh workflow run reminders.yml -R Cringe-Driven-Development-Team/.github -f sprin
 ```
 
 Бот пишет на доску — обновляет поле `Sprint` у незакрытых задач на новую итерацию. Для этого секрет `ADD_TO_PROJECT_PAT` должен иметь право записи на доску (он и сейчас добавляет на неё задачи). Ручной запуск и повтор упавшей попытки ничего не пишут в чат, если хвостов нет: сообщение «всё сделано» уходит только из планового ночного запуска, первой попытки, — иначе оно постилось бы заново при каждой проверке.
+
+Совместная проверка обработчика закрытия и frontend Board (оба checkout локальные):
+
+```bash
+FRONTEND_DIR=/absolute/frontend-checkout bun test tests/board-status-integration.test.ts
+```
+
+Тест использует реальные release-функции и временный Git-граф с поддельным HTTP.
+Он проверяет контракт групп очереди; исполнение самой очереди GitHub проверяется
+при подключении. Без `FRONTEND_DIR` этот отдельный тест завершается ошибкой.

@@ -30,6 +30,10 @@ jobs:
         run: bash tests/webhook-alerts-docker.sh webhook-alerts:test
       - name: Check event sender switch and publication
         run: bun test tests/webhook-workflows.test.ts
+      - name: Check issue closure and status routing
+        run: |
+          bun test tests/issue-status.test.ts tests/issue-status-workflow.test.ts
+          bash tests/close.sh
   course-sync:
     runs-on: ubuntu-latest
     steps:

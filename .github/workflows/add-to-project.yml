@@ -98,3 +98,26 @@ jobs:
             echo "Закрыл $R#$N"
           done <<< "$REFS"
           [ -z "$FAILED" ]
+
+  issue-status:
+    if: github.event_name == 'issues' && github.event.action == 'closed' && github.repository_owner == 'Cringe-Driven-Development-Team'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository == 'Cringe-Driven-Development-Team/frontend' && 'release-board' || format('issue-status-{0}', github.event.issue.node_id) }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Cringe-Driven-Development-Team/.github
+          ref: main
+          path: automation
+          persist-credentials: false
+          token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Set closed issue status
+        env:
+          ADD_TO_PROJECT_PAT: ${{ secrets.ADD_TO_PROJECT_PAT }}
+        run: bun automation/scripts/issue-status.ts
