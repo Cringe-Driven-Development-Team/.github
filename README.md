@@ -108,6 +108,37 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 ```
 
+### Статусы закрытых задач
+
+Общий job `issue-status` обрабатывает только `issues.closed` этой организации,
+читает доверенный `.github/main` и меняет существующую issue-карточку Scrumban №1.
+
+| Закрытие / выпуск | Status |
+| --- | --- |
+| frontend: merge PR в default branch, сборка/публикация ещё идут | Ready for build |
+| frontend: подтверждены статика S3 и образ BFF GHCR | Ready for release |
+| frontend: успешная выкатка production | Done |
+| frontend: вручную без закрывающего PR или not planned | Done |
+| Любой другой рабочий репозиторий: закрытие issue | Done |
+
+Callers `automation.yml`: `.github`, `frontend`, `backend`, `docs`, `infra`,
+`figma`, `static`, `frontend-packages`. Для `agent-plugins` и
+`agent-plugins-private` предусмотрен `issue-status.yml` только с `issues.closed`.
+Учебные копии frontend/backend не подключаются, Actions там выключены.
+
+Frontend Board и общий обработчик используют job concurrency `release-board`
+в контексте frontend с `queue: max`, `cancel-in-progress: false`. В других
+репозиториях группа адресная: `issue-status-<issue node ID>`. Очередь вмещает
+до 100 ожидающих jobs; отменённый сверх лимита job нужно повторить адресно.
+Повтор failed `issues.closed` job безопасен; устаревший цикл закрытия пропускается.
+Для опубликованных frontend-карточек доступен ручной запуск Board.
+Задержки Actions допустимы, мгновенный переход не гарантируется.
+
+Встроенный Projects workflow `Item closed` нужно выключить после подключения
+всех callers и новой версии frontend Board: иначе он преждевременно пишет Done.
+Фактическое подключение и оставшиеся проверки фиксируются в
+[runbook](docs/board-status-flow-runbook.md).
+
 Репозиторию должны быть доступны:
 
 - секреты `TELEGRAM_BOT_TOKEN` и `ADD_TO_PROJECT_PAT`;
