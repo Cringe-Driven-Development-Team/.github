@@ -53,6 +53,7 @@ Pull request merged. Их конфигурация через API недосту
 
 Родитель остаётся открытым до подключения. PR .github использует Part of;
 frontend PR закрывает свою sub-issue. Результаты живой приёмки пока ожидаются.
+Журнал реализации и решений: [execution](superpowers/plans/2026-11-04-board-status-flow-execution.md).
 
 ## Восстановление
 
