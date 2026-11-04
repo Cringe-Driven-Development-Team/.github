@@ -48,7 +48,7 @@ jobs:
             *) echo 'Invalid source repository' >&2; exit 1 ;;
           esac
           [ "$SOURCE_REF" = refs/heads/main ] || { echo 'Expected main' >&2; exit 1; }
-          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$AUTOMATION_REF" =~ ^[0-9a-f]{40}$ &&
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && ( "$AUTOMATION_REF" = main || "$AUTOMATION_REF" =~ ^[0-9a-f]{40}$ ) &&
              "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid sync request' >&2; exit 1; }
       - name: Checkout trusted automation
         uses: actions/checkout@v4
