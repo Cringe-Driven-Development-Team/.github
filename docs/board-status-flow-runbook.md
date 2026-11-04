@@ -1,6 +1,6 @@
 # Подключение статусов доски
 
-Состояние на 2026-11-04: локальная реализация готова, идёт ревью; в main и настройках
+Состояние на 2026-11-04: локальная реализация и независимое ревью готовы; в main и настройках
 Projects изменений ещё нет. Родитель: [.github#54](https://github.com/Cringe-Driven-Development-Team/.github/issues/54),
 sub-issue: [frontend#152](https://github.com/Cringe-Driven-Development-Team/frontend/issues/152).
 
@@ -8,20 +8,32 @@ sub-issue: [frontend#152](https://github.com/Cringe-Driven-Development-Team/fron
 
 | Репозиторий | Base main | Изменения |
 | --- | --- | --- |
-| .github | 644eb71 | Обработчик issues.closed, shared job, проверки, правила |
-| frontend | 3f780a9 | Board без предварительного Done; общая очередь |
-| agent-plugins | 3ee04ec | Caller issues.closed |
-| agent-plugins-private | f309c43 | Caller issues.closed |
+| [.github PR55](https://github.com/Cringe-Driven-Development-Team/.github/pull/55) | 644eb71 | Обработчик issues.closed, shared job, проверки, правила |
+| [frontend PR153](https://github.com/Cringe-Driven-Development-Team/frontend/pull/153) | 3f780a9 | Board без предварительного Done; общая очередь |
+| [agent-plugins PR28](https://github.com/Cringe-Driven-Development-Team/agent-plugins/pull/28) | 3ee04ec | Caller issues.closed |
+| [agent-plugins-private PR4](https://github.com/Cringe-Driven-Development-Team/agent-plugins-private/pull/4) | f309c43 | Caller issues.closed |
 
 Проверено: org secret `ADD_TO_PROJECT_PAT` имеет visibility=all; переносить значение
 или менять охват не требуется. Три read-only GraphQL query нового обработчика
 прошли на реальной frontend#119. Значения карточек этим не менялись.
 
 Локальные проверки: обработчик 33 теста; общий workflow/регрессии 50 тестов;
-межрепозиторная интеграция 8 тестов; frontend release 95 тестов, check/test/build;
+межрепозиторная интеграция 12 тестов; frontend release 95 тестов, check/test/build;
 старый close.sh 22 сценария; actionlint и shellcheck. Интеграционный тест
 при намеренно разных группах воспроизводит регрессию после записи Board.
 Он не заменяет проверку hosted очереди GitHub.
+
+Независимое ревью выявило старое совпадающее значение Status: Board пропускал
+запись, и поздний close регрессировал его. Исправление: при подтверждённом выпуске
+Board очищает и выставляет тот же Status, затем проверяет updatedAt текущего цикла.
+Четыре новые регрессии прошли RED→GREEN, включая сбой между clear/set и повтор.
+Это не транзакция: после сбоя Status может остаться пустым до повторного Board.
+
+Read-only API: Item closed №7 остаётся enabled=true; остальные проверенные
+включённые правила — Auto-close issue, Item reopened, Pull request linked to issue,
+Pull request merged. Их конфигурация через API недоступна. Доступный браузер на
+странице проекта показывает Sign in, поэтому изменить/проверить настройки может
+пользователь в своей авторизованной сессии (после готовности всей замены).
 
 ## Порядок подключения
 
@@ -59,7 +71,7 @@ gh workflow run release-status.yml -R Cringe-Driven-Development-Team/frontend --
 
 ## Ожидающие проверки
 
-- Независимое ревью, PR и CI на опубликованных ветках.
+- CI актуальных PR heads после исправления ревью.
 - Merge и фактическое отключение Item closed.
 - Конфигурация остальных встроенных workflows в авторизованном UI.
 - Живые переходы и очередь Actions, затем Done при следующей выкатке.

@@ -134,13 +134,22 @@ expect(writes).toEqual([{ issue: 2, status: 'Ready for release' }]);
 - [x] **4. Запустить:** `FRONTEND_DIR=/absolute/frontend-worktree bun test tests/board-status-integration.test.ts` → PASS. Не использовать настоящие токены, Project mutation и Telegram в тестах; GITHUB_STEP_SUMMARY направлять в temp и очищать окружение после теста.
 - [x] **5. Commit:** `test: cover shared close and release board ordering`.
 
+### Уточнение по итоговому ревью
+
+Если Board подтвердил выпуск, но соответствующий Status имеет updatedAt до
+текущего закрытия, no-op недостаточен: поздний close вернул бы Ready for build.
+Board выполняет clear → set того же target последовательными полями mutation
+и перечитывает время/значение. Same-option update не считается доказательством
+обновления timestamp. Ошибка второй операции видна, пустое значение восстанавливает
+rerun. Это уточнение реализации не добавляет хранилища и не меняет таблицу статусов.
+
 ### Task 5: Ревью, PR и подключение
 
 **Files:** Modify `.github/docs/superpowers/plans/2026-11-04-board-status-flow.md` (отметки выполнения); Create `.github/docs/board-status-flow-runbook.md` (конкретные ссылки/результаты подключения).
 
 **Interfaces:** Проверенные ветки tasks 1–4; org Project workflow №7; штатные CI и права пользователя. Исполнитель следует выбранному execution skill: итоговое ревью не заменяет ревью каждой задачи в subagent-driven-development.
 
-- [ ] **1. Повторно проверить scope:** фактические main SHA, callers и доступ PAT, независимые required checks. Оформить родительскую задачу в .github и frontend sub-issue по cdd-tasks; небольшие plugin callers — сопутствующие PR с Part of. Никаких комментариев/уведомлений вне явно порученных действий или разрешённых cdd-tasks операций. В описании каждого PR объяснить конечный контракт и приложить результаты тестов.
+- [x] **1. Повторно проверить scope:** фактические main SHA, callers и доступ PAT, независимые required checks. Оформить родительскую задачу в .github и frontend sub-issue по cdd-tasks; небольшие plugin callers — сопутствующие PR с Part of. Никаких комментариев/уведомлений вне явно порученных действий или разрешённых cdd-tasks операций. В описании каждого PR объяснить конечный контракт и приложить результаты тестов.
 - [ ] **2. Выполнить ревью и необходимые проверки выбранного процесса.** Review Focus из этого плана обязателен. Не повторять полные тесты без новых изменений; исправления проверять релевантным прогоном. Все PR до внешнего подключения должны быть конкретными и проверяемыми.
 - [ ] **3. При разрешённом мерже:** влить frontend Board, общий обработчик и два plugin callers, проверить актуальные head/CI/конфликты и post-merge. Время отключения встроенного правила согласовать с фактической готовностью всей замены; не добавлять флаги/legacy-режим. Родительская .github задача закрывается последней либо PR использует Part of до завершения остальных частей. Frontend course-sync и совпадение main учебной копии проверить.
 - [ ] **4. Проверить встроенные workflows в UI Projects:** Item closed №7, Pull request merged, Item reopened, Pull request linked to issue, Auto-close issue. Проверить, какие касаются issue, а какие только PR-карточек. Если другое правило тоже даёт ложный Done issue, уточнить его конфигурацию и убрать конфликт в рамках согласованной цели; не менять независимые правила вслепую. GraphQL показывает enabled/name, но не конфигурацию; update workflow в доступной Mutation schema отсутствует, поэтому нужен UI. Не удалять workflow вместо выключения.

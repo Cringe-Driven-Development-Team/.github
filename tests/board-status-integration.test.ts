@@ -18,6 +18,9 @@ let cards: Map<number, any>;
 let writes: { issue: number; status: string }[];
 let pauseClose: (() => Promise<void>) | undefined;
 let fail = false;
+let failSet = false;
+let staleTimestamp = false;
+let resets = 0;
 const input = (number: number, closedAt = when) => ({ repository: REPO, issueId: `I${number}`, closedAt });
 const page = (nodes: any[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } });
 
@@ -25,7 +28,7 @@ beforeEach(() => {
   f = fixture(); f.publish();
   process.env.GITHUB_STEP_SUMMARY = `${f.dir}/summary.md`;
   cards = new Map([1, 2, 3].map(number => [number, { closed: true, closedAt: when, reason: 'COMPLETED', closer: number, status: { name: 'In review', updatedAt: '2026-10-31T00:00:00Z' } }]));
-  writes = []; pauseClose = undefined; fail = false;
+  writes = []; pauseClose = undefined; fail = false; failSet = false; staleTimestamp = false; resets = 0;
   f.extra = async (url: URL, body: any) => {
     if (url.pathname !== '/graphql' || String(body?.query).includes('LinkedIssues')) return;
     const query = String(body.query); const v = body.variables;
@@ -36,9 +39,15 @@ beforeEach(() => {
     if (query.includes('mutation')) {
       if (query.includes('IssueStatusUpdate')) await pauseClose?.();
       const number = Number(v.item.slice(1));
-      cards.get(number).status = { name: v.option, updatedAt: after };
+      if (v.reset) {
+        resets++;
+        cards.get(number).status = null;
+        if (failSet) return Response.json({ errors: [{ message: 'set failed after clear' }] });
+      }
+      // A same-option no-op need not update GitHub's timestamp.
+      if (cards.get(number).status?.name !== v.option) cards.get(number).status = { name: v.option, updatedAt: staleTimestamp ? '2026-10-31T00:00:00Z' : after };
       writes.push({ issue: number, status: v.option });
-      return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: v.item } } } });
+      return Response.json({ data: { clearProjectV2ItemFieldValue: v.reset ? { projectV2Item: { id: v.item } } : undefined, updateProjectV2ItemFieldValue: { projectV2Item: { id: v.item } } } });
     }
     const number = Number(v.id.slice(1)); const state = cards.get(number);
     if (!state) throw Error(`Unexpected issue ${v.id}`);
@@ -147,4 +156,36 @@ test('API failure rejects and rerun recovers without duplicate writes', async ()
   expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('changed');
   expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
   expect(writes).toEqual([{ issue: 2, status: 'Ready for build' }]);
+});
+
+
+test.each([false, true])('Board confirms unchanged old status before delayed close (production=%s)', async deployed => {
+  if (deployed) f.deploy(f.b);
+  const target = deployed ? 'Done' : 'Ready for release';
+  cards.get(2).status = { name: target, updatedAt: '2026-10-31T00:00:00Z' };
+  await board();
+  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
+  expect(cards.get(2).status.name).toBe(target);
+  expect(resets).toBe(1);
+  const count = writes.length;
+  await board();
+  expect(writes).toHaveLength(count);
+});
+
+test('failed set after clear is visible and rerun repairs the empty status', async () => {
+  cards.get(2).status = { name: 'Ready for release', updatedAt: '2026-10-31T00:00:00Z' };
+  failSet = true;
+  expect((await syncBoard(await readReleaseSnapshot(f.dir), f.dir)).errors.length).toBeGreaterThan(0);
+  expect(cards.get(2).status).toBeNull();
+  failSet = false;
+  await board();
+  expect(cards.get(2).status.name).toBe('Ready for release');
+  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
+});
+
+test('Board reports an unconfirmed current-cycle timestamp after reset', async () => {
+  cards.get(2).status = { name: 'Ready for release', updatedAt: '2026-10-31T00:00:00Z' };
+  staleTimestamp = true;
+  const result = await syncBoard(await readReleaseSnapshot(f.dir), f.dir);
+  expect(result.errors.join()).toContain('Status');
 });
