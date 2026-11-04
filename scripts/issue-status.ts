@@ -148,7 +148,7 @@ export async function reconcileClosedIssue(input: Input, token: string): Promise
   const target = initial.release ? 'Ready for build' : 'Done';
   const config = await project(token, initial.card.project.id, target);
   const current = initial.card.fieldValueByName;
-  if (current?.name === target || (initial.release && ['Ready for release', 'Done'].includes(current?.name)
+  if (current?.name === target || (initial.release && ['Ready for release', 'Done', 'Rollback from production'].includes(current?.name)
     && timestamp(current.updatedAt) >= timestamp(input.closedAt))) return 'unchanged';
   const latest = await state(input, token);
   if (JSON.stringify(latest) !== JSON.stringify(initial)) return 'skipped';

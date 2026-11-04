@@ -3,13 +3,16 @@ import { reconcileClosedIssue } from '../scripts/issue-status.ts';
 
 const frontendDir = process.env.FRONTEND_DIR;
 if (!frontendDir?.startsWith('/')) throw Error('Set FRONTEND_DIR to the absolute frontend checkout path');
-const { syncBoard } = await import(`${frontendDir}/scripts/release/board.ts`);
-const { readReleaseSnapshot } = await import(`${frontendDir}/scripts/release/catalog.ts`);
+const { updateReleaseBoard } = await import(`${frontendDir}/scripts/release/board.ts`);
+const { readChangeReport } = await import(`${frontendDir}/scripts/release/report.ts`);
 const { fixture, REPO } = await import(`${frontendDir}/scripts/release/test/fixture.ts`);
 const shared: any = Bun.YAML.parse(await Bun.file(`${import.meta.dir}/../.github/workflows/add-to-project.yml`).text());
-const boardWorkflow: any = Bun.YAML.parse(await Bun.file(`${frontendDir}/.github/workflows/release-status.yml`).text());
+const releaseWorkflows = await Promise.all(['ci', 'cd', 'rollback'].map(async name => Bun.YAML.parse(await Bun.file(`${frontendDir}/.github/workflows/${name}.yml`).text()) as any));
+const boardConfigs = [releaseWorkflows[0].jobs.publish.concurrency, releaseWorkflows[1].jobs.cd.concurrency, releaseWorkflows[2].jobs.rollback.concurrency];
+const operations = ['publish', 'deploy', 'rollback'] as const;
+const statuses = ['Ready for release', 'Done', 'Rollback from production'];
 const closeConfig = shared.jobs['issue-status'].concurrency;
-const boardConfig = boardWorkflow.jobs.board.concurrency;
+const boardConfig = boardConfigs[0];
 const closeGroup = Function('github', `return (${closeConfig.group.replace(/^\$\{\{\s*|\s*\}\}$/g, '')});`)({ repository: REPO });
 const when = '2026-11-01T01:00:00Z';
 const after = '2026-11-01T04:00:00Z';
@@ -34,7 +37,7 @@ beforeEach(() => {
     const query = String(body.query); const v = body.variables;
     if (fail) return new Response('unavailable', { status: 503 });
     if (query.includes('IssueStatusProject') || query.includes('ReleaseProject')) return Response.json({ data: { organization: { projectV2: {
-      id: 'P', viewerCanUpdate: true, fields: page([{ id: 'F', name: 'Status', options: ['Ready for build', 'Ready for release', 'Done'].map(name => ({ id: name, name })) }]),
+      id: 'P', viewerCanUpdate: true, fields: page([{ id: 'F', name: 'Status', options: ['Ready for build', 'Ready for release', 'Done', 'Rollback from production'].map(name => ({ id: name, name })) }]),
     } } } });
     if (query.includes('mutation')) {
       if (query.includes('IssueStatusUpdate')) await pauseClose?.();
@@ -83,17 +86,18 @@ function deferred() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
-async function board() {
-  const result = await syncBoard(await readReleaseSnapshot(f.dir), f.dir);
+async function report() { return readChangeReport(REPO, f.root, f.b); }
+async function board(kind: 'publish' | 'deploy' | 'rollback' = 'publish') {
+  const result = await updateReleaseBoard(kind, await report());
   expect(result.errors).toEqual([]);
 }
-async function overlapping(group: string) {
+async function overlapping(group: string, kind: 'publish' | 'deploy' | 'rollback' = 'publish') {
   const schedule = scheduler(); const reachedWrite = deferred(); const allowWrite = deferred();
   pauseClose = async () => { reachedWrite.resolve(); await allowWrite.promise; };
   const close = schedule(closeGroup, () => reconcileClosedIssue(input(2), 'project-token'));
   await reachedWrite.promise;
   let boardEntered = false;
-  const reconcile = schedule(group, async () => { boardEntered = true; await board(); });
+  const reconcile = schedule(group, async () => { boardEntered = true; await board(kind); });
   // A microtask turn lets an unlocked Board enter; a locked Board cannot start.
   await Promise.resolve(); await Promise.resolve();
   const overlapped = boardEntered;
@@ -103,13 +107,12 @@ async function overlapping(group: string) {
   return overlapped;
 }
 
-test.each([false, true])('actual workflow groups serialize close and Board (production=%s)', async deployed => {
-  if (deployed) f.deploy(f.b);
-  expect(await overlapping(boardConfig.group)).toBe(false);
-  expect(cards.get(2).status.name).toBe(deployed ? 'Done' : 'Ready for release');
+test.each([0, 1, 2])('actual workflow groups serialize close and inline operation %i', async index => {
+  expect(await overlapping(boardConfigs[index].group, operations[index])).toBe(false);
+  expect(cards.get(2).status.name).toBe(statuses[index]);
   const count = writes.length;
   expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  await board();
+  await board(operations[index]);
   expect(writes).toHaveLength(count);
 });
 
@@ -120,18 +123,17 @@ test('different group fixture exposes the real read/write regression', async () 
   expect(cards.get(2).status.name).toBe('Ready for build');
 });
 
-test.each([false, true])('Board before delayed close preserves its result (production=%s)', async deployed => {
-  if (deployed) f.deploy(f.b);
-  await board();
+test.each([0, 1, 2])('inline operation %i before delayed close preserves its result', async index => {
+  await board(operations[index]);
   const count = writes.length;
   expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  expect(cards.get(2).status.name).toBe(deployed ? 'Done' : 'Ready for release');
+  expect(cards.get(2).status.name).toBe(statuses[index]);
   expect(writes).toHaveLength(count);
 });
 
 test('three different closures use a non-replacing queue and all complete', async () => {
   expect(closeConfig.queue).toBe('max'); expect(closeConfig['cancel-in-progress']).toBe(false);
-  expect(boardConfig.queue).toBe('max'); expect(boardConfig['cancel-in-progress']).toBe(false);
+  for (const config of boardConfigs) { expect(config.queue).toBe('max'); expect(config['cancel-in-progress']).toBe(false); }
   const schedule = scheduler();
   expect(await Promise.all([1, 2, 3].map(number => schedule(closeGroup, () => reconcileClosedIssue(input(number), 'project-token'))))).toEqual(['changed', 'changed', 'changed']);
   expect(writes).toEqual([1, 2, 3].map(issue => ({ issue, status: 'Ready for build' })));
@@ -159,23 +161,22 @@ test('API failure rejects and rerun recovers without duplicate writes', async ()
 });
 
 
-test.each([false, true])('Board confirms unchanged old status before delayed close (production=%s)', async deployed => {
-  if (deployed) f.deploy(f.b);
-  const target = deployed ? 'Done' : 'Ready for release';
+test.each([0, 1, 2])('operation %i confirms old matching Status before delayed close', async index => {
+  const target = statuses[index];
   cards.get(2).status = { name: target, updatedAt: '2026-10-31T00:00:00Z' };
-  await board();
+  await board(operations[index]);
   expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
   expect(cards.get(2).status.name).toBe(target);
   expect(resets).toBe(1);
   const count = writes.length;
-  await board();
+  await board(operations[index]);
   expect(writes).toHaveLength(count);
 });
 
 test('failed set after clear is visible and rerun repairs the empty status', async () => {
   cards.get(2).status = { name: 'Ready for release', updatedAt: '2026-10-31T00:00:00Z' };
   failSet = true;
-  expect((await syncBoard(await readReleaseSnapshot(f.dir), f.dir)).errors.length).toBeGreaterThan(0);
+  expect((await updateReleaseBoard('publish', await report())).errors.length).toBeGreaterThan(0);
   expect(cards.get(2).status).toBeNull();
   failSet = false;
   await board();
@@ -186,6 +187,30 @@ test('failed set after clear is visible and rerun repairs the empty status', asy
 test('Board reports an unconfirmed current-cycle timestamp after reset', async () => {
   cards.get(2).status = { name: 'Ready for release', updatedAt: '2026-10-31T00:00:00Z' };
   staleTimestamp = true;
-  const result = await syncBoard(await readReleaseSnapshot(f.dir), f.dir);
+  const result = await updateReleaseBoard('publish', await report());
   expect(result.errors.join()).toContain('Status');
+});
+
+test('rollback → late close → deploy preserves the current closure cycle', async () => {
+  await board('rollback');
+  expect(cards.get(2).status.name).toBe('Rollback from production');
+  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
+  await board('deploy');
+  expect(cards.get(2).status.name).toBe('Done');
+  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
+  expect(writes.filter(write => write.issue === 2).map(write => write.status)).toEqual(['Rollback from production', 'Done']);
+});
+
+test('publish preserves advanced statuses of this cycle and refreshes an older cycle', async () => {
+  await board('rollback');
+  const count = writes.length;
+  await board('publish');
+  expect(writes).toHaveLength(count);
+  const state = cards.get(2);
+  state.closedAt = after;
+  state.status.updatedAt = when;
+  await board('publish');
+  expect(state.status.name).toBe('Ready for release');
+  expect(await reconcileClosedIssue(input(2, after), 'project-token')).toBe('unchanged');
+  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('skipped');
 });

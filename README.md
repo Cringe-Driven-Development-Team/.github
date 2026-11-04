@@ -118,6 +118,7 @@ jobs:
 | frontend: merge PR в default branch, сборка/публикация ещё идут | Ready for build |
 | frontend: подтверждены статика S3 и образ BFF GHCR | Ready for release |
 | frontend: успешная выкатка production | Done |
+| frontend: успешный откат удалённых изменений | Rollback from production |
 | frontend: вручную без закрывающего PR или not planned | Done |
 | Любой другой рабочий репозиторий: закрытие issue | Done |
 
@@ -126,12 +127,12 @@ Callers `automation.yml`: `.github`, `frontend`, `backend`, `docs`, `infra`,
 `agent-plugins-private` предусмотрен `issue-status.yml` только с `issues.closed`.
 Учебные копии frontend/backend не подключаются, Actions там выключены.
 
-Frontend Board и общий обработчик используют job concurrency `release-board`
+Frontend Publish release, CD, Rollback и общий обработчик используют job concurrency `release-board`
 в контексте frontend с `queue: max`, `cancel-in-progress: false`. В других
 репозиториях группа адресная: `issue-status-<issue node ID>`. Очередь вмещает
 до 100 ожидающих jobs; отменённый сверх лимита job нужно повторить адресно.
 Повтор failed `issues.closed` job безопасен; устаревший цикл закрытия пропускается.
-Для опубликованных frontend-карточек доступен ручной запуск Board.
+Ошибки карточек исправляются вручную по Summary успешной операции; полного Board нет.
 Задержки Actions допустимы, мгновенный переход не гарантируется.
 
 Встроенный Projects workflow `Item closed` нужно выключить после подключения

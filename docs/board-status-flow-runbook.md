@@ -27,7 +27,7 @@ sub-issue: [frontend#152](https://github.com/Cringe-Driven-Development-Team/fron
 запись, и поздний close регрессировал его. Исправление: при подтверждённом выпуске
 Board очищает и выставляет тот же Status, затем проверяет updatedAt текущего цикла.
 Четыре новые регрессии прошли RED→GREEN, включая сбой между clear/set и повтор.
-Это не транзакция: после сбоя Status может остаться пустым до повторного Board.
+Это не транзакция: после сбоя Status может остаться пустым; исправлять вручную по Summary.
 
 Read-only API после пользовательского переключения: Item closed №7 enabled=false; остальные проверенные
 включённые правила — Auto-close issue, Item reopened, Pull request linked to issue,
@@ -61,6 +61,11 @@ ClosedEvent.createdAt = `2026-11-04T19:45:27Z`. Их равенство не г�
 Предыдущее строгое равенство пропускало такое событие. Регрессия воспроизведена
 RED→GREEN; старый payload нового цикла по-прежнему пропускается.
 
+Поздний frontend close сохраняет `Ready for release`, `Done` или
+`Rollback from production`, если timestamp статуса не старше текущего закрытия.
+Более старый статус разрешено заменить на `Ready for build`. Inline-шаги frontend
+используют этот же цикл закрытия; их подключение проверяется после merge.
+
 ## Порядок подключения
 
 1. После разрешения на merge проверить актуальные heads, required CI и конфликты.
@@ -81,19 +86,49 @@ RED→GREEN; старый payload нового цикла по-прежнему 
 frontend PR закрывает свою sub-issue. Результаты живой приёмки пока ожидаются.
 Журнал реализации и решений: [execution](superpowers/plans/2026-11-04-board-status-flow-execution.md).
 
+## Обновление карточек внутри CI/CD
+
+Frontend выполняет три перехода по составу одной операции: проверенные S3/GHCR
+и успешный Register release → Ready for release; успешные Health check и Production
+result CD → Done; успешный Rollback → Rollback from production для удалённых
+изменений. Повторная выкатка через CD возвращает эти задачи в Done.
+`release report` один раз сохраняет состав в `${{ runner.temp }}/release-report.json`,
+а следующий шаг `release board` использует его без полного обхода доски и истории.
+Задачи вне диапазона операции не читаются. Публикация сохраняет Done/rollback,
+подтверждённые в текущем цикле закрытия; старый цикл не блокирует новую публикацию.
+
+CD допускает только тот же SHA или потомка подтверждённого production; Rollback —
+предка или тот же SHA при восстановлении. Проверка Git выполняется до изменения VPS.
+Разошедшиеся ветки и неизвестная production-база останавливают операцию. После
+A → B → откат на A повторный Rollback, выбравший B, отклоняется без поиска другой
+цели; для возврата на B нужен CD.
+
+Publish release, CD, Rollback и frontend issues.closed используют общую группу
+`release-board`, `queue: max`, `cancel-in-progress: false`. GitHub допускает до
+100 ожидающих jobs; порядок ожидания не гарантирует порядок событий. Check для PR
+остаётся независимым. Межрепозиторный integration test запускается локально с
+`FRONTEND_DIR=/absolute/frontend/worktree`; CI .github не клонирует frontend и сам
+этот тест не выполняет. Проверка моделирует исключение групп, а не hosted очередь.
+
+История Deployments остаётся для `confirmed`, `publicationBase`, `target` и
+`retention`, выбора артефактов и доставки Telegram. Полной реконструкции Board нет.
+
 ## Восстановление
 
 - Failed issues.closed: повторить конкретный job в Actions. Он перечитает актуальный
-  цикл закрытия; повтор не пишет одинаковый Status и не регрессирует поздний выпуск.
-- После публикации/выкатки можно повторить Board:
-
-```bash
-gh workflow run release-status.yml -R Cringe-Driven-Development-Team/frontend --ref main
-```
-
-- Общая группа `release-board`, `queue: max`, `cancel-in-progress: false` сериализует
-  frontend writers. GitHub допускает до 100 ожидающих jobs; отменённый сверх лимита
-  job требует адресного rerun. Порядок ожидания не гарантирует порядок событий.
+  цикл закрытия; повтор не пишет одинаковый Status и сохраняет публикацию/выкатку/откат
+  текущего цикла.
+- Ошибка карточек после успешной операции делает job красным, но не переписывает
+  success Deployment и не запускает откат. Summary отдельно показывает успешную
+  операцию, количество изменений и ошибки карточек. Остальные карточки обрабатываются.
+  Retention после успешных Health check/Production result выполняется и при ошибке
+  карточек; независимый course-sync не мешает завершившемуся Publish release.
+- Неполный отчёт даёт ошибку шага карточек без записей Status. Проверить PAT, Scrumban
+  №1 и опции Ready for release, Done, Rollback from production. Пропавшие карточки
+  или опции автоматически не создаются; сбой clear/set может оставить пустой Status.
+- Исправлять карточки вручную по Summary успешной операции. Отдельного workflow
+  полного Board и автоматического ремонта больше нет. Повтор той же выкатки с пустой
+  разницей не ремонтирует карточки; CI уже опубликованного SHA пропускает их.
 - Не включать Item closed как fallback: он снова даст ложный Done после merge.
 
 ## Ожидающие проверки
