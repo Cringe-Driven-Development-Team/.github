@@ -32,7 +32,9 @@ invalid_request_is_rejected() {
   extract 1
   defaults=("SOURCE_REPO=$source_repo" SOURCE_REF=refs/heads/main "SHA=$sha" CI_RUN_ID=101 "AUTOMATION_REF=$ref")
   env "${defaults[@]}" bash "$TMP/block.sh"
-  for invalid in SOURCE_REPO=other/repo SOURCE_REF=refs/heads/work SHA=main CI_RUN_ID=../1 AUTOMATION_REF=main; do
+  env "${defaults[@]}" AUTOMATION_REF=main bash "$TMP/block.sh"
+  for invalid in SOURCE_REPO=other/repo SOURCE_REF=refs/heads/work SHA=main CI_RUN_ID=../1 \
+    AUTOMATION_REF=develop AUTOMATION_REF=refs/heads/main AUTOMATION_REF=v1 AUTOMATION_REF=main2 AUTOMATION_REF=; do
     code=0
     env "${defaults[@]}" "$invalid" bash "$TMP/block.sh" >"$out" 2>"$err" || code=$?
     assert_eq "$code" 1
