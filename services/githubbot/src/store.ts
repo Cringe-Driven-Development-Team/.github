@@ -131,6 +131,10 @@ export function openStore(path: string): Store {
         throw new Error('Invalid repository choice prompt');
       }
       db.query('UPDATE choices SET prompt_id = ? WHERE id = ?').run(messageId, requestId);
+      const original = job(choice.job_id);
+      if (original.phase === 'reply_pending') {
+        checkpoint(original.id, { phase: 'waiting_repo', nextOutput: original.output?.length ?? original.nextOutput, attempts: 0, nextAttemptAt: 0 });
+      }
     }).immediate,
     choose: db.transaction((requestId: string, actorId: string, context: Context, promptMessageId: number, repoIndex: number, now: number): number => {
       const choice = savedChoice(requestId);

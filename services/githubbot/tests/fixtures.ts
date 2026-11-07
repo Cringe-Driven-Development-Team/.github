@@ -1,4 +1,6 @@
 import type { BotIdentity, Config } from '../src/config';
+import type { Github, Issue } from '../src/github';
+import type { Board, Projects, ProjectItem } from '../src/projects';
 
 export const bot: BotIdentity = { id: '901', username: 'githubbot' };
 
@@ -39,4 +41,55 @@ export function callback(requestId: string, repoIndex: number, actorId = '101'):
       },
     },
   };
+}
+
+export function apiDoubles() {
+  const issues = new Map<string, Issue>();
+  const createCalls: { repo: string; title: string; body: string }[] = [];
+  const mutations: string[] = [], initializedIssues: Issue[] = [];
+  const board: Board = { id: 'P1', sprintFieldId: 'SPRINT', statusFieldId: 'STATUS', backlogOptionId: 'BACKLOG',
+    iterations: [{ id: 'S1', title: 'Sprint 1', startDate: '2026-11-01', duration: 14 }], items: [] };
+  const key = (ref: Issue['ref']) => `${ref.repo}/${ref.number}`;
+  const seed = (repo = 'backend', number = 1): Issue => {
+    const issue: Issue = { ref: { repo, number, url: `https://github.com/Cringe-Driven-Development-Team/${repo}/issues/${number}` },
+      nodeId: `I_${repo}_${number}`, title: 'Task', state: 'OPEN', assignees: [] };
+    issues.set(key(issue.ref), issue);
+    return issue;
+  };
+  const read = (ref: Issue['ref']): Issue => {
+    const issue = issues.get(key(ref));
+    if (!issue) throw new Error('Unknown fake issue');
+    return structuredClone(issue);
+  };
+  const change = (ref: Issue['ref'], mutate: (issue: Issue) => void): Issue => {
+    const issue = read(ref); mutate(issue); issues.set(key(ref), issue); return structuredClone(issue);
+  };
+  const github: Github = {
+    getIssue: async ref => read(ref),
+    createIssue: async (repo, title, body) => {
+      createCalls.push({ repo, title, body });
+      const issue = seed(repo, createCalls.length); issue.title = title; return structuredClone(issue);
+    },
+    canAssign: async () => true,
+    closeIssue: async ref => { mutations.push('close'); return change(ref, issue => { issue.state = 'CLOSED'; }); },
+    addAssignee: async (ref, login) => { mutations.push(`assign:${login}`); return change(ref, issue => { issue.assignees.push(login); }); },
+    removeAssignee: async (ref, login) => { mutations.push(`unassign:${login}`); return change(ref, issue => { issue.assignees = issue.assignees.filter(a => a !== login); }); },
+  };
+  const itemFor = (issue: Issue): ProjectItem => {
+    let item = board.items.find(item => item.issue.nodeId === issue.nodeId);
+    if (!item) { item = { id: `P_${issue.nodeId}`, issue, status: null, sprintId: null, archived: false }; board.items.push(item); }
+    return item;
+  };
+  const projects: Projects = {
+    readBoard: async () => structuredClone(board),
+    initializeIssue: async issue => {
+      initializedIssues.push(issue); const item = itemFor(issue); item.status = 'Backlog'; item.sprintId = null; return structuredClone(item);
+    },
+    toCurrentSprint: async issue => {
+      const item = itemFor(issue);
+      if (item.sprintId !== 'S1') { mutations.push('tosprint'); item.sprintId = 'S1'; }
+      return { item: structuredClone(item), iteration: board.iterations[0]!, statusChangedExternally: false };
+    },
+  };
+  return { github, projects, issues, board, seed, createCalls, initializedIssues, mutations };
 }

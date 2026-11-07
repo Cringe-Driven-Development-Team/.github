@@ -103,7 +103,7 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity): In
     const data = typeof callback.data === 'string' ? callback.data : '';
     const match = /^repo:([a-z0-9_-]+):(0|[1-9]\d*)$/i.exec(data);
     const repoIndex = Number(match?.[2]);
-    if (!match || new TextEncoder().encode(data).length > 64 || !Number.isSafeInteger(repoIndex) || !config.repositories[repoIndex]) fail('Некорректный выбор репозитория. Повторите /issue.');
+    if (!match || new TextEncoder().encode(data).length > 64 || !Number.isSafeInteger(repoIndex)) fail('Некорректный выбор репозитория. Повторите /issue.');
     return { ...base, kind: 'choice', requestId: match![1]!, repoIndex, callbackId, promptMessageId: context.messageId };
   }
   if (typeof msg.text !== 'string') return null;

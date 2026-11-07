@@ -127,7 +127,8 @@ test('choice carries opaque request, repository index and original prompt identi
     callbackId: 'callback-1', promptMessageId: 20,
   });
   expect(decodeUpdate(callback('request-123', 1, '999'), config(), bot)).toBeNull();
-  expect(() => decodeUpdate(callback('request-123', 99), config(), bot)).toThrow(CommandError);
+  expect(decodeUpdate(callback('request-123', 99), config(), bot)).toMatchObject({ kind: 'choice', repoIndex: 99 });
+  expect(() => decodeUpdate(callback('request-123', Number.MAX_SAFE_INTEGER + 1), config(), bot)).toThrow(CommandError);
   const raw = callback('request-123', 1) as any;
   raw.callback_query.data = 'repo:bad payload:1';
   expect(() => decodeUpdate(raw, config(), bot)).toThrow(CommandError);
