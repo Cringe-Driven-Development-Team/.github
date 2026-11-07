@@ -1,6 +1,6 @@
 import { normalizeTitle, parseIssueUrl, type Context } from './commands';
 import type { Config } from './config';
-import { ApiError, type Github } from './github';
+import { ApiError, ShutdownError, type Github } from './github';
 import { issueCard, repositoryPrompt, sprintMessages, type Outgoing } from './messages';
 import { currentIteration, type Projects } from './projects';
 import type { Job, Store } from './store';
@@ -62,6 +62,7 @@ export async function handleJob(saved: Job, deps: HandlerDeps): Promise<void> {
         }
         checkpoint({ nextOutput: job.nextOutput + 1, attempts: 0, nextAttemptAt: 0 });
       } catch (error) {
+        if (error instanceof ShutdownError) throw error;
         if (retry(error)) return;
         // Retain the unsent outbox for diagnosis when Telegram cannot deliver the result.
         console.error(`GitHubBot job ${job.id}: delivery failed after ${job.attempts} attempt(s)`);
@@ -82,6 +83,7 @@ export async function handleJob(saved: Job, deps: HandlerDeps): Promise<void> {
     catch { text = 'Этот выбор недоступен: выберите свою актуальную кнопку или повторите /issue.'; }
     try { await deps.answerCallback(input.callbackId, text); checkpoint({ phase: 'done' }); }
     catch (error) {
+      if (error instanceof ShutdownError) throw error;
       if (!retry(error)) { console.error(`GitHubBot job ${job.id}: callback delivery failed`); checkpoint({ phase: 'done' }); }
     }
     return;
@@ -127,7 +129,8 @@ export async function handleJob(saved: Job, deps: HandlerDeps): Promise<void> {
       const issue = await github.createIssue(repo.name, title, command.body);
       checkpoint({ phase: 'issue_created', issue });
       try { await projects.initializeIssue(issue); output([issueCard(issue, 'Задача создана в Scrumban: Backlog, Sprint не задан.')]); }
-      catch {
+      catch (error) {
+        if (error instanceof ShutdownError) throw error;
         console.error(`GitHubBot job ${job.id}: issue_created initialization failed`);
         output([issueCard(issue, partialResult)]);
       }
@@ -171,6 +174,7 @@ export async function handleJob(saved: Job, deps: HandlerDeps): Promise<void> {
       checkpoint({ issue }); output([issueCard(issue, result)]);
     }
   } catch (error) {
+    if (error instanceof ShutdownError) throw error;
     job = store.job(job.id);
     console.error(`GitHubBot job ${job.id}: ${job.phase} failed`);
     if (command.name === 'issue' && job.issue) output([issueCard(job.issue, partialResult)]);

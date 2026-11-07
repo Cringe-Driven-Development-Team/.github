@@ -1,5 +1,5 @@
 import type { Config } from './config';
-import { ApiError, type Issue } from './github';
+import { ApiError, ShutdownError, type Issue } from './github';
 
 export interface Iteration { id: string; title: string; startDate: string; duration: number }
 export interface ProjectItem { id: string; issue: Issue; archived: boolean; sprintId: string | null; status: string | null }
@@ -75,7 +75,10 @@ export function createProjects(config: Config, fetcher: typeof fetch): Projects 
         headers: { Authorization: `Bearer ${config.githubToken}`, 'Content-Type': 'application/json', Accept: 'application/vnd.github+json' },
         body: JSON.stringify({ query, variables }),
       });
-    } catch { throw new ApiError('github', 'retryable', 'GitHub Projects transport failed'); }
+    } catch (error) {
+      if (error instanceof ShutdownError) throw error;
+      throw new ApiError('github', 'retryable', 'GitHub Projects transport failed');
+    }
     let body: Record<string, unknown>;
     try { body = object(await response.json()); }
     catch {

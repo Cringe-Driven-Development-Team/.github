@@ -30,6 +30,9 @@ export class ApiError extends Error {
   }
 }
 
+// Internal control flow: preserve the durable checkpoint when shutdown stops the next HTTP stage.
+export class ShutdownError extends Error {}
+
 const owner = 'Cringe-Driven-Development-Team';
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const positiveInteger = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
@@ -64,7 +67,8 @@ export function createGithub(config: Config, fetcher: typeof fetch): Github {
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ShutdownError) throw error;
       throw new ApiError('github', creating ? 'uncertain' : 'retryable', 'GitHub transport failed');
     }
     if (response.ok || (allow404 && response.status === 404)) return response;
