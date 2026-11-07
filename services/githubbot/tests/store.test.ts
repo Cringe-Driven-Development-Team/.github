@@ -8,7 +8,7 @@ import { openStore, type Store } from '../src/store';
 
 const day = 24 * 60 * 60 * 1000;
 const context: Context = { chatId: '-1001', threadId: 14, messageId: 10 };
-const input = (updateId = 1): Input => ({ updateId, context, actor: { id: '101', username: 'alice' },
+const input = (updateId = 1): Input => ({ updateId, context, actor: { id: '101', username: 'alice', configuredUsername: 'alice' },
   kind: 'command', command: { name: 'issue', title: 'Task', body: 'Details' } });
 const issue: Issue = { ref: { repo: 'backend', number: 3, url: 'https://github.com/Cringe-Driven-Development-Team/backend/issues/3' },
   nodeId: 'I_3', title: 'Backend. Task', state: 'OPEN', assignees: [] };

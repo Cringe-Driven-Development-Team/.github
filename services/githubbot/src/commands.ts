@@ -2,7 +2,7 @@ import type { BotIdentity, Config, RepoConfig } from './config';
 
 export interface IssueRef { repo: string; number: number; url: string }
 export interface Context { chatId: string; threadId?: number; messageId: number }
-export interface Actor { id: string; username?: string }
+export interface Actor { id: string; username?: string; configuredUsername: string }
 export type Command = { name: 'issue'; title: string; body: string }
   | { name: 'sprint'; username?: string }
   | { name: 'close' | 'assign' | 'assignme' | 'unassign' | 'tosprint'; target: IssueRef; username?: string };
@@ -90,10 +90,11 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity): In
   const msg = object(isCallback ? callback.message : update.message);
   const from = object(isCallback ? callback.from : msg.from);
   const actorId = telegramId(from.id), chatId = telegramId(object(msg.chat).id);
-  if (!actorId || !config.users.some(u => u.telegramId === actorId) || from.is_bot !== false || msg.sender_chat !== undefined
+  const configuredUser = config.users.find(user => user.telegramId === actorId);
+  if (!actorId || !configuredUser || from.is_bot !== false || msg.sender_chat !== undefined
     || chatId !== config.chatId || !integer(msg.message_id) || (msg.message_thread_id !== undefined && !integer(msg.message_thread_id))) return null;
   const context: Context = { chatId, messageId: msg.message_id, ...(msg.message_thread_id === undefined ? {} : { threadId: msg.message_thread_id as number }) };
-  const actor: Actor = { id: actorId, ...(typeof from.username === 'string' ? { username: from.username } : {}) };
+  const actor: Actor = { id: actorId, configuredUsername: configuredUser.username, ...(typeof from.username === 'string' ? { username: from.username } : {}) };
   const updateId = update.update_id as number;
   const callbackId = typeof callback.id === 'string' ? callback.id : undefined;
   const fail = (message: string): never => { throw new CommandError(message, context, actor, updateId, callbackId); };

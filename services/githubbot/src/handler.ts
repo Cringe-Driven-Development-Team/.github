@@ -30,7 +30,9 @@ export async function handleJob(saved: Job, deps: HandlerDeps): Promise<void> {
     store.checkpoint(job.id, { phase: 'done' });
     return;
   }
-  if (input.actor.username?.replace(/^@/, '').toLowerCase() !== actor.username) store.blockAlias(actor.telegramId, actor.username);
+  if (input.actor.username?.replace(/^@/, '').toLowerCase() !== input.actor.configuredUsername) {
+    store.blockAlias(actor.telegramId, input.actor.configuredUsername);
+  }
   if (job.phase === 'done' || job.phase === 'waiting_repo' || job.nextAttemptAt > deps.now().getTime()) return;
 
   const checkpoint = (patch: Parameters<Store['checkpoint']>[1]) => {

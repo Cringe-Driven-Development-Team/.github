@@ -7,7 +7,7 @@ import { ApiError } from '../src/github';
 import { handleJob, type HandlerDeps } from '../src/handler';
 import type { Outgoing } from '../src/messages';
 import { openStore } from '../src/store';
-import { apiDoubles, bot, callback, config } from './fixtures';
+import { apiDoubles, bot, callback, config, message } from './fixtures';
 
 let directory: string, path: string, deps: HandlerDeps, api: ReturnType<typeof apiDoubles>;
 let sent: { context: Context; message: Outgoing }[], answers: { id: string; text: string }[];
@@ -15,14 +15,15 @@ let now: number;
 let diagnostics: string[], restoreDiagnostics: () => void;
 const issueCommand: Command = { name: 'issue', title: 'X', body: '' };
 const input = (command: Command = issueCommand, id = 1, threadId = 11): Input => ({
-  kind: 'command', updateId: id, actor: { id: '101', username: 'alice' },
+  kind: 'command', updateId: id, actor: { id: '101', username: 'alice', configuredUsername: deps.config.users[0]!.username },
   context: { chatId: '-1001', threadId, messageId: 10 }, command,
 });
 const run = async (value: Input) => { deps.store.ingest([value], value.updateId + 1); await handleJob(deps.store.job(value.updateId), deps); };
 const resume = async (id = 1) => handleJob(deps.store.job(id), deps);
 const reopen = () => { deps.store.close(); deps.store = openStore(path); deps.store.recover(); };
 const choice = (id = 2, actor = '101', promptMessageId = 20): Input => ({
-  kind: 'choice', updateId: id, actor: { id: actor, username: actor === '101' ? 'alice' : 'bob' },
+  kind: 'choice', updateId: id, actor: { id: actor, username: actor === '101' ? 'alice' : 'bob',
+    configuredUsername: deps.config.users.find(user => user.telegramId === actor)!.username },
   context: { chatId: '-1001', threadId: 14, messageId: promptMessageId },
   callbackId: `callback-${id}`, requestId: deps.store.job(1).choiceId!, repoIndex: 0, promptMessageId,
 });
@@ -176,6 +177,31 @@ test('unknown and observed stale aliases cannot mutate after restart; assignme s
   await run(input({ name: 'assign', target: issue.ref, username: 'alice' }, 3));
   expect(api.mutations).toHaveLength(0);
   const self = input({ name: 'assignme', target: issue.ref }, 4); self.actor.username = 'alice_new'; await run(self);
+  expect(api.mutations).toEqual(['assign:octo']);
+});
+
+test('queued old message cannot block corrected alias on its first execution', async () => {
+  const old = decodeUpdate(message('/issue X'), deps.config, bot)!;
+  deps.store.ingest([old], 2);
+  deps.config.users[0]!.username = 'alice_new'; reopen(); await resume();
+  expect(api.createCalls).toHaveLength(1);
+  expect(deps.store.isAliasBlocked('101', 'alice_new')).toBe(false);
+  expect(deps.store.isAliasBlocked('101', 'alice')).toBe(false);
+});
+
+test('old waiting prompt replay preserves corrected alias after fresh owner callback', async () => {
+  const old = decodeUpdate(message('/issue X'), deps.config, bot)!; old.context.threadId = 14;
+  await run(old);
+  deps.config.users[0]!.username = 'alice_new'; reopen();
+  const raw = callback(deps.store.job(1).choiceId!, 0) as { callback_query: { from: { username: string } } };
+  raw.callback_query.from.username = 'alice_new';
+  await run(decodeUpdate(raw, deps.config, bot)!);
+  expect(deps.store.isAliasBlocked('101', 'alice_new')).toBe(false);
+  await resume(); reopen();
+  expect(deps.store.isAliasBlocked('101', 'alice_new')).toBe(false);
+  expect(api.createCalls).toHaveLength(1);
+  const assign = input({ name: 'assign', target: api.seed('backend', 2).ref, username: 'alice_new' }, 3);
+  assign.actor.username = 'alice_new'; await run(assign);
   expect(api.mutations).toEqual(['assign:octo']);
 });
 

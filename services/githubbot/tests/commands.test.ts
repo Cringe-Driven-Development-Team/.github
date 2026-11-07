@@ -57,6 +57,17 @@ test('sprint accepts no target or configured username, case insensitive', () => 
   expect(() => decodeUpdate(message('/issue\nbody'), config(), bot)).toThrow(CommandError);
 });
 
+test('decoder captures configured alias separately from observed username for commands and errors', () => {
+  const raw = message('/sprint') as { message: { from: { username: string } } };
+  raw.message.from.username = 'alice_new';
+  expect(decodeUpdate(raw, config(), bot)?.actor).toEqual({ id: '101', username: 'alice_new', configuredUsername: 'alice' });
+  try { decodeUpdate(message('/issue'), config(), bot); throw new Error('expected CommandError'); }
+  catch (error) {
+    expect(error).toBeInstanceOf(CommandError);
+    expect((error as CommandError).actor).toEqual({ id: '101', username: 'alice', configuredUsername: 'alice' });
+  }
+});
+
 test.each([
   'https://name:password@github.com/Cringe-Driven-Development-Team/backend/issues/7',
   'https://github.com.evil.test/Cringe-Driven-Development-Team/backend/issues/7',
@@ -123,7 +134,7 @@ test('ignores unknown commands, other bots, edited messages and unauthorized sen
 test('choice carries opaque request, repository index and original prompt identity', () => {
   expect(decodeUpdate(callback('request-123', 1), config(), bot)).toEqual({
     kind: 'choice', updateId: 2, context: { chatId: '-1001', threadId: 14, messageId: 20 },
-    actor: { id: '101', username: 'alice' }, requestId: 'request-123', repoIndex: 1,
+    actor: { id: '101', username: 'alice', configuredUsername: 'alice' }, requestId: 'request-123', repoIndex: 1,
     callbackId: 'callback-1', promptMessageId: 20,
   });
   expect(decodeUpdate(callback('request-123', 1, '999'), config(), bot)).toBeNull();
