@@ -44,7 +44,8 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     failedVisible = false,
     productionState = "in_progress";
   let telegramAttempts = 0;
-  const accepted: Record<string, unknown>[] = [],
+  const attempted: Record<string, unknown>[] = [],
+    accepted: Record<string, unknown>[] = [],
     queries: string[] = [];
   const upstream = Bun.serve({
     port: 0,
@@ -54,6 +55,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
       if (p.startsWith("/bot")) {
         telegramAttempts++;
         const body = (await request.json()) as Record<string, unknown>;
+        attempted.push(body);
         if (String(body.text).includes("поставлен в очередь"))
           return Response.json({ ok: false, parameters: { retry_after: 1 } }, { status: 429 });
         accepted.push(body);
@@ -69,6 +71,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
         queries.push(body);
         const pr = body.includes("closingIssuesReferences")
           ? {
+              title: "Human readable PR",
               closingIssuesReferences: {
                 nodes: [
                   {
@@ -174,6 +177,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     TELEGRAM_CHAT_ID: "-1001",
     TELEGRAM_APIDOG_TOPIC_ID: "88",
     TELEGRAM_RELEASES_TOPIC_ID: "99",
+    TELEGRAM_USER_MAP: JSON.stringify({ YarikMix: "111" }),
     APIDOG_PROJECT_ID: "1382426",
     APIDOG_TARGET_BRANCH_ID: "1388508",
     APIDOG_PROJECT_NAME: "Example",
@@ -219,6 +223,8 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
       ).status,
     ).toBe(202);
     await waitFor(() => telegramAttempts === 1);
+    expect(attempted[0]!.parse_mode).toBe("HTML");
+    expect(String(attempted[0]!.text)).toContain('tg://user?id=111');
     merged = true;
     await waitFor(
       () => !!db.query("SELECT 1 FROM outbox WHERE error_code = 'release_skipped'").get(),
@@ -234,6 +240,8 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     productionState = "success";
     expect((await post("result", "deployment_status", status(1, "success"))).status).toBe(202);
     await waitFor(() => accepted.length === 3);
+    expect(accepted[2]!.parse_mode).toBe("HTML");
+    expect(String(accepted[2]!.text)).toContain('tg://user?id=111');
     expect(String(accepted[2]!.text)).toContain("Health Check ✅");
     expect(String(accepted[2]!.text)).toContain(`href="https://github.com/${REPO}/issues/27"`);
     expect(JSON.stringify(accepted[2]!.reply_markup)).toContain(
@@ -253,6 +261,8 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
       () => !!db.query("SELECT 1 FROM outbox WHERE error_code = 'release_uncertain'").get(),
     );
     expect(accepted).toHaveLength(4);
+    expect(accepted[3]!.parse_mode).toBe("HTML");
+    expect(String(accepted[3]!.text)).toContain('tg://user?id=111');
     expect(String(accepted[3]!.text)).toContain("Health Check ❌");
     await service.stop();
     const snapshot = join(directory, "snapshot.sqlite");

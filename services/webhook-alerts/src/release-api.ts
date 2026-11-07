@@ -96,6 +96,7 @@ export interface VerifiedJob {
   failedStep: string | null;
 }
 export interface ReleaseApi {
+  pullRequest(number: number): Promise<{ title: string; issues: LinkedIssue[] }>;
   queue(number: number): Promise<{
     merged: boolean;
     closed: boolean;
@@ -306,6 +307,57 @@ export function createReleaseApi(
   }
 
   const api: ReleaseApi = {
+    pullRequest: async (number) => {
+      const issues = new Map<string, LinkedIssue>();
+      let cursor: string | null = null,
+        title = '';
+      do {
+        const data = await graphql(
+            `
+              query ReleaseIssues($number: Int!, $cursor: String) {
+                repository(owner: "Cringe-Driven-Development-Team", name: "frontend") {
+                  pullRequest(number: $number) {
+                    title
+                    closingIssuesReferences(first: 100, after: $cursor) {
+                      nodes {
+                        id
+                        number
+                        title
+                        repository {
+                          nameWithOwner
+                        }
+                      }
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
+                    }
+                  }
+                }
+              }
+            `,
+            { number: positive(number), cursor },
+          ),
+          pr = obj(obj(data.repository).pullRequest),
+          connection = obj(pr.closingIssuesReferences);
+        title = str(pr.title);
+        for (const raw of list(connection.nodes)) {
+          const i = obj(raw),
+            id = str(i.id);
+          issues.set(id, {
+            id,
+            number: positive(i.number),
+            title: str(i.title),
+            repo: str(obj(i.repository).nameWithOwner),
+            prNumbers: [number],
+          });
+        }
+        const page = obj(connection.pageInfo);
+        cursor = page.hasNextPage ? str(page.endCursor) : null;
+        if (page.hasNextPage && !cursor) throw new GithubApiError('pagination');
+      } while (cursor);
+      return { title, issues: [...issues.values()] };
+    },
     queue: async (number) => {
       const data = await graphql(
           `
@@ -422,52 +474,11 @@ export function createReleaseApi(
       report.prs = [...prs.values()].sort((a, b) => a.number - b.number);
       const issues = new Map<string, LinkedIssue>();
       for (const pr of report.prs) {
-        let cursor: string | null = null;
-        do {
-          const data = await graphql(
-              `
-                query ReleaseIssues($number: Int!, $cursor: String) {
-                  repository(owner: "Cringe-Driven-Development-Team", name: "frontend") {
-                    pullRequest(number: $number) {
-                      closingIssuesReferences(first: 100, after: $cursor) {
-                        nodes {
-                          id
-                          number
-                          title
-                          repository {
-                            nameWithOwner
-                          }
-                        }
-                        pageInfo {
-                          hasNextPage
-                          endCursor
-                        }
-                      }
-                    }
-                  }
-                }
-              `,
-              { number: pr.number, cursor },
-            ),
-            connection = obj(obj(obj(data.repository).pullRequest).closingIssuesReferences);
-          for (const raw of list(connection.nodes)) {
-            const i = obj(raw),
-              id = str(i.id),
-              existing = issues.get(id);
-            if (existing) existing.prNumbers.push(pr.number);
-            else
-              issues.set(id, {
-                id,
-                number: positive(i.number),
-                title: str(i.title),
-                repo: str(obj(i.repository).nameWithOwner),
-                prNumbers: [pr.number],
-              });
-          }
-          const page = obj(connection.pageInfo);
-          cursor = page.hasNextPage ? str(page.endCursor) : null;
-          if (page.hasNextPage && !cursor) throw new GithubApiError('pagination');
-        } while (cursor);
+        for (const issue of (await api.pullRequest(pr.number)).issues) {
+          const existing = issues.get(issue.id);
+          if (existing) existing.prNumbers.push(pr.number);
+          else issues.set(issue.id, issue);
+        }
       }
       report.issues = [...issues.values()];
       report.complete = true;

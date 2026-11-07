@@ -69,6 +69,10 @@ export function releaseFixture() {
     calls: [] as string[],
   };
   const api: ReleaseApi = {
+    pullRequest: async (number) => {
+      state.calls.push('pullRequest');
+      return { title: state.report.prs[0]!.title, issues: state.report.issues.filter(i => i.prNumbers.includes(number)) };
+    },
     queue: async () => {
       state.calls.push('queue');
       return state.queue;

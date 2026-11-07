@@ -8,10 +8,12 @@ test('enqueue_uses_only_current_pr_and_rechecks_before_send', async () => {
   const f = releaseFixture(),
     [m] = await projectRelease(enqueue(), f.api, config);
   expect(m?.html).toContain('поставлен');
-  expect(f.calls).toEqual(['queue']);
+  expect(f.calls).toEqual(['queue', 'pullRequest']);
+  f.calls.length = 0;
   f.queue.merged = true;
   f.queue.entry = null;
   expect(await checkReleaseNotice(m!.release!, f.api)).toBe('skip');
+  expect(f.calls).toEqual(['queue']);
 });
 test('dequeued_merge_is_silent', async () => {
   const f = releaseFixture();
@@ -57,6 +59,9 @@ test('ready_uses_success_record_while_ci_running', async () => {
   f.operation.run.event = 'push';
   const [m] = await projectRelease(status('success', 'release-artifacts'), f.api, config);
   expect(m!.html).toContain('ждёт выкатки');
+  expect(m!.html).toContain(`Релиз <code>${B}</code>`);
+  expect(m!.html).toContain('Образ BFF');
+  expect(m!.html).toContain('sha256:');
   expect(m!.keyboard!.flat().some((b) => b.text === 'Выкатить')).toBe(true);
 });
 for (const readyFirst of [false, true])
@@ -241,6 +246,8 @@ test('start_has_human_pr_title_and_logs_button', async () => {
   f.operation.state = 'in_progress';
   const [m] = await projectRelease(status('in_progress'), f.api, config);
   expect(m!.html).toContain('Human readable PR');
+  expect(m!.html).toContain('Выкатка началась');
+  expect(m!.html).toContain('Запустил: YarikMix');
   expect(m!.keyboard!.flat().some((b) => b.text === 'Логи выкатки')).toBe(true);
 });
 for (const [state, steps, want] of [
@@ -389,4 +396,89 @@ test('rollback_start_is_labeled_as_rollback', async () => {
   const [m] = await projectRelease(status('in_progress'), f.api, config);
   expect(m!.html).toContain('Откат начался');
   expect(m!.keyboard!.flat()[0]!.text).toBe('Логи отката');
+});
+
+for (const count of [1, 2]) test(`enqueue_lists_${count}_issues_and_mentions_enqueuer`, async () => {
+  const f = releaseFixture();
+  if (count === 2) f.report.issues.push({ id: 'I2', number: 28, title: 'BFF. Logout', repo: REPO, prNumbers: [125] });
+  const event = enqueue();
+  const payload = JSON.parse(new TextDecoder().decode(event.raw));
+  payload.pull_request.user = { login: 'ManInTheCoat' };
+  event.raw = new TextEncoder().encode(JSON.stringify(payload));
+  const [message] = await projectRelease(event, f.api, { ...config, userMap: { YarikMix: '111', ManInTheCoat: '222' } });
+  expect(message!.html).toContain('tg://user?id=111');
+  expect(message!.html).not.toContain('tg://user?id=222');
+  expect(message!.html).toContain('/issues/27');
+  expect(message!.html).toContain('Frontend. Подстановка static');
+  if (count === 2) expect(message!.html).toContain('/issues/28');
+  expect(message!.keyboard).toEqual([[{ text: 'Открыть PR', url: `https://github.com/${REPO}/pull/125` }]]);
+});
+test('enqueue_without_issues_uses_pr_title', async () => {
+  const f = releaseFixture();
+  f.report.issues = [];
+  const [message] = await projectRelease(enqueue(), f.api, config);
+  expect(message!.html).toContain(`href="https://github.com/${REPO}/pull/125">Human readable PR</a>`);
+});
+test('enqueue_api_failure_retries', async () => {
+  const f = releaseFixture();
+  f.api.pullRequest = async () => { throw new Error('unavailable'); };
+  await expect(projectRelease(enqueue(), f.api, config)).rejects.toThrow('unavailable');
+});
+test('enqueue_escapes_and_bounds_many_issues', async () => {
+  const f = releaseFixture();
+  f.report.issues = Array.from({ length: 100 }, (_, i) => ({ id: `I${i}`, number: i + 1, title: '<script>' + ' task'.repeat(40), repo: REPO, prNumbers: [125] }));
+  const [message] = await projectRelease(enqueue(), f.api, { ...config, userMap: { YarikMix: '111' } });
+  expect(message!.html.length).toBeLessThanOrEqual(4095);
+  expect(message!.html).toContain('&lt;script&gt;');
+  expect(message!.html).not.toContain('<script>');
+  expect(message!.html).toContain('Состав изменений показан не полностью');
+  expect(message!.html).toContain('tg://user?id=111');
+  expect(message!.html.match(/<a /g)?.length).toBe(message!.html.match(/<\/a>/g)?.length);
+});
+
+for (const state of ['success', 'failure', 'error'] as const)
+  test(`deploy_result_omits_technical_details_${state}`, async () => {
+    const f = releaseFixture();
+    f.operation.state = state;
+    f.operation.run.actor = 'iRedTea';
+    if (state !== 'success') f.operation.run.steps = [{ name: 'Switch BFF', outcome: 'failure' }];
+    const [message] = await projectRelease(status(state), f.api, { ...config, userMap: { iRedTea: '222' } });
+    expect(message!.html).not.toContain('Слева —');
+    expect(message!.html).not.toContain(`Релиз <code>${B}</code>`);
+    expect(message!.html).not.toContain('Образ BFF');
+    expect(message!.html).not.toContain('sha256:');
+    expect(message!.html).toContain('<b>Версия:</b>');
+    expect(message!.html).toContain(`href="https://github.com/${REPO}/commit/${A}">aaaaaaa</a>`);
+    expect(message!.html).toContain(`href="https://github.com/${REPO}/commit/${B}">bbbbbbb</a>`);
+    expect(message!.html).toContain('/issues/27');
+    expect(message!.html).toContain(state === 'success' ? 'Health Check ✅' : 'Health Check ⚪');
+    expect(message!.html).toContain('Запустил: <a href="tg://user?id=222">iRedTea</a>');
+    if (state !== 'success') {
+      expect(message!.html).toContain('<b>Этап сбоя:</b> Switch BFF');
+      expect(message!.html).toContain('Состояние прода не подтверждено — смотрите логи запуска.');
+    }
+    expect(message!.keyboard!.flat()).toEqual([
+      { text: '🌐 Открыть прод', url: config.siteUrl },
+      { text: '↩️ Откатить', url: `https://github.com/${REPO}/actions/workflows/rollback.yml` },
+      { text: 'PR', url: `https://github.com/${REPO}/pull/125` },
+      { text: 'Логи выкатки', url: f.operation.run.url },
+    ]);
+  });
+test('rollback_result_keeps_existing_details', async () => {
+  const f = releaseFixture();
+  f.operation.kind = 'rollback';
+  const [message] = await projectRelease(status(), f.api, config);
+  expect(message!.html).toContain('Слева —');
+  expect(message!.html).toContain(`Релиз <code>${B}</code>`);
+  expect(message!.html).toContain('Образ BFF');
+  expect(message!.html).toContain('sha256:');
+});
+
+for (const event of ['queue', 'result']) test(`unknown_${event}_initiator_is_escaped_without_mention`, async () => {
+  const f = releaseFixture();
+  f.queue.entry!.enqueuer = '<Unknown>';
+  f.operation.run.actor = '<Unknown>';
+  const [message] = await projectRelease(event === 'queue' ? enqueue() : status(), f.api, config);
+  expect(message!.html).toContain('&lt;Unknown&gt;');
+  expect(message!.html).not.toContain('tg://user?id=');
 });
