@@ -69,7 +69,7 @@ test('signed_enqueue_needs_only_target_pr_and_rechecks_before_send', async () =>
     beforeReleaseSend: (n) => checkReleaseNotice(n, f.api),
   });
   expect(sent).toBe(0);
-  expect(f.calls).toEqual(['queue', 'queue']);
+  expect(f.calls).toEqual(['queue', 'pullRequest', 'queue']);
 });
 test('queue_sends_while_release_enrichment_waits', async () => {
   const s = store(),

@@ -183,10 +183,19 @@ export async function projectRelease(
     if (payload.action === 'enqueued') {
       if (state.closed || !state.entry) return [];
       if (Date.parse(state.entry.enqueuedAt) < (config.cutoffMs ?? 0) && !delivery.releaseRecovery) return [];
+      const details = await api.pullRequest(id);
+      const entries = details.issues.length
+        ? details.issues.map(issue => title(issue.title, `https://github.com/${issue.repo}/issues/${issue.number}`))
+        : [title(details.title, url)];
       return [
         {
           topic: config.topic,
-          html: `${link(`PR #${id}`, url)} поставлен в очередь\n${mention(state.entry.enqueuer, config.userMap)}`,
+          html: bounded(
+            [`${link(`PR #${id}`, url)} поставлен в очередь`, '', '<b>Задачи</b>'],
+            entries,
+            ['', mention(state.entry.enqueuer, config.userMap)],
+            null,
+          ),
           keyboard: [[{ text: 'Открыть PR', url }]],
           release: {
             kind: 'queue',

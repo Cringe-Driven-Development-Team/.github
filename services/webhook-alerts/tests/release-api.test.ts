@@ -64,13 +64,13 @@ function fixture() {
     production,
     runs,
     calls: [] as string[],
-    extra: undefined as undefined | ((url: URL) => Response | undefined),
+    extra: undefined as undefined | ((url: URL, init?: RequestInit) => Response | undefined),
   };
   const fetcher = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const u = new URL(String(input)),
       p = u.pathname.replace(`/repos/${REPO}`, '');
     state.calls.push(u.href);
-    const extra = state.extra?.(u);
+    const extra = state.extra?.(u, init);
     if (extra) return extra;
     if (p === '/deployments/1') return Response.json(state.production);
     if (p === '/deployments/2') return Response.json(state.artifact);
@@ -104,7 +104,7 @@ function fixture() {
         data: {
           repository: {
             pullRequest: String(init?.body).includes('closingIssuesReferences')
-              ? { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } }
+              ? { title: 'Human readable PR', closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } }
               : {
                   merged: false,
                   state: 'OPEN',
@@ -270,4 +270,51 @@ test('job_ignores_records_without_notification_contract', async () => {
         })
       : undefined;
   expect((await f.api.job(200)).operation).toBeNull();
+});
+
+function issuePage(number: number, more: boolean) {
+  return Response.json({ data: { repository: { pullRequest: {
+    title: 'Human readable PR',
+    closingIssuesReferences: {
+      nodes: [{ id: `I${number}`, number, title: `Task ${number}`, repository: { nameWithOwner: REPO } }],
+      pageInfo: { hasNextPage: more, endCursor: more ? 'next-page' : null },
+    },
+  } } } });
+}
+test('pull_request_reads_title_and_all_issue_pages', async () => {
+  const f = fixture();
+  const cursors: unknown[] = [];
+  f.extra = (url, init) => {
+    if (url.pathname !== '/graphql') return;
+    const { query, variables } = JSON.parse(String(init?.body));
+    expect(query).toContain('closingIssuesReferences');
+    expect(query).toMatch(/pullRequest\(number: \$number\)\s*\{\s*title/);
+    expect(variables.number).toBe(125);
+    cursors.push(variables.cursor);
+    return variables.cursor === null ? issuePage(27, true) : issuePage(28, false);
+  };
+  const result = await f.api.pullRequest(125);
+  expect(result.title).toBe('Human readable PR');
+  expect(result.issues.map(i => i.number)).toEqual([27, 28]);
+  expect(result.issues.map(i => i.prNumbers)).toEqual([[125], [125]]);
+  expect(cursors).toEqual([null, 'next-page']);
+});
+test('changes_deduplicates_shared_issues', async () => {
+  const f = fixture();
+  f.extra = url => {
+    if (url.pathname.includes('/commits/')) return Response.json([125, 126].map(number => ({ number, title: 'PR', merge_commit_sha: B, merged_at: '2026-11-01T19:00:00Z' })));
+    if (url.pathname === '/graphql') return issuePage(27, false);
+  };
+  const report = await f.api.changes(A, B);
+  expect(report.issues).toHaveLength(1);
+  expect(report.issues[0]!.prNumbers).toEqual([125, 126]);
+});
+test('pull_request_failure_is_not_empty_issues', async () => {
+  const f = fixture();
+  f.extra = (url, init) => {
+    if (url.pathname !== '/graphql') return;
+    const { variables } = JSON.parse(String(init?.body));
+    return variables.cursor === null ? issuePage(27, true) : new Response('unavailable', { status: 503 });
+  };
+  await expect(f.api.pullRequest(125)).rejects.toThrow('http_503');
 });

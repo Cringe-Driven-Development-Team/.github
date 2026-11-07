@@ -69,6 +69,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
         queries.push(body);
         const pr = body.includes("closingIssuesReferences")
           ? {
+              title: "Human readable PR",
               closingIssuesReferences: {
                 nodes: [
                   {
