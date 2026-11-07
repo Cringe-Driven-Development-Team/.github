@@ -45,7 +45,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
         || !repo.prefixes.every(p => typeof p === 'string' && /^[^\s.]+\.$/.test(p))
         || !unique(repo.prefixes) || !repo.prefixes.includes(repo.defaultPrefix)) throw new Error();
     }
-    if (!unique(c.repositories.map(r => r.name)) || !unique(c.repositories.flatMap(r => r.prefixes))) throw new Error();
+    if (!unique(c.repositories.map(r => r.name))) throw new Error();
     for (const topic of c.topics) {
       if (!topic || !Number.isSafeInteger(topic.threadId) || topic.threadId <= 0
         || !c.repositories.some(r => r.name === topic.repository)) throw new Error();

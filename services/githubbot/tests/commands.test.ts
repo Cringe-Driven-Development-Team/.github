@@ -141,6 +141,20 @@ test('loads config with string IDs, normalized aliases and default database path
   expect(loadConfig({ ...env(), DATABASE_PATH: '/tmp/test.sqlite', TELEGRAM_PROXY_URL: 'http://localhost:3128' })).toMatchObject({ databasePath: '/tmp/test.sqlite', telegramProxyUrl: 'http://localhost:3128' });
 });
 
+test('shared area prefixes load and normalize in each selected repository', () => {
+  const c = config();
+  c.repositories.push(
+    { name: 'infra', defaultPrefix: 'DevOps.', prefixes: ['DevOps.'] },
+    { name: '.github', defaultPrefix: 'DevOps.', prefixes: ['DevOps.'] },
+  );
+  const loaded = loadConfig(env(c));
+  for (const name of ['infra', '.github']) {
+    const repo = loaded.repositories.find(r => r.name === name)!;
+    expect(normalizeTitle('Настроить бота', repo, loaded.repositories)).toBe('DevOps. Настроить бота');
+    expect(normalizeTitle('DevOps. Настроить бота', repo, loaded.repositories)).toBe('DevOps. Настроить бота');
+  }
+});
+
 test.each(['telegramId', 'username', 'githubLogin'])('rejects duplicate user %s', field => {
   const c = config(); c.users.push({ telegramId: '102', username: 'bob', githubLogin: 'other', [field]: c.users[0]![field as keyof typeof c.users[number]] });
   expect(() => loadConfig(env(c))).toThrow();
