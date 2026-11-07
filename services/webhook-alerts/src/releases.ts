@@ -133,7 +133,9 @@ async function operationMessage(
       `${escapeHtml(config.siteUrl)} · production`,
       '',
       `<b>Версия:</b> ${op.notification.base_sha ? link(op.notification.base_sha.slice(0, 7), `${REPO_URL}/commit/${op.notification.base_sha}`) : 'неизвестна'} → ${link(op.sha.slice(0, 7), `${REPO_URL}/commit/${op.sha}`)}`,
-      '<i>Слева — последний подтверждённый выпуск по истории GitHub Deployments, а не утверждение о текущем состоянии прода.</i>',
+      ...(op.kind === 'deploy' ? [] : [
+        '<i>Слева — последний подтверждённый выпуск по истории GitHub Deployments, а не утверждение о текущем состоянии прода.</i>',
+      ]),
       '',
       `<b>${rollback ? 'Отменённые задачи' : 'Задачи'}</b>`,
     ];
@@ -141,8 +143,10 @@ async function operationMessage(
       '',
       ...health(op),
       '',
-      `Релиз <code>${op.sha}</code>`,
-      `Образ BFF <code>${op.imageRef.split('@')[1]}</code>`,
+      ...(op.kind === 'deploy' ? [] : [
+        `Релиз <code>${op.sha}</code>`,
+        `Образ BFF <code>${op.imageRef.split('@')[1]}</code>`,
+      ]),
       `Запустил: ${mention(run.actor, config.userMap)}`,
     ];
     keyboard = [

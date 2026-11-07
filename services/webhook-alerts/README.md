@@ -886,6 +886,9 @@ release-activation, поэтому новый sender выключен незав
 Готовность проверяется по конкретному Actions run и `notification.run_attempt`;
 завершения всего workflow ждать не нужно. Payload producer содержит
 `notification.base_sha`, `notification.report_url`, `notification.run_attempt`.
+Результаты выкатки показывают короткую версию, задачи, Health Check и инициатора;
+при сбое остаются этап и сведения о состоянии прода. Полный SHA отдельной строкой,
+digest BFF и пояснение к левой версии в результатах выкатки не выводятся.
 Полный отчёт остаётся в Summary CI/CD. Сервис проверяет SHA/digest/source и читает
 только PR/задачи конкретного диапазона, без Project API.
 
