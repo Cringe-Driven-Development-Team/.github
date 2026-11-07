@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../src/config';
-import { CommandError, decodeUpdate, normalizeTitle, parseIssueUrl } from '../src/commands';
+import { CommandError, decodeUpdate, normalizeTitle, parseIssueUrl, type Actor } from '../src/commands';
 import { bot, callback, config, message } from './fixtures';
 
 const url = 'https://github.com/Cringe-Driven-Development-Team/backend/issues/7';
@@ -129,6 +129,25 @@ test('ignores unknown commands, other bots, edited messages and unauthorized sen
     expect(decodeUpdate({ ...raw, message: { ...raw.message, ...fields } }, config(), bot)).toBeNull();
   }
   for (const raw of [null, [], {}, { update_id: 'bad', message: {} }]) expect(decodeUpdate(raw, config(), bot)).toBeNull();
+});
+
+test('identity observation keeps the same authentication scope as commands', () => {
+  const observed: Actor[] = [], capture = (actor: Actor) => { observed.push(actor); };
+  const raw = message('private ordinary message') as any;
+  raw.message.from.username = 'alice_new';
+  for (const fields of [{ from: { id: 999, is_bot: false, username: 'alice_new' } }, { from: { id: 101, is_bot: true } },
+    { sender_chat: { id: -1001 } }, { chat: { id: -1002 } }, { message_thread_id: -1 }]) {
+    expect(decodeUpdate({ ...raw, message: { ...raw.message, ...fields } }, config(), bot, capture)).toBeNull();
+  }
+  expect(decodeUpdate({ update_id: 1, edited_message: raw.message }, config(), bot, capture)).toBeNull();
+  const foreignCallback = callback('request', 0) as any; foreignCallback.callback_query.message.from.id = 900;
+  expect(decodeUpdate(foreignCallback, config(), bot, capture)).toBeNull();
+  expect(observed).toEqual([]);
+  expect(decodeUpdate(raw, config(), bot, capture)).toBeNull();
+  expect(observed).toEqual([{ id: '101', username: 'alice_new', configuredUsername: 'alice' }]);
+  raw.message.text = '/issue';
+  expect(() => decodeUpdate(raw, config(), bot, capture)).toThrow(CommandError);
+  expect(observed).toHaveLength(2);
 });
 
 test('choice carries opaque request, repository index and original prompt identity', () => {

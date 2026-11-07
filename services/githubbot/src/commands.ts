@@ -81,7 +81,7 @@ function cardTarget(raw: unknown, context: Context, config: Config, bot: BotIden
   return unique.values().next().value!;
 }
 
-export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity): Input | null {
+export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, observeIdentity?: (actor: Actor) => void): Input | null {
   const update = object(raw);
   if (!integer(update.update_id) && update.update_id !== 0) return null;
   if (update.edited_message !== undefined || update.edited_channel_post !== undefined) return null;
@@ -97,15 +97,16 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity): In
   const actor: Actor = { id: actorId, configuredUsername: configuredUser.username, ...(typeof from.username === 'string' ? { username: from.username } : {}) };
   const updateId = update.update_id as number;
   const callbackId = typeof callback.id === 'string' ? callback.id : undefined;
+  if (isCallback && (telegramId(object(msg.from).id) !== bot.id || !callbackId)) return null;
+  observeIdentity?.(actor);
   const fail = (message: string): never => { throw new CommandError(message, context, actor, updateId, callbackId); };
   const base = { context, actor, updateId };
   if (isCallback) {
-    if (telegramId(object(msg.from).id) !== bot.id || !callbackId) return null;
     const data = typeof callback.data === 'string' ? callback.data : '';
     const match = /^repo:([a-z0-9_-]+):(0|[1-9]\d*)$/i.exec(data);
     const repoIndex = Number(match?.[2]);
     if (!match || new TextEncoder().encode(data).length > 64 || !Number.isSafeInteger(repoIndex)) fail('Некорректный выбор репозитория. Повторите /issue.');
-    return { ...base, kind: 'choice', requestId: match![1]!, repoIndex, callbackId, promptMessageId: context.messageId };
+    return { ...base, kind: 'choice', requestId: match![1]!, repoIndex, callbackId: callbackId!, promptMessageId: context.messageId };
   }
   if (typeof msg.text !== 'string') return null;
   const match = /^\/([a-z]+)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(msg.text);

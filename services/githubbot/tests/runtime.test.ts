@@ -1,12 +1,13 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
 import { run, checkHealth } from '../src/main';
 import { openStore } from '../src/store';
 import { decodeUpdate } from '../src/commands';
-import { bot, callback, config, message } from './fixtures';
+import { handleJob } from '../src/handler';
+import { apiDoubles, bot, callback, config, message } from './fixtures';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -18,6 +19,86 @@ const json = (result: unknown) => Response.json({ ok: true, result });
 const method = (url: unknown) => String(url).split('/').pop()!;
 const waitFor = async (predicate: () => boolean) => { for (let i = 0; i < 200; i++) { if (predicate()) return; await Bun.sleep(5); } throw new Error('Condition timed out'); };
 function idle(signal: AbortSignal): Promise<Response> { return new Promise((_resolve, reject) => { if (signal.aborted) reject(new Error('abort')); else signal.addEventListener('abort', () => reject(new Error('abort')), { once: true }); }); }
+
+test.each([
+  ['ordinary text', 'private ordinary body'], ['unknown command', '/unknown'], ['other-bot command', '/close@otherbot'], ['media', undefined],
+])('intake observes identity from %s before acknowledging without retaining the body', async (_kind, text) => {
+  const { c, abort } = setup();
+  c.users.push({ telegramId: '102', username: 'bob', githubLogin: 'other' });
+  const renamed = message(text ?? '') as any;
+  renamed.message.from.username = 'alice_new';
+  if (text === undefined) { delete renamed.message.text; renamed.message.photo = [{ file_id: 'private-media' }]; }
+  let blockedBeforeAcknowledgement = false;
+  const fetcher = (async (url, init) => {
+    const m = method(url);
+    if (m === 'getMe') return json({ id: 901, username: 'githubbot', is_bot: true });
+    if (m === 'getWebhookInfo') return json({ url: '' });
+    if (m === 'user') return Response.json({ login: 'octo' });
+    if (m === 'getUpdates') {
+      if (JSON.parse(String(init!.body)).offset === 0) return json([renamed]);
+      const observed = openStore(c.databasePath);
+      blockedBeforeAcknowledgement = observed.offset() === 2 && observed.isAliasBlocked('101', 'alice');
+      observed.close(); abort.abort(); return json([]);
+    }
+    throw new Error('Ordinary messages must not trigger API work');
+  }) as typeof fetch;
+  await run(c, fetcher, abort.signal);
+  expect(blockedBeforeAcknowledgement).toBe(true);
+  const store = openStore(c.databasePath), api = apiDoubles(), issue = api.seed(), replies: string[] = [];
+  try {
+    expect(store.offset()).toBe(2); expect(store.nextJob(0)).toBeNull(); expect(() => store.job(1)).toThrow();
+    const db = new Database(c.databasePath, { readonly: true });
+    try { expect(db.query('SELECT * FROM blocked_aliases').all()).toEqual([{ id: '101', username: 'alice' }]); }
+    finally { db.close(); }
+    const deps = { config: c, store, github: api.github, projects: api.projects, now: () => new Date(),
+      send: async (_context: unknown, outgoing: { html: string }) => { replies.push(outgoing.html); return 20; }, answerCallback: async () => {} };
+    for (const [index, name] of ['assign', 'unassign', 'sprint'].entries()) {
+      const raw = message(`/${name} @alice${name === 'sprint' ? '' : ' ' + issue.ref.url}`) as any;
+      raw.update_id = index + 2; raw.message.from = { id: 102, is_bot: false, username: 'bob' };
+      const input = decodeUpdate(raw, c, bot)!; store.ingest([input], input.updateId + 1); await handleJob(store.job(input.updateId), deps);
+    }
+    expect(api.mutations).toEqual([]); expect(replies).toHaveLength(3); expect(replies.every(reply => reply.includes('устарел'))).toBe(true);
+    const self = message('/assignme ' + issue.ref.url) as any; self.update_id = 5; self.message.from.username = 'alice_new';
+    store.ingest([decodeUpdate(self, c, bot)!], 6); await handleJob(store.job(5), deps);
+    expect(api.mutations).toEqual(['assign:octo']);
+    c.users[0]!.username = 'alice_new';
+    expect(store.isAliasBlocked('101', 'alice_new')).toBe(false);
+  } finally { store.close(); }
+});
+
+test.each([
+  ['webhook', /webhook.*remove.*explicitly/i],
+  ['config', /GITHUBBOT_CONFIG_JSON.*valid/i],
+  ['telegram-denied', /Telegram.*credentials.*permissions/i],
+  ['github-denied', /GitHub.*credentials.*permissions/i],
+  ['github-probe', /GitHub.*startup.*check/i],
+  ['transport', /Telegram.*connectivity.*rate limits/i],
+  ['unknown', /configuration, startup or runtime failure/],
+] as const)('CLI reports sanitized actionable %s failure', async (failure, diagnostic) => {
+  const { c, heartbeat } = setup(), preload = join(dirname(c.databasePath), 'failure.ts');
+  writeFileSync(heartbeat, JSON.stringify({ lastSuccess: Date.now() }));
+  writeFileSync(preload, `globalThis.fetch = async (url) => {
+    const failure = ${JSON.stringify(failure)};
+    const secret = 'provider-body-secret ' + process.env.TELEGRAM_BOT_TOKEN + ' ' + process.env.GITHUB_TOKEN;
+    if (failure === 'transport') throw new Error(secret + ' https://secret.example/transport');
+    if (String(url).endsWith('/getMe')) return Response.json(failure === 'telegram-denied'
+      ? {ok:false, error_code:401, description:secret} : {ok:true, result:{id:901, username:'githubbot', is_bot:true}});
+    if (String(url).endsWith('/getWebhookInfo')) return Response.json({ok:true,result:{url:failure === 'webhook' ? 'https://secret.example/webhook' : ''}});
+    if (String(url).endsWith('/user')) return failure === 'unknown' ? new Response(secret)
+      : Response.json({message:secret}, {status:failure === 'github-denied' ? 401 : 500});
+    throw new Error(secret);
+  };`);
+  const child = Bun.spawn([process.execPath, '--preload', preload, join(import.meta.dir, '../src/main.ts')], {
+    env: { ...process.env, TELEGRAM_BOT_TOKEN: c.telegramToken, GITHUB_TOKEN: c.githubToken, DATABASE_PATH: c.databasePath,
+      GITHUBBOT_CONFIG_JSON: failure === 'config' ? 'private-invalid-config' : JSON.stringify(c) }, stdout: 'pipe', stderr: 'pipe',
+  });
+  expect(await child.exited).toBe(1);
+  const output = await new Response(child.stderr).text();
+  expect(output).toMatch(diagnostic);
+  for (const secret of [c.telegramToken, c.githubToken, 'provider-body-secret', 'https://secret.example', 'private-invalid-config']) expect(output).not.toContain(secret);
+  expect(await new Response(child.stdout).text()).toBe('');
+  if (failure !== 'config') expect(checkHealth(heartbeat, Date.now())).toBe(false);
+});
 
 test('startup validates identity/webhook/GitHub before polling and leaves no health on rejection', async () => {
   for (const failure of ['getMe', 'getWebhookInfo', 'user']) {

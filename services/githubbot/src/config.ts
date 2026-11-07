@@ -13,23 +13,25 @@ export interface Config {
   telegramProxyUrl?: string;
 }
 
+export class ConfigError extends Error {}
+
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const required = (name: string): string => {
     const value = env[name];
-    if (!value?.trim()) throw new Error(`${name} is required`);
+    if (!value?.trim()) throw new ConfigError(`${name} is required`);
     return value;
   };
   const telegramToken = required('TELEGRAM_BOT_TOKEN');
   const githubToken = required('GITHUB_TOKEN');
   const raw = required('GITHUBBOT_CONFIG_JSON');
   const databasePath = env.DATABASE_PATH ?? '/data/githubbot.sqlite';
-  if (!databasePath.trim()) throw new Error('DATABASE_PATH must not be empty');
+  if (!databasePath.trim()) throw new ConfigError('DATABASE_PATH must not be empty');
   const telegramProxyUrl = env.TELEGRAM_PROXY_URL;
   if (telegramProxyUrl !== undefined) {
     try {
       const url = new URL(telegramProxyUrl);
       if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error();
-    } catch { throw new Error('TELEGRAM_PROXY_URL must be an HTTP or HTTPS URL'); }
+    } catch { throw new ConfigError('TELEGRAM_PROXY_URL must be an HTTP or HTTPS URL'); }
   }
   try {
     const c = JSON.parse(raw) as Config;
@@ -60,5 +62,5 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     if (!unique(users.map(u => u.telegramId)) || !unique(users.map(u => u.username)) || !unique(users.map(u => u.githubLogin))) throw new Error();
     return { chatId: c.chatId, notificationBotIds: c.notificationBotIds, repositories: c.repositories,
       topics: c.topics, users, telegramToken, githubToken, databasePath, ...(telegramProxyUrl === undefined ? {} : { telegramProxyUrl }) };
-  } catch { throw new Error('GITHUBBOT_CONFIG_JSON must contain valid, unique chat, bot, repository, topic and user configuration'); }
+  } catch { throw new ConfigError('GITHUBBOT_CONFIG_JSON must contain valid, unique chat, bot, repository, topic and user configuration'); }
 }

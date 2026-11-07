@@ -1,12 +1,14 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { loadConfig, type Config } from './config';
-import { CommandError, decodeUpdate, type Input } from './commands';
+import { ConfigError, loadConfig, type Config } from './config';
+import { CommandError, decodeUpdate, type Actor, type Input } from './commands';
 import { ApiError, ShutdownError, createGithub } from './github';
 import { createProjects } from './projects';
 import { createTelegram } from './telegram';
 import { openStore } from './store';
 import { handleJob } from './handler';
+
+class StartupError extends Error {}
 
 export function checkHealth(path: string, now: number): boolean {
   try {
@@ -58,14 +60,14 @@ export async function run(config: Config, fetcher: typeof fetch, signal: AbortSi
   let store: ReturnType<typeof openStore> | undefined;
   try {
     const bot = await telegram.getMe();
-    if (await telegram.getWebhookUrl()) throw new Error('Telegram webhook is configured; remove it explicitly before polling');
+    if (await telegram.getWebhookUrl()) throw new StartupError('Telegram webhook is configured; remove it explicitly before polling');
     const identity = await guardedFetch('https://api.github.com/user', {
       method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Bearer ${config.githubToken}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
     });
-    if (!identity.ok) throw new Error('GitHub startup probe failed');
+    if (!identity.ok) throw new StartupError('GitHub startup check failed; check credentials, permissions and connectivity before restarting');
     const user = await identity.json();
-    if (!user || typeof user.login !== 'string' || !user.login) throw new Error('Invalid GitHub startup identity');
+    if (!user || typeof user.login !== 'string' || !user.login) throw new StartupError('GitHub startup identity is invalid; check API connectivity before restarting');
     if (stop.signal.aborted) { if (fatal) throw fatal; return; }
     store = openStore(config.databasePath); store.recover();
     const db = store;
@@ -77,17 +79,18 @@ export async function run(config: Config, fetcher: typeof fetch, signal: AbortSi
         try {
           const updates = await telegram.getUpdates(db.offset(), stop.signal);
           const inputs: Input[] = [];
+          const identities: Actor[] = [];
           let offset = db.offset();
           for (const update of updates) {
             offset = Math.max(offset, (update as { update_id: number }).update_id + 1);
-            try { const input = decodeUpdate(update, config, bot); if (input) inputs.push(input); }
+            try { const input = decodeUpdate(update, config, bot, actor => identities.push(actor)); if (input) inputs.push(input); }
             catch (error) {
               if (!(error instanceof CommandError)) throw error;
               inputs.push({ kind: 'error', updateId: error.updateId, context: error.context, actor: error.actor, message: error.message,
                 ...(error.callbackId === undefined ? {} : { callbackId: error.callbackId }) });
             }
           }
-          db.ingest(inputs, offset); beat();
+          db.ingest(inputs, offset, identities); beat();
           // Acknowledge receipt only; the durable worker validates the actual selection.
           for (const input of inputs) {
             if (input.kind === 'choice' || (input.kind === 'error' && input.callbackId)) {
@@ -135,7 +138,7 @@ if (import.meta.main) {
     if (args.length === 1 && args[0] === '--health') {
       process.exitCode = checkHealth(join(dirname(process.env.DATABASE_PATH ?? '/data/githubbot.sqlite'), 'health.json'), Date.now()) ? 0 : 1;
     } else {
-      if (args.length && !(args.length === 1 && args[0] === '--check-config')) throw new Error('Usage: main.ts [--check-config|--health]');
+      if (args.length && !(args.length === 1 && args[0] === '--check-config')) throw new ConfigError('Usage: main.ts [--check-config|--health]');
       const config = loadConfig(process.env);
       if (args[0] === '--check-config') console.log('GitHubBot configuration is valid');
       else {
@@ -146,5 +149,11 @@ if (import.meta.main) {
         finally { process.off('SIGTERM', terminate); process.off('SIGINT', terminate); }
       }
     }
-  } catch { console.error('GitHubBot stopped: configuration, startup or runtime failure'); process.exitCode = 1; }
+  } catch (error) {
+    let diagnostic = 'configuration, startup or runtime failure';
+    if (error instanceof ConfigError || error instanceof StartupError) diagnostic = error.message;
+    else if (error instanceof ApiError) diagnostic = `${error.provider === 'telegram' ? 'Telegram' : 'GitHub'} request failed; ${error.kind === 'retryable'
+      ? 'check connectivity and rate limits before restarting' : 'check credentials, permissions and API availability before restarting'}`;
+    console.error(`GitHubBot stopped: ${diagnostic}`); process.exitCode = 1;
+  }
 }

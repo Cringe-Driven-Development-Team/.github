@@ -47,11 +47,23 @@ describe('durable intake and journal', () => {
     store.ingest([input()], 2);
     const bad = input(3);
     (bad as unknown as { command: unknown }).command = bad;
-    expect(() => store.ingest([input(2), bad], 4)).toThrow();
+    expect(() => store.ingest([input(2), bad], 4, [{ id: '101', username: 'alice_new', configuredUsername: 'alice' }])).toThrow();
     reopen();
     expect(store.offset()).toBe(2);
     expect(() => store.job(2)).toThrow();
     expect(() => store.job(3)).toThrow();
+    expect(store.isAliasBlocked('101', 'alice')).toBe(false);
+  });
+
+  test('identity-only intake persists its configured alias snapshot atomically with cursor', () => {
+    store.ingest([], 2, [{ id: '101', username: 'alice_new', configuredUsername: 'alice' },
+      { id: '102', username: '@BOB', configuredUsername: 'bob' }, { id: '103', configuredUsername: 'carol' }]);
+    reopen();
+    expect(store.offset()).toBe(2); expect(store.nextJob(0)).toBeNull();
+    expect(store.isAliasBlocked('101', 'alice')).toBe(true);
+    expect(store.isAliasBlocked('101', 'alice_new')).toBe(false);
+    expect(store.isAliasBlocked('102', 'bob')).toBe(false);
+    expect(store.isAliasBlocked('103', 'carol')).toBe(true);
   });
 
   test('skips waiting, finished and future jobs without blocking later inputs', () => {

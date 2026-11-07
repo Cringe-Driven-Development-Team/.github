@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import type { Context, Input } from './commands';
+import type { Actor, Context, Input } from './commands';
 import type { Issue } from './github';
 import type { Outgoing } from './messages';
 
@@ -18,7 +18,7 @@ export interface Job {
 }
 type Patch = Partial<Pick<Job, 'phase' | 'issue' | 'output' | 'nextOutput' | 'nextAttemptAt' | 'attempts' | 'selectedRepo' | 'choiceId'>>;
 export interface Store {
-  ingest(inputs: Input[], nextOffset: number): void;
+  ingest(inputs: Input[], nextOffset: number, identities?: Actor[]): void;
   offset(): number;
   job(id: number): Job;
   nextJob(now: number): Job | null;
@@ -95,8 +95,14 @@ export function openStore(path: string): Store {
     if (!row) throw new Error('Unknown repository choice');
     return row;
   };
+  const blockAlias = (id: string, configuredUsername: string): void => {
+    db.query('INSERT OR IGNORE INTO blocked_aliases (id, username) VALUES (?, ?)').run(id, configuredUsername);
+  };
   return {
-    ingest: db.transaction((inputs: Input[], nextOffset: number): void => {
+    ingest: db.transaction((inputs: Input[], nextOffset: number, identities: Actor[] = []): void => {
+      for (const actor of identities) {
+        if (actor.username?.replace(/^@/, '').toLowerCase() !== actor.configuredUsername) blockAlias(actor.id, actor.configuredUsername);
+      }
       for (const input of inputs) db.query('INSERT OR IGNORE INTO jobs (id, input) VALUES (?, ?)').run(input.updateId, JSON.stringify(input));
       db.query('UPDATE cursor SET offset = MAX(offset, ?) WHERE id = 1').run(nextOffset);
     }).immediate,
@@ -150,9 +156,7 @@ export function openStore(path: string): Store {
       checkpoint(choice.job_id, { selectedRepo: repos[repoIndex]!, phase: 'ready' });
       return choice.job_id;
     }).immediate,
-    blockAlias(id, configuredUsername) {
-      db.query('INSERT OR IGNORE INTO blocked_aliases (id, username) VALUES (?, ?)').run(id, configuredUsername);
-    },
+    blockAlias,
     isAliasBlocked: (id, configuredUsername) => db.query('SELECT 1 FROM blocked_aliases WHERE id = ? AND username = ?').get(id, configuredUsername) !== null,
     recover: db.transaction((): void => {
       const interrupted = db.query<Row, []>("SELECT * FROM jobs WHERE phase IN ('creating', 'mutating')").all();
