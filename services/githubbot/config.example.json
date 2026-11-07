@@ -1,0 +1,15 @@
+{
+  "chatId": "-1001",
+  "notificationBotIds": ["900"],
+  "repositories": [
+    { "name": "backend", "defaultPrefix": "Backend.", "prefixes": ["Backend."] },
+    { "name": "frontend", "defaultPrefix": "Frontend.", "prefixes": ["Frontend.", "BFF."] },
+    { "name": "figma", "defaultPrefix": "Figma.", "prefixes": ["Figma."] }
+  ],
+  "topics": [
+    { "threadId": 11, "repository": "backend" },
+    { "threadId": 12, "repository": "frontend" },
+    { "threadId": 13, "repository": "figma" }
+  ],
+  "users": [{ "telegramId": "101", "username": "alice", "githubLogin": "octo" }]
+}

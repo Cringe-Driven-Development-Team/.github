@@ -59,6 +59,8 @@ Monitoring переключается независимо: repository var `COUR
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
 | `.github/workflows/reminders.yml` | в 00:01 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува; в 00:01, 15:00 и 20:00 сообщает о сбоях самих уведомлений и о новых репозиториях организации |
 | `services/webhook-alerts/` | работающий sender GitHub и Apidog MR → постоянная очередь SQLite → Telegram |
+| `services/githubbot/` | GitHubBot: Telegram-команды для Issues и Scrumban; [запуск и приёмка](services/githubbot/README.md) |
+| `.github/workflows/githubbot-image.yml` | тестирует GitHubBot и публикует `ghcr.io/cringe-driven-development-team/githubbot:sha-<full SHA>` после push в main |
 | `.github/workflows/webhook-alerts-image.yml` | после push в main публикует GHCR образ с полным SHA коммита |
 | `scripts/reminders.sh` | логика напоминаний и служебных проверок; здесь же список репозиториев |
 | `scripts/sprint.sh` | смена спринта: перенос незакрытых задач и сообщение в чат |
@@ -200,6 +202,11 @@ Job `close` в `add-to-project.yml` сохраняется: после мерж�
    (cd services/webhook-alerts && bun install --frozen-lockfile && bun test && bunx tsc --noEmit)
    docker build -t webhook-alerts:test services/webhook-alerts
    bash tests/webhook-alerts-docker.sh webhook-alerts:test
+   bun install --frozen-lockfile --cwd services/githubbot
+   bun test services/githubbot/tests tests/githubbot-workflows.test.ts
+   bun run --cwd services/githubbot typecheck
+   docker build -f services/githubbot/Dockerfile -t githubbot:test .
+   bash tests/githubbot-docker.sh githubbot:test
    bash tests/telegram.sh
    bash tests/reminders.sh
    bash tests/close.sh

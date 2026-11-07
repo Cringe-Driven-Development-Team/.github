@@ -1,0 +1,10 @@
+**
+!services/
+!services/githubbot/
+!services/githubbot/package.json
+!services/githubbot/bun.lock
+!services/githubbot/src/
+!services/githubbot/src/*.ts
+!services/webhook-alerts/
+!services/webhook-alerts/src/
+!services/webhook-alerts/src/format.ts

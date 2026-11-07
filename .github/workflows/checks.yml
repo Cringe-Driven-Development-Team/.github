@@ -9,6 +9,23 @@ permissions:
   contents: read
 
 jobs:
+  githubbot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Install GitHubBot dependencies
+        run: bun install --frozen-lockfile --cwd services/githubbot
+      - name: Test and typecheck GitHubBot
+        run: |
+          bun test services/githubbot/tests tests/githubbot-workflows.test.ts
+          bun run --cwd services/githubbot typecheck
+      - name: Build and smoke test GitHubBot image
+        run: |
+          docker build -f services/githubbot/Dockerfile -t githubbot:test .
+          bash tests/githubbot-docker.sh githubbot:test
   webhook-alerts:
     runs-on: ubuntu-latest
     steps:
