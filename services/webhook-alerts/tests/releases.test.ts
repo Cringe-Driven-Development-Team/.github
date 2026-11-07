@@ -473,3 +473,12 @@ test('rollback_result_keeps_existing_details', async () => {
   expect(message!.html).toContain('Образ BFF');
   expect(message!.html).toContain('sha256:');
 });
+
+for (const event of ['queue', 'result']) test(`unknown_${event}_initiator_is_escaped_without_mention`, async () => {
+  const f = releaseFixture();
+  f.queue.entry!.enqueuer = '<Unknown>';
+  f.operation.run.actor = '<Unknown>';
+  const [message] = await projectRelease(event === 'queue' ? enqueue() : status(), f.api, config);
+  expect(message!.html).toContain('&lt;Unknown&gt;');
+  expect(message!.html).not.toContain('tg://user?id=');
+});
