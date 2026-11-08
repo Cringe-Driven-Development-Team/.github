@@ -49,7 +49,7 @@ export async function loadRelease(run:PublisherRun,api:Api):Promise<Release> {
   if(release.service!==service || release.publisher_run_id!==run.id || release.publisher_run_attempt!==run.run_attempt || release.source_sha!==run.head_sha)throw Error('Release does not match publisher event');
   return release;
 }
-export async function dispatchAndWait(release:Release,requestId:string,api:Api,clock:Clock):Promise<{run_id:number;html_url:string}> {
+export async function dispatchAndWait(release:Release,requestId:string,api:Api,clock:Clock,onDispatched?:(url:string)=>void):Promise<{run_id:number;html_url:string}> {
   validateRelease(release);
   const prefix=`${release.service}:${release.publisher_run_id}:${release.publisher_run_attempt}:`;
   if(!requestId.startsWith(prefix) || !/^[a-z-]+:[1-9][0-9]*:[1-9][0-9]*:[1-9][0-9]*:[1-9][0-9]*$/.test(requestId))throw Error('Invalid request_id');
@@ -73,6 +73,7 @@ export async function dispatchAndWait(release:Release,requestId:string,api:Api,c
   const id=data.workflow_run_id;
   const url=`https://github.com/${INFRA}/actions/runs/${id}`;
   if(!positive(id) || data.run_url!==`https://api.github.com/repos/${INFRA}/actions/runs/${id}` || data.html_url!==url)throw Error('Dispatch protocol: missing/invalid workflow_run_id or URLs');
+  onDispatched?.(url);
   while(clock.now()<deadline){
     const run=await json(await request(`/repos/${INFRA}/actions/runs/${id}`));
     if(run.id!==id || run.repository?.full_name!==INFRA || run.path!==`.github/workflows/${workflow}` || run.event!=='workflow_dispatch' || run.head_branch!=='main' || run.display_title!==`VPS3 ${requestId}` || run.html_url!==url)throw Error('Unexpected deployment run identity');
@@ -92,7 +93,7 @@ if(import.meta.main){
     const callerId=process.env.GITHUB_RUN_ID, attempt=process.env.GITHUB_RUN_ATTEMPT;
     const requestId=`${release.service}:${release.publisher_run_id}:${release.publisher_run_attempt}:${callerId}:${attempt}`;
     appendFileSync(process.env.GITHUB_STEP_SUMMARY!,`Publisher: https://github.com/${SOURCE}/actions/runs/${release.publisher_run_id}\n\nRequest: \`${requestId}\`\n`);
-    const deployment=await dispatchAndWait(release,requestId,api(process.env.AUXILIARY_DEPLOY_TOKEN!),{now:Date.now,sleep:ms=>Bun.sleep(ms)});
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY!,`\nDeployment: ${deployment.html_url}\n`);
+    await dispatchAndWait(release,requestId,api(process.env.AUXILIARY_DEPLOY_TOKEN!),{now:Date.now,sleep:ms=>Bun.sleep(ms)},
+      url=>appendFileSync(process.env.GITHUB_STEP_SUMMARY!,`\nDeployment: ${url}\n`));
   }catch(error){console.error(error instanceof Error?error.message:'Auxiliary CD failed');process.exitCode=1;}
 }

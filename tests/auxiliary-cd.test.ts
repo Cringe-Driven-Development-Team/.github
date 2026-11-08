@@ -63,3 +63,22 @@ test('poll network error does not redispatch',async()=>{
 test('invalid dispatch response URL fails without polling',async()=>{
  const f=fixture();await expect(dispatchAndWait(release,f.requestId,async()=>Response.json({workflow_run_id:44,run_url:'https://evil/',html_url:f.remote.html_url}),f.clock)).rejects.toThrow(/protocol/);
 });
+
+for(const failure of ['failure','cancelled','auth','network','timeout'])test(`validated deployment URL survives ${failure} in caller summary`,async()=>{
+ const f=fixture();let summary='',posts=0;
+ const api=async(path:string,init?:RequestInit)=>{
+  if(init?.method==='POST'){posts++;return f.api(path,init);}
+  expect(summary).toContain(`Deployment: ${f.remote.html_url}`);
+  if(failure==='auth')return new Response(null,{status:401});
+  if(failure==='network')throw Error('network');
+  return Response.json({...f.remote,status:failure==='timeout'?'queued':'completed',conclusion:failure});
+ };
+ await expect(dispatchAndWait(release,f.requestId,api,f.clock,url=>{summary+=`\nDeployment: ${url}\n`;})).rejects.toThrow();
+ expect(summary).toBe(`\nDeployment: ${f.remote.html_url}\n`);
+ expect(posts).toBe(1);
+});
+test('invalid dispatch URL is never reported to caller summary',async()=>{
+ const f=fixture();let reported=false;
+ await expect(dispatchAndWait(release,f.requestId,async()=>Response.json({workflow_run_id:44,run_url:'https://evil/',html_url:f.remote.html_url}),f.clock,()=>{reported=true;})).rejects.toThrow(/protocol/);
+ expect(reported).toBe(false);
+});
