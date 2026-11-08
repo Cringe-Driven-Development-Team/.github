@@ -73,7 +73,7 @@ Deployment playbook не выполняет bootstrap, firewall/users, Pulumi и
 
 ## Проверка дизайна и источники
 
-Builder-check завершён: существенных открытых вопросов нет. Технические решения выше предложены исполнителем; пользователь подтвердил охват обоих сервисов и независимые выпуски. Дизайн ожидает подтверждения перед планом реализации.
+Builder-check завершён: существенных открытых вопросов нет. Технические решения выше предложены исполнителем; пользователь подтвердил охват обоих сервисов и независимые выпуски. Дизайн подтверждён пользователем 2026-11-08; разрешён переход к плану реализации.
 
 - [GitHub: очередь и concurrency](https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency) — очередь действует в пределах репозитория; по умолчанию новый pending заменяет предыдущий.
 - [GitHub: workflow dispatch](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event) — fine-grained token требует Actions write.
