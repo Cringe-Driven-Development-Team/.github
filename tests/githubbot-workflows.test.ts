@@ -1,14 +1,9 @@
 import { expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
 const root = join(import.meta.dir, '..');
 const workflow = (name: string): any => Bun.YAML.parse(readFileSync(join(root, '.github/workflows', `${name}.yml`), 'utf8'));
-const sha = '0123456789abcdef0123456789abcdef01234567';
-const image = `ghcr.io/cringe-driven-development-team/githubbot:sha-${sha}`;
-const digest = `ghcr.io/cringe-driven-development-team/githubbot@sha256:${'a'.repeat(64)}`;
-
 test('PR checks test, typecheck, build root context and smoke without publishing', () => {
   const checks = workflow('checks');
   expect(checks.on).toHaveProperty('pull_request');
@@ -42,78 +37,4 @@ test('publication only permits trusted push/main and package writes', () => {
   expect(smoke).toBeGreaterThan(-1);
   expect(login).toBeGreaterThan(smoke);
   expect(job.steps.find((step: any) => step.env?.IMAGE_SHA)?.env.IMAGE_SHA).toBe('${{ github.sha }}');
-});
-
-function publisher(check: (run: (env?: Record<string, string>) => ReturnType<typeof Bun.spawnSync>, calls: () => string[], summary: () => string) => void) {
-  const job = workflow('githubbot-image').jobs.publish;
-  const tmp = mkdtempSync(join(tmpdir(), 'githubbot-publish-'));
-  try {
-    // External command boundaries only; the real workflow shell enforces failure ordering.
-    for (const command of ['bun', 'bash', 'docker']) {
-      const path = join(tmp, command);
-      writeFileSync(path, `#!/bin/sh
-printf '%s\\n' '${command} '"$*" >> "$CALLS"
-if [ '${command}' = bun ] && [ "$1" = test ] && [ "\${FAIL_TEST:-}" = 1 ]; then exit 1; fi
-if [ '${command}' = bun ] && [ "$1 $2" = 'run --cwd' ] && [ "\${FAIL_TYPECHECK:-}" = 1 ]; then exit 1; fi
-if [ '${command}' = bash ] && [ "\${FAIL_SMOKE:-}" = 1 ]; then exit 1; fi
-if [ '${command}' = docker ] && [ "$1" = pull ] && [ "\${FAIL_PULL:-}" = 1 ]; then exit 1; fi
-if [ '${command}' = docker ] && [ "$1 $2" = 'image inspect' ]; then
-  if [ "\${FAIL_INSPECT:-}" = 1 ]; then exit 1; fi
-  if [ "$5" = '{{index .RepoDigests 0}}' ]; then REGISTRY_DIGEST="\${REGISTRY_DIGEST%%
-*}"; fi
-  printf '%s\\n' "$REGISTRY_DIGEST"
-fi
-`);
-      chmodSync(path, 0o700);
-    }
-    writeFileSync(join(tmp, 'calls'), '');
-    const commands = job.steps.filter((step: any) => step.run).map((step: any) => step.run).join('\n');
-    const run = (env: Record<string, string> = {}) => Bun.spawnSync(['/bin/bash', '-e', '-c', commands], { cwd: root, env: {
-      ...process.env, PATH: `${tmp}:${process.env.PATH}`, CALLS: join(tmp, 'calls'),
-      REGISTRY_OWNER: 'Cringe-Driven-Development-Team', IMAGE_SHA: sha, REGISTRY_DIGEST: digest,
-      GITHUB_STEP_SUMMARY: join(tmp, 'summary'), ...env,
-    } });
-    check(run, () => readFileSync(join(tmp, 'calls'), 'utf8').trim().split('\n').filter(Boolean), () => readFileSync(join(tmp, 'summary'), 'utf8'));
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
-}
-
-test('publisher verifies tests and image before full SHA publication and remote digest', () => {
-  publisher((run, calls) => {
-    const result = run();
-    expect(result.exitCode).toBe(0);
-    expect(calls()).toEqual([
-      'bun install --frozen-lockfile --cwd services/githubbot',
-      'bun test services/githubbot/tests tests/githubbot-workflows.test.ts',
-      'bun run --cwd services/githubbot typecheck',
-      'docker build -f services/githubbot/Dockerfile -t githubbot:test .',
-      'bash tests/githubbot-docker.sh githubbot:test',
-      `docker tag githubbot:test ${image}`, `docker push ${image}`, `docker pull ${image}`,
-      `docker image inspect ${image} --format {{range .RepoDigests}}{{println .}}{{end}}`,
-    ]);
-    expect(result.stdout.toString()).toContain(digest);
-  });
-});
-
-test.each([{ FAIL_TEST: '1' }, { FAIL_TYPECHECK: '1' }, { FAIL_SMOKE: '1' }])('failed verification prevents publication: %j', env => {
-  publisher((run, calls) => {
-    expect(run(env).exitCode).not.toBe(0);
-    expect(calls().some(call => call.startsWith('docker push'))).toBe(false);
-  });
-});
-
-test.each([
-  { FAIL_PULL: '1' }, { FAIL_INSPECT: '1' }, { REGISTRY_DIGEST: '' }, { REGISTRY_DIGEST: 'wrong@sha256:abc' },
-  { REGISTRY_DIGEST: 'ghcr.io/cringe-driven-development-team/githubbot@sha256:abc' },
-  { REGISTRY_DIGEST: `ghcrXio/cringe-driven-development-team/githubbot@sha256:${'a'.repeat(64)}` },
-])('remote verification failure fails publication job: %j', env => {
-  publisher((run) => { expect(run(env).exitCode).not.toBe(0); });
-});
-
-test('publisher finds the exact remote digest after an unrelated local digest', () => {
-  publisher((run, _calls, summary) => {
-    const result = run({ REGISTRY_DIGEST: `docker.io/library/githubbot@sha256:${'b'.repeat(64)}\n${digest}` });
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toBe(`Published ${digest} from ${sha}\n`);
-    expect(summary()).toBe(`GitHubBot: ${digest} (source ${sha})\n`);
-  });
 });

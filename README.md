@@ -262,3 +262,35 @@ FRONTEND_DIR=/absolute/frontend-checkout bun test tests/board-status-integration
 Тест использует реальные release-функции и временный Git-граф с поддельным HTTP.
 Он проверяет контракт групп очереди; исполнение самой очереди GitHub проверяется
 при подключении. Без `FRONTEND_DIR` этот отдельный тест завершается ошибкой.
+
+### Автоматическая выкладка VPS3
+
+`Auxiliary CD` запускается после успешного `GitHubBot image` или `Webhook alerts image`
+из main этого репозитория. Каждый publisher выкатывает только свой сервис. Caller
+читает только data artifact `release-<service>-<publisher_run_attempt>` с единственным
+`release.json`, проверяет его против события publisher и вызывает
+`Cringe-Driven-Development-Team/infra/auxiliary-deploy.yml` на main. Код caller всегда
+берётся из trusted main; содержимое artifact не исполняется. Ubuntu runner должен
+иметь Bun и системный Python 3 (`zipfile`); установка дополнительных пакетов не нужна.
+
+В source repository нужен Actions secret `AUXILIARY_DEPLOY_TOKEN`: отдельный
+fine-grained PAT с доступом **только к infra**, permissions **Actions: write** и
+обязательным **Metadata: read**. Runtime PAT GitHubBot для этого не используется.
+Владелец секрета отслеживает срок действия PAT и обновляет secret до expiration;
+401/403 делают caller красным. Source `GITHUB_TOKEN` с contents/actions:read
+используется только для publisher artifact, в infra не передаётся.
+
+Dispatch использует API `2026-03-10`: HTTP 200 должен вернуть `workflow_run_id` и
+`run_url`. Caller проверяет identity полученного run и ждёт именно его до 120 минут
+с polling раз в 15 секунд; success означает успешную фактическую выкладку infra.
+Любая другая terminal conclusion, cancellation/queue overflow, ошибка сети или
+протокола делают caller красным. HTTP 204 без run ID — ошибка, поиска похожих run
+нет. При rate limit учитывается Retry-After в пределах общего deadline; неизвестный
+результат dispatch не вызывает автоматическую повторную отправку.
+
+Ручной retry: откройте упавший **Auxiliary CD** и выберите **Re-run failed jobs**.
+Caller снова прочитает сохранённый artifact того же publisher и создаст новый
+request_id с caller run attempt. Artifact должен ещё храниться; после expiration
+нужна новая публикация. Это может повторно применить уже выполненную выкладку,
+если предыдущий caller потерял ответ. Summary содержит ссылки publisher/deployment;
+подробности отказа доступны в caller log и в соответствующем infra run.
