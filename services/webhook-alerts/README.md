@@ -854,9 +854,11 @@ exactly-once доставка не гарантируется; проверен�
 
 Новый потребитель ограничен `Cringe-Driven-Development-Team/frontend/main`.
 `pull_request.enqueued/dequeued` формируют сообщения о текущей merge queue;
-`deployment_status` окружений `release-artifacts` и `production` — сообщения о
-готовности выпуска, начале и результате выкатки/отката. `workflow_job.completed`
+`release.published` — о готовности выпуска; `deployment_status` окружения
+`production` — о начале и результате выкатки/отката. `workflow_job.completed`
 покрывает ошибку до записи операции; результат и fallback имеют один ключ попытки.
+Каталог `release-artifacts` в штатном пути не читается; его `deployment_status`
+игнорируются без запросов к API.
 `dequeued` с причиной MERGE не создаёт тревогу. Board остаётся в Actions.
 
 Сообщение «PR поставлен в очередь» содержит связанные задачи из
@@ -888,7 +890,7 @@ release-activation, поэтому новый sender выключен незав
 После подготовки producer и остановки прежних отправок оператор запускает в
 контейнере `bun run src/cli.ts release-activate <UTC-ISO>` с фактической UTC-границей.
 Она сохраняется и повторно не изменяется. Подписка org hook дополнительно включает
-`deployment_status` и `workflow_job`, остальные события сохраняются.
+`deployment_status`, `workflow_job` и Releases (`release`), остальные события сохраняются.
 
 Готовность проверяется по конкретному Actions run и `notification.run_attempt`;
 завершения всего workflow ждать не нужно. Payload producer содержит
@@ -911,3 +913,60 @@ queue/start/ready пропускаются. Telegram timeout/5xx или сбой
 дедупликация сохраняются. Для uncertain после ручной проверки доступен прежний
 `retry <outbox-id>`; он не создаёт нового source event. Не сбрасывайте всю очередь.
 Перед переключением и ручными исправлениями используйте существующий snapshot.
+
+### Каталог GitHub Releases (frontend#176)
+
+Готовность выпуска — только опубликованный GitHub Release `release-<40 hex>` в
+`Cringe-Driven-Development-Team/frontend`. Событие `release` с action `published`
+попадает в lane `release-operation` и не задерживает очередь PR и обычные алерты.
+JSON из webhook и Markdown-описание Release доказательством не считаются: сервис
+перечитывает Release через API и проверяет:
+
+- `draft=false`, `prerelease=false`, `immutable=true`, автор `github-actions[bot]`,
+  `html_url` ожидаемого репозитория; фактический commit тега (`/git/ref/tags`,
+  для annotated — `/git/tags`) равен SHA из имени тега;
+- ровно четыре asset `frontend-dist.tar.gz`, `bff-image.tar.gz`, `release.json`,
+  `SHA256SUMS` в состоянии `uploaded`, размер больше 0 и меньше 2 GiB, `digest` GitHub;
+- скачиваются только `release.json` и `SHA256SUMS` (до 64 KiB): redirect на
+  `*.githubusercontent.com` идёт без токена; байты сверяются с digest GitHub,
+  SHA256SUMS — с digest трёх остальных файлов. Архивы не скачиваются;
+- manifest: `sha`, `image_ref` только `ghcr.io/cringe-driven-development-team/bff@sha256:…`,
+  `image_id` = `sha256:<64 hex>`, `assets=releases/<sha>/`; `ci_run`/`ci_run_attempt`
+  — push/main CI этого SHA; `publication_run`/`notification.run_attempt` —
+  push/main CI этого SHA (штатно) или разовый `release-import.yml`
+  (`workflow_dispatch` из main); `notification.report_url` — только
+  `<publication_run>#summary` или `null`.
+
+Нарушение любого пункта — тихий отказ (`untrusted_*`), сбой API — повтор подготовки.
+Опубликованный immutable Release позже не меняется, поэтому неполный выпуск
+диагностируется по его странице и логам `Publish release`, а не повтором доставки.
+
+Ready-карточка: состав PR/задач по `notification.base_sha`, тег для обязательного
+input `release` ручного CD, digest BFF, ссылка на CI публикации, инициатор, кнопки
+«Выкатить» (открывает `cd.yml`, ничего не запускает) и «Релиз и файлы».
+Ключи: ready — по SHA, результат — `repo + publish + publication_run + attempt`.
+Fallback `workflow_job.completed` для `Publish release` ищет Release по SHA и
+засчитывает его, только если `publication_run`/`notification.run_attempt`
+совпадают с попыткой job. Draft attempt 1 и публикация attempt 2 дают разные ключи;
+поздний сбой board после publish ошибкой выпуска не становится.
+
+Production: `deployment_status` проверяется только при `payload.release_id`;
+Release перечитывается и сверяется SHA/`image_ref` с deployment. SHA workflow CD
+может отличаться от target SHA. Старые production без `release_id` остаются
+историческими SHA/digest для проверки ready и не требуют Release.
+
+Переход. Frontend разово импортирует два подтверждённых выпуска через
+`release-import.yml` до переключения consumer. Импортированные Releases
+доступны для проверки выкатки/отката, но ready не создают. После выкладки нового
+образа оператор фиксирует границу нового контракта:
+
+```sh
+docker exec hooks bun run src/cli.ts release-contract <UTC-ISO>
+```
+
+До записи границы `release.published` ready не рассылает. Releases с
+`published_at` раньше границы пропускаются; граница неизменяема, дедупликация
+и outbox не очищаются. Пропущенное событие после проверки восстанавливается
+адресно: `release-recover <delivery-id>`. Подписку org hook: Settings → Webhooks →
+hook `hooks.cellestial.ru` → Individual events → добавить Releases, остальные
+отметки сохранить; затем проверить Recent Deliveries `release` → 202.

@@ -34,6 +34,7 @@ export function releaseFixture() {
       url: `https://github.com/${REPO}/actions/runs/10`,
       steps: [{ name: 'Health check', outcome: 'success' }],
     },
+    release: { id: 5, tag: `release-${B}`, url: `https://github.com/${REPO}/releases/tag/release-${B}`, imported: false },
   };
   const report: ChangeReport = {
     baseSha: A,
@@ -79,6 +80,10 @@ export function releaseFixture() {
     },
     operation: async () => {
       state.calls.push('operation');
+      return state.operation;
+    },
+    release: async () => {
+      state.calls.push('release');
       return state.operation;
     },
     changes: async () => {
@@ -127,3 +132,5 @@ export const status = (state = 'success', environment = 'production') =>
     deployment: { id: 1, environment },
     deployment_status: { state },
   });
+export const published = (id = 1) =>
+  delivery('release', { action: 'published', release: { id: 5, tag_name: `release-${B}` } }, id);

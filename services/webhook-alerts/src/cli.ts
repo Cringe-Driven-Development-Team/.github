@@ -10,15 +10,15 @@ export function retry(databasePath: string, id: number, now = Date.now()): boole
 if (import.meta.main) {
   const [command, first, second, ...extra] = Bun.argv.slice(2);
   const databasePath = Bun.env.DATABASE_PATH ?? '/data/queue.sqlite';
-  if (command === 'release-activate' && first && second === undefined) {
+  if ((command === 'release-activate' || command === 'release-contract') && first && second === undefined) {
     try {
       const cutoff=Date.parse(first), topic=Number(Bun.env.TELEGRAM_RELEASES_TOPIC_ID);
       if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(first) || !Number.isSafeInteger(cutoff)
         || cutoff > Date.now() || (new Date(cutoff).toISOString() !== first && new Date(cutoff).toISOString().replace('.000Z','Z') !== first)
         || !Number.isSafeInteger(topic) || topic <= 0 || !Bun.env.GITHUB_API_TOKEN?.trim()) throw new Error();
       const store=openStore(databasePath);
-      try { store.activateReleases(cutoff); } finally { store.close(); }
-    } catch { console.error('Release activation failed: check UTC cutoff, topic, API token and database'); process.exitCode=1; }
+      try { if (command === 'release-activate') store.activateReleases(cutoff); else store.activateReleaseContract(cutoff); } finally { store.close(); }
+    } catch { console.error(`${command === 'release-activate' ? 'Release activation' : 'Release contract'} failed: check UTC cutoff, topic, API token and database`); process.exitCode=1; }
   } else if (command === 'release-recover' && first && /^[1-9]\d*$/.test(first) && Number.isSafeInteger(Number(first)) && second === undefined) {
     try {
       const store=openStore(databasePath);
@@ -41,7 +41,7 @@ if (import.meta.main) {
       process.exitCode = 1;
     }
   } else {
-    console.error('Usage: bun run src/cli.ts retry <failed-outbox-id> | snapshot --output <snapshot-path> | release-activate <UTC-ISO> | release-recover <delivery-id>');
+    console.error('Usage: bun run src/cli.ts retry <failed-outbox-id> | snapshot --output <snapshot-path> | release-activate <UTC-ISO> | release-contract <UTC-ISO> | release-recover <delivery-id>');
     process.exitCode = 1;
   }
 }

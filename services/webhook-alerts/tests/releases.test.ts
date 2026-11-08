@@ -2,7 +2,8 @@ import { expect, test } from 'bun:test';
 import { projectRelease, checkReleaseNotice } from '../src/releases';
 import { openStore } from '../src/store';
 import { deliverOnce } from '../src/worker';
-import { releaseFixture, enqueue, status, delivery, REPO, A, B, C } from './helpers/release';
+import { GithubApiError } from '../src/github-api';
+import { releaseFixture, enqueue, status, delivery, published, REPO, A, B, C } from './helpers/release';
 const config = { topic: 88, siteUrl: 'https://cellestial.ru', userMap: {} };
 test('enqueue_uses_only_current_pr_and_rechecks_before_send', async () => {
   const f = releaseFixture(),
@@ -57,12 +58,64 @@ test('ready_uses_success_record_while_ci_running', async () => {
   f.operation.kind = 'publish';
   f.operation.run.workflow = 'CI';
   f.operation.run.event = 'push';
-  const [m] = await projectRelease(status('success', 'release-artifacts'), f.api, config);
+  const [m] = await projectRelease(published(), f.api, config);
   expect(m!.html).toContain('ждёт выкатки');
-  expect(m!.html).toContain(`Релиз <code>${B}</code>`);
+  expect(m!.html).toContain(`<code>release-${B}</code>`);
   expect(m!.html).toContain('Образ BFF');
   expect(m!.html).toContain('sha256:');
-  expect(m!.keyboard!.flat().some((b) => b.text === 'Выкатить')).toBe(true);
+  expect(m!.html).toContain('Запустил: YarikMix');
+  const buttons = m!.keyboard!.flat();
+  expect(buttons.find((b) => b.text === 'Выкатить')?.url).toBe(`https://github.com/${REPO}/actions/workflows/cd.yml`);
+  expect(buttons.find((b) => b.text === 'Релиз и файлы')?.url).toBe(`https://github.com/${REPO}/releases/tag/release-${B}`);
+  expect(f.calls).not.toContain('operation');
+});
+test('release_events_other_than_published_untrusted_imported_and_pre_contract_are_silent', async () => {
+  const f = releaseFixture();
+  f.operation.kind = 'publish';
+  for (const action of ['created', 'edited', 'prereleased', 'released'])
+    expect(await projectRelease(delivery('release', { action, release: { id: 5 } }), f.api, config)).toEqual([]);
+  expect(f.calls).toEqual([]);
+  expect(await projectRelease(published(), f.api, { ...config, releaseCutoffMs: Date.parse('2026-11-01T20:00:01Z') })).toEqual([]);
+  const recovered = { ...published(), releaseRecovery: true };
+  expect(await projectRelease(recovered, f.api, { ...config, releaseCutoffMs: Date.parse('2026-11-01T20:00:01Z') })).toHaveLength(1);
+  f.operation.release!.imported = true;
+  expect(await projectRelease(published(), f.api, config)).toEqual([]);
+  f.api.release = async () => {
+    throw new GithubApiError('untrusted_release_assets');
+  };
+  expect(await projectRelease(published(), f.api, config)).toEqual([]);
+  f.api.release = async () => {
+    throw new GithubApiError('http_502');
+  };
+  await expect(projectRelease(published(), f.api, config)).rejects.toThrow('http_502');
+});
+test('legacy_release_artifacts_status_is_ignored_without_api_calls', async () => {
+  const f = releaseFixture();
+  expect(await projectRelease(status('success', 'release-artifacts'), f.api, config)).toEqual([]);
+  expect(f.calls).toEqual([]);
+});
+test('draft_attempt_one_error_and_attempt_two_publication_do_not_mix', async () => {
+  const f = releaseFixture(),
+    s = openStore(':memory:');
+  f.operation.kind = 'publish';
+  Object.assign(f.operation.run, { workflow: 'CI', event: 'push', attempt: 2 });
+  f.operation.notification.run_attempt = 2;
+  Object.assign(f.job, { name: 'Publish release', run: { ...f.operation.run, attempt: 1 }, failedStep: 'Upload assets' });
+  try {
+    s.activateReleases(500);
+    for (const d of [
+      delivery('workflow_job', { action: 'completed', workflow_job: { id: 100, name: 'Publish release', conclusion: 'failure' } }, 2),
+      published(3),
+    ]) {
+      s.accept({ source: d.source, deliveryId: d.deliveryId, event: d.event, raw: d.raw, receivedAt: 1000 });
+      s.prepare(s.claimUnprepared(1000, 100, 'release-operation')[0]!.id, await projectRelease(d, f.api, config));
+    }
+    const messages = s.claimDue(1000, 100);
+    expect(messages.map((m) => m.release!.key).sort()).toEqual([`ready:${REPO}:${B}`, `result:${REPO}:publish:10:1`]);
+    expect(messages.find((m) => m.release!.kind === 'ready')!.release).toMatchObject({ operationKey: `result:${REPO}:publish:10:2` });
+  } finally {
+    s.close();
+  }
 });
 for (const readyFirst of [false, true])
   test(`publication_ready_and_lagging_job_fallback_have_one_result_ready_first_${readyFirst}`, async () => {
@@ -80,7 +133,7 @@ for (const readyFirst of [false, true])
       },
       2,
     );
-    const ready = status('success', 'release-artifacts');
+    const ready = published();
     try {
       s.activateReleases(500);
       for (const d of readyFirst ? [ready, job] : [job, ready]) {
@@ -166,7 +219,7 @@ test('ready_replaces_fallback_waiting_for_guard_without_sending_its_old_content'
       },
     });
     await checking;
-    const ready = status('success', 'release-artifacts');
+    const ready = published();
     s.accept({
       source: ready.source,
       deliveryId: ready.deliveryId,
@@ -182,7 +235,7 @@ test('ready_replaces_fallback_waiting_for_guard_without_sending_its_old_content'
     await sending;
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain('ждёт выкатки');
-    const repeat = status('success', 'release-artifacts');
+    const repeat = published();
     f.operation.run.id = 11;
     s.accept({
       source: repeat.source,
