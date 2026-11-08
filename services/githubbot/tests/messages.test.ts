@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import * as messages from '../src/messages';
 import { issueCard, repositoryPrompt, sprintMessages } from '../src/messages';
 import type { Board, ProjectItem } from '../src/projects';
 import { bot, config, message } from './fixtures';
@@ -85,4 +86,19 @@ test('splits a single oversized row by code point without losing text or links',
     expect(html).toContain(`<a href="${row.issue.ref.url}">backend#1</a>`);
     expect(html).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
   }
+});
+
+test('help renders only the nine approved command lines without buttons or links', () => {
+  expect(messages).toHaveProperty('helpMessage');
+  const outgoing = messages.helpMessage();
+  expect(outgoing).toEqual({ html: `<code>/help</code> — список команд.
+<code>/issue</code> — создать задачу в Backlog.
+<code>/close</code> — закрыть задачу.
+<code>/assign @username</code> — добавить исполнителя.
+<code>/assignme</code> — назначить себя.
+<code>/unassign @username</code> — снять исполнителя.
+<code>/tosprint</code> — перенести задачу в текущий спринт.
+<code>/sprint</code> — показать спринт команды.
+<code>/sprint @username</code> — показать задачи человека в текущем спринте.` });
+  expect(outgoing.html.length).toBeLessThan(4096);
 });

@@ -60,3 +60,15 @@ export function sprintMessages(board: Board, iteration: Iteration, users: UserCo
   }
   return messages;
 }
+
+export function helpMessage(): Outgoing {
+  return { html: `<code>/help</code> — список команд.
+<code>/issue</code> — создать задачу в Backlog.
+<code>/close</code> — закрыть задачу.
+<code>/assign @username</code> — добавить исполнителя.
+<code>/assignme</code> — назначить себя.
+<code>/unassign @username</code> — снять исполнителя.
+<code>/tosprint</code> — перенести задачу в текущий спринт.
+<code>/sprint</code> — показать спринт команды.
+<code>/sprint @username</code> — показать задачи человека в текущем спринте.` };
+}

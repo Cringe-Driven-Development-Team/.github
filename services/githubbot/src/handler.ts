@@ -1,7 +1,7 @@
 import { normalizeTitle, parseIssueUrl, type Context } from './commands';
 import type { Config } from './config';
 import { ApiError, ShutdownError, type Github } from './github';
-import { issueCard, repositoryPrompt, sprintMessages, type Outgoing } from './messages';
+import { helpMessage, issueCard, repositoryPrompt, sprintMessages, type Outgoing } from './messages';
 import { currentIteration, type Projects } from './projects';
 import type { Job, Store } from './store';
 import { escapeHtml } from '../../webhook-alerts/src/format';
@@ -94,15 +94,19 @@ export async function handleJob(saved: Job, deps: HandlerDeps): Promise<void> {
   }
 
   const { command } = input;
-  const targetUser = command.name !== 'issue' && command.username !== undefined
+  const targetUser = 'username' in command && command.username !== undefined
     ? config.users.find(user => user.username === command.username) : undefined;
-  if (command.name !== 'issue' && command.username !== undefined
+  if ('username' in command && command.username !== undefined
     && (!targetUser || store.isAliasBlocked(targetUser.telegramId, targetUser.username))) {
     const html = 'Этот Telegram username не настроен или устарел. Обратитесь к владельцу конфигурации.';
     if (job.output?.[0]?.html !== html) hint(html);
     await deliver(); return;
   }
   if (job.phase === 'reply_pending') { await deliver(); return; }
+  if (command.name === 'help') {
+    output([helpMessage()]);
+    await deliver(); return;
+  }
   if (job.phase === 'issue_created' || (job.phase === 'creating' && job.issue)) {
     if (job.issue) output([issueCard(job.issue, partialResult)]);
     else hint('Ошибка: сохранённая задача не найдена. Проверьте GitHub вручную.');
