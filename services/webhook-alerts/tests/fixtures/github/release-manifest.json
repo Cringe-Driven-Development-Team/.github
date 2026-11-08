@@ -1,0 +1,14 @@
+{
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "image_ref": "ghcr.io/cringe-driven-development-team/bff@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "image_id": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "assets": "releases/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
+  "ci_run": "https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/10",
+  "ci_run_attempt": 1,
+  "publication_run": "https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/10",
+  "notification": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "report_url": "https://github.com/Cringe-Driven-Development-Team/frontend/actions/runs/10#summary",
+    "run_attempt": 1
+  }
+}

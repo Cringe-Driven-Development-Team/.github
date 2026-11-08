@@ -9,6 +9,9 @@ import { startService } from "../src/main";
 import { createSnapshot } from "../src/snapshot";
 import { openStore } from "../src/store";
 import { A, B, C, REPO } from "./helpers/release";
+import { createHash } from "node:crypto";
+import releaseJson from "./fixtures/github/release-published.json";
+import manifestJson from "./fixtures/github/release-manifest.json";
 
 test("HTTP release flow suppresses stale retries, deduplicates results and preserves uncertain delivery on reopen", async () => {
   const directory = mkdtempSync(join(tmpdir(), "release-http-"));
@@ -16,28 +19,47 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
   const initial = openStore(path);
   const cutoff = Date.now() - 60_000;
   initial.activateReleases(cutoff);
+  initial.activateReleaseContract(cutoff);
   initial.close();
   const timestamp = new Date().toISOString();
   const image = `ghcr.io/cringe-driven-development-team/bff@sha256:${"d".repeat(64)}`;
-  function deployment(id: number, runId: number, publish = false) {
+  function deployment(id: number, runId: number) {
     const run = `https://github.com/${REPO}/actions/runs/${runId}`;
     return {
       id,
       sha: B,
       creator: { login: "github-actions[bot]" },
       created_at: timestamp,
-      environment: publish ? "release-artifacts" : "production",
-      task: publish ? "publish" : "deploy",
+      environment: "production",
+      task: "deploy",
       payload: {
         image_ref: image,
         assets: `releases/${B}/`,
-        ...(publish ? { ci_run: run } : { run, action: "deploy" }),
+        run,
+        action: "deploy",
+        release_id: 5,
         notification: { base_sha: A, report_url: `${run}#summary`, run_attempt: 1 },
       },
     };
   }
-  const artifact = deployment(2, 10, true),
-    production = deployment(1, 20),
+  const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const manifestBytes = new TextEncoder().encode(JSON.stringify(manifestJson)),
+    sumsBytes = new TextEncoder().encode(
+      [
+        ...releaseJson.assets.filter((a) => a.digest).map((a) => `${a.digest!.slice(7)}  ${a.name}`),
+        `${sha256(manifestBytes)}  release.json`,
+      ].join("\n") + "\n",
+    ),
+    texts = new Map([["/53", manifestBytes], ["/54", sumsBytes]]);
+  const release = {
+    ...releaseJson,
+    published_at: timestamp,
+    assets: releaseJson.assets.map((a) => {
+      const bytes = texts.get(`/${a.id}`);
+      return bytes ? { ...a, size: bytes.length, digest: `sha256:${sha256(bytes)}` } : a;
+    }),
+  };
+  const production = deployment(1, 20),
     failed = deployment(3, 30);
   let merged = false,
     productionVisible = false,
@@ -94,23 +116,29 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
             };
         return Response.json({ data: { repository: { pullRequest: pr } } });
       }
+      if (url.searchParams.get("environment") === "release-artifacts")
+        return new Response("legacy catalog must not be read", { status: 500 });
       if (p === "/deployments")
-        return Response.json(
-          url.searchParams.get("environment") === "release-artifacts"
-            ? [artifact]
-            : [...(failedVisible ? [failed] : []), ...(productionVisible ? [production] : [])],
-        );
+        return Response.json([...(failedVisible ? [failed] : []), ...(productionVisible ? [production] : [])]);
+      if (p === "/releases/5") return Response.json(release);
+      if (p === `/git/ref/tags/release-${B}`) return Response.json({ object: { type: "commit", sha: B } });
+      const asset = /^\/releases\/assets\/(\d+)$/.exec(p);
+      if (asset)
+        return new Response(null, {
+          status: 302,
+          headers: { location: `https://release-assets.githubusercontent.com/${asset[1]}` },
+        });
+      if (texts.has(p)) return new Response(texts.get(p)!);
       const status = /^\/deployments\/(\d+)\/statuses$/.exec(p);
       if (status)
         return Response.json([
           {
             id: 1,
-            state: status[1] === "2" ? "success" : status[1] === "3" ? "failure" : productionState,
+            state: status[1] === "3" ? "failure" : productionState,
             created_at: timestamp,
           },
         ]);
       if (p === "/deployments/1") return Response.json(production);
-      if (p === "/deployments/2") return Response.json(artifact);
       if (p === "/deployments/3") return Response.json(failed);
       if (p.startsWith("/actions/workflows/"))
         return Response.json({ id: p.endsWith("ci.yml") ? 100 : 101 });
@@ -161,7 +189,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
   });
   const fetcher = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(String(input));
-    if (!["api.github.com", "api.telegram.org", "api.apidog.com"].includes(url.hostname))
+    if (!["api.github.com", "api.telegram.org", "api.apidog.com", "release-assets.githubusercontent.com"].includes(url.hostname))
       throw new Error("Unexpected test origin");
     return fetch(new URL(url.pathname + url.search, upstream.url), init);
   }) as typeof fetch;
@@ -209,7 +237,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
   }
   const status = (id: number, state: string) => ({
     action: "created",
-    deployment: { id, environment: id === 2 ? "release-artifacts" : "production" },
+    deployment: { id, environment: "production" },
     deployment_status: { state },
   });
   try {
@@ -230,9 +258,15 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
       () => !!db.query("SELECT 1 FROM outbox WHERE error_code = 'release_skipped'").get(),
     );
     expect(accepted).toHaveLength(0);
-    expect((await post("ready", "deployment_status", status(2, "success"))).status).toBe(202);
+    expect(
+      (await post("legacy-ready", "deployment_status", { ...status(2, "success"), deployment: { id: 2, environment: "release-artifacts" } })).status,
+    ).toBe(202);
+    expect((await post("ready", "release", { action: "published", release: { id: 5 } })).status).toBe(202);
     await waitFor(() => accepted.length === 1);
     expect(String(accepted[0]!.text)).toContain("Human readable PR");
+    expect(String(accepted[0]!.text)).toContain(`<code>release-${B}</code>`);
+    expect(JSON.stringify(accepted[0]!.reply_markup)).toContain(`https://github.com/${REPO}/releases/tag/release-${B}`);
+    expect((await post("ready-duplicate", "release", { action: "published", release: { id: 5 } })).status).toBe(202);
     productionVisible = true;
     expect((await post("start", "deployment_status", status(1, "in_progress"))).status).toBe(202);
     await waitFor(() => accepted.length === 2);

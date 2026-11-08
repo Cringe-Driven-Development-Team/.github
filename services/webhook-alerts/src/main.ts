@@ -26,7 +26,7 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
   const worker = config.sendEnabled ? startWorker({
     store,
     ...(config.releasesTopic===undefined?{}:{
-      releaseProject:(delivery:import('./store').Delivery)=>projectRelease(delivery,releaseApi,{topic:config.releasesTopic!,siteUrl:'https://cellestial.ru',userMap:config.userMap,cutoffMs:store.releaseActivation()??Infinity}),
+      releaseProject:(delivery:import('./store').Delivery)=>projectRelease(delivery,releaseApi,{topic:config.releasesTopic!,siteUrl:'https://cellestial.ru',userMap:config.userMap,cutoffMs:store.releaseActivation()??Infinity,releaseCutoffMs:store.releaseContract()??Infinity}),
       beforeReleaseSend:(notice:import('./store').ReleaseNotice)=>checkReleaseNotice(notice,releaseApi),
     }),
     project: createProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {

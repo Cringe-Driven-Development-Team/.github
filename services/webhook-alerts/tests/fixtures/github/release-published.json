@@ -1,0 +1,20 @@
+{
+  "id": 5,
+  "tag_name": "release-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "target_commitish": "main",
+  "name": "Frontend bbbbbbb",
+  "html_url": "https://github.com/Cringe-Driven-Development-Team/frontend/releases/tag/release-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "draft": false,
+  "prerelease": false,
+  "immutable": true,
+  "author": { "login": "github-actions[bot]" },
+  "created_at": "2026-11-01T19:58:00Z",
+  "published_at": "2026-11-01T20:00:00Z",
+  "body": "Editable Markdown is not evidence",
+  "assets": [
+    { "id": 51, "name": "frontend-dist.tar.gz", "state": "uploaded", "size": 1048576, "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
+    { "id": 52, "name": "bff-image.tar.gz", "state": "uploaded", "size": 52428800, "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+    { "id": 53, "name": "release.json", "state": "uploaded" },
+    { "id": 54, "name": "SHA256SUMS", "state": "uploaded" }
+  ]
+}
