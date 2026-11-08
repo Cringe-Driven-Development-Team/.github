@@ -45,7 +45,14 @@ jobs:
           docker tag githubbot:test "$image"
           docker push "$image"
           docker pull "$image"
-          digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
+          repo_digests=$(docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}')
+          digest=''
+          while IFS= read -r candidate; do
+            if [[ "$candidate" == "$repository"@sha256:* ]]; then
+              digest="$candidate"
+              break
+            fi
+          done <<< "$repo_digests"
           [[ "$digest" == "$repository"@sha256:* ]]
           [[ "${digest#"$repository"@sha256:}" =~ ^[0-9a-f]{64}$ ]]
           echo "Published $digest from $IMAGE_SHA"
