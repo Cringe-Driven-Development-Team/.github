@@ -132,7 +132,11 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, obs
     if (args.length) fail('Формат: /sprint [@telegram_username]');
     return { ...base, kind: 'command', command: { name, ...(username === undefined ? {} : { username }) } };
   }
-  if (args.length > 1 || (args.length && msg.reply_to_message !== undefined) || (!args.length && msg.reply_to_message === undefined)) fail('Выберите один способ: ответ на карточку или полная ссылка на issue.');
+  const reply = object(msg.reply_to_message);
+  const isTopicStarter = msg.is_topic_message === true && context.threadId !== undefined
+    && reply.message_id === context.threadId && telegramId(object(reply.chat).id) === context.chatId;
+  const hasReply = msg.reply_to_message !== undefined && !isTopicStarter;
+  if (args.length > 1 || (args.length && hasReply) || (!args.length && !hasReply)) fail('Выберите один способ: ответ на карточку или полная ссылка на issue.');
   let target: IssueRef;
   try { target = args.length ? parseIssueUrl(args[0]!, config) : cardTarget(msg.reply_to_message, context, config, bot); }
   catch (error) { fail(error instanceof Error ? error.message : 'Не удалось выбрать задачу.'); }

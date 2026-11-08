@@ -39,6 +39,26 @@ describe.each(['close', 'assign', 'assignme', 'unassign', 'tosprint'])('%s targe
       expect(decodeUpdate(raw, config(), bot)).toMatchObject({ kind: 'command', command: { name, target } });
     }
   });
+  test.each([true, false])('explicit URL resolves with topic starter creation metadata: %s', withCreationMetadata => {
+    const raw = message(`/${name}${args} ${url}`, {
+      message_id: 11, chat: { id: -1001, type: 'supergroup' },
+      ...(withCreationMetadata ? { forum_topic_created: { name: 'Tasks', icon_color: 7322096 } } : {}),
+    }) as { message: Record<string, unknown> };
+    raw.message.is_topic_message = true;
+    expect(decodeUpdate(raw, config(), bot)).toMatchObject({ kind: 'command', command: { name, target } });
+  });
+  test.each(['no URL', 'real reply', 'other topic', 'other chat', 'non-forum'])(
+    'rejects ambiguous or missing forum target: %s', variant => {
+      const root = {
+        message_id: variant === 'other topic' ? 12 : 11,
+        chat: { id: variant === 'other chat' ? -1002 : -1001, type: 'supergroup' },
+        forum_topic_created: { name: 'Tasks', icon_color: 7322096 },
+      };
+      const raw = message(`/${name}${args}${variant === 'no URL' ? '' : ` ${url}`}`,
+        variant === 'real reply' ? card() : root) as { message: Record<string, unknown> };
+      raw.message.is_topic_message = variant !== 'non-forum';
+      expect(() => decodeUpdate(raw, config(), bot)).toThrow(CommandError);
+    });
   test.each(['none', 'both', 'short'])('rejects %s target with contextual CommandError', variant => {
     const raw = variant === 'both' ? message(`/${name}${args} ${url}`, card()) : message(`/${name}${args}${variant === 'short' ? ' #7' : ''}`);
     try { decodeUpdate(raw, config(), bot); throw new Error('expected CommandError'); }
