@@ -136,14 +136,14 @@ function runId(value: unknown): number {
   if (!match) throw new GithubApiError('untrusted_run_url');
   return positive(Number(match[1]));
 }
-function metadata(value: unknown, runUrl: string): Metadata {
+function metadata(value: unknown, run: number): Metadata {
   const n = obj(value),
     result: Metadata = {
       base_sha: n.base_sha === null ? null : sha(n.base_sha),
       report_url: n.report_url === null ? null : str(n.report_url),
       run_attempt: positive(n.run_attempt),
     };
-  if (result.report_url !== null && result.report_url !== `${runUrl}#summary`)
+  if (result.report_url !== null && result.report_url !== `https://github.com/${REPO}/actions/runs/${run}#summary`)
     throw new GithubApiError('untrusted_report_url');
   return result;
 }
@@ -161,8 +161,7 @@ function record(value: unknown): RecordInfo {
     imageRef = str(p.image_ref);
   if (!IMAGE.test(imageRef) || p.assets !== `releases/${target}/`) throw new GithubApiError('untrusted_artifacts');
   const sourceId = runId(p.run),
-    notification =
-      p.notification === undefined ? null : metadata(p.notification, `https://github.com/${REPO}/actions/runs/${sourceId}`);
+    notification = p.notification === undefined ? null : metadata(p.notification, sourceId);
   const createdAt = str(r.created_at);
   if (!Number.isFinite(Date.parse(createdAt))) throw new GithubApiError('invalid_timestamp');
   return { id, kind, sha: target, imageRef, createdAt, runId: sourceId, notification };
@@ -387,7 +386,7 @@ export function createReleaseApi(
       const manifest = obj(JSON.parse(body));
       imageRef = str(manifest.image_ref);
       publication = runId(manifest.publication_run);
-      notification = metadata(manifest.notification, `https://github.com/${REPO}/actions/runs/${publication}`);
+      notification = metadata(manifest.notification, publication);
       ciRun = runId(manifest.ci_run);
       ciAttempt = positive(manifest.ci_run_attempt);
       if (
