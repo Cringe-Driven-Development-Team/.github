@@ -82,3 +82,49 @@ test('invalid dispatch URL is never reported to caller summary',async()=>{
  await expect(dispatchAndWait(release,f.requestId,async()=>Response.json({workflow_run_id:44,run_url:'https://evil/',html_url:f.remote.html_url}),f.clock,()=>{reported=true;})).rejects.toThrow(/protocol/);
  expect(reported).toBe(false);
 });
+
+// Live GETs at 353/738ms had default title; at 1176ms the queued run had its request title.
+test('queued default workflow title becomes request title before success',async()=>{
+ const f=fixture();let polls=0,posts=0,reported='';
+ const states=[
+  {display_title:'Auxiliary deploy',status:'queued',conclusion:null},
+  {display_title:'Auxiliary deploy',status:'queued',conclusion:null},
+  {display_title:f.remote.display_title,status:'queued',conclusion:null},
+  {display_title:f.remote.display_title,status:'completed',conclusion:'success'},
+ ];
+ const api=async(path:string,init?:RequestInit)=>{
+  if(init?.method==='POST'){posts++;return f.api(path,init);}
+  expect(path).toEndWith('/actions/runs/44');
+  return Response.json({...f.remote,...states[polls++]});
+ };
+ expect(await dispatchAndWait(release,f.requestId,api,f.clock,url=>{reported=url;})).toEqual({run_id:44,html_url:f.remote.html_url});
+ expect(posts).toBe(1);expect(polls).toBe(4);expect(f.clock.now()).toBe(45000);expect(reported).toBe(f.remote.html_url);
+});
+for(const patch of [
+ {display_title:'unrelated title'},
+ {repository:{full_name:'evil/repo'}},
+ {path:'wrong'},
+ {id:99},
+ {html_url:'https://evil/'},
+ {event:'push'},
+ {head_branch:'other'},
+ {status:'in_progress'},
+ {status:'completed',conclusion:'success'},
+])test(`queued default title never weakens identity/status checks: ${JSON.stringify(patch)}`,async()=>{
+ const f=fixture();let posts=0,polls=0;
+ const api=async(path:string,init?:RequestInit)=>{
+  if(init?.method==='POST'){posts++;return f.api(path,init);}
+  polls++;return Response.json({...f.remote,display_title:'Auxiliary deploy',status:'queued',conclusion:null,...patch});
+ };
+ await expect(dispatchAndWait(release,f.requestId,api,f.clock)).rejects.toThrow('Unexpected deployment run identity');
+ expect(posts).toBe(1);expect(polls).toBe(1);expect(f.clock.now()).toBe(0);
+});
+test('queued default title that never populates reaches existing deadline',async()=>{
+ const f=fixture();let posts=0,polls=0,reported='';
+ const api=async(path:string,init?:RequestInit)=>{
+  if(init?.method==='POST'){posts++;return f.api(path,init);}
+  polls++;return Response.json({...f.remote,display_title:'Auxiliary deploy',status:'queued',conclusion:null});
+ };
+ await expect(dispatchAndWait(release,f.requestId,api,f.clock,url=>{reported=url;})).rejects.toThrow(/deadline/);
+ expect(posts).toBe(1);expect(polls).toBe(480);expect(f.clock.now()).toBe(7200000);expect(reported).toBe(f.remote.html_url);
+});

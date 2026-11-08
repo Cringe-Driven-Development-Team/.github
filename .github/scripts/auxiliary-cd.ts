@@ -76,7 +76,9 @@ export async function dispatchAndWait(release:Release,requestId:string,api:Api,c
   onDispatched?.(url);
   while(clock.now()<deadline){
     const run=await json(await request(`/repos/${INFRA}/actions/runs/${id}`));
-    if(run.id!==id || run.repository?.full_name!==INFRA || run.path!==`.github/workflows/${workflow}` || run.event!=='workflow_dispatch' || run.head_branch!=='main' || run.display_title!==`VPS3 ${requestId}` || run.html_url!==url)throw Error('Unexpected deployment run identity');
+    if(run.id!==id || run.repository?.full_name!==INFRA || run.path!==`.github/workflows/${workflow}` || run.event!=='workflow_dispatch' || run.head_branch!=='main' || run.html_url!==url)throw Error('Unexpected deployment run identity');
+    // GitHub briefly exposes the default workflow title while a newly dispatched run is queued.
+    if(run.display_title!==`VPS3 ${requestId}` && !(run.status==='queued' && run.display_title==='Auxiliary deploy'))throw Error('Unexpected deployment run identity');
     if(run.status==='completed'){if(run.conclusion!=='success')throw Error(`Deployment ${url} concluded ${run.conclusion}`);return {run_id:id,html_url:url};}
     await clock.sleep(Math.min(15000,deadline-clock.now()));
   }throw Error(`Deployment deadline exceeded: ${url}`);
