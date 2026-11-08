@@ -1,3 +1,4 @@
+import type { ReleaseDecision } from './releases';
 import type { ApidogApi } from './apidog-api';
 import type { ApidogMergeConfig } from './apidog-merge';
 import { setTimeout } from 'node:timers/promises';
@@ -18,7 +19,7 @@ interface WorkerDeps {
   project: Projector;
   send: (message: DueMessage) => Promise<SendResult>;
   releaseProject?: Projector;
-  beforeReleaseSend?: (notice:ReleaseNotice)=>Promise<'send'|'skip'|'retry'>;
+  beforeReleaseSend?: (notice:ReleaseNotice)=>Promise<ReleaseDecision>;
   serializeSend?: (task: () => Promise<void>) => Promise<void>;
 }
 
@@ -87,11 +88,17 @@ export async function deliverOnce({
     count++;
     const currentNotice = async (): Promise<boolean> => {
       if (!message.release || !beforeReleaseSend) return true;
-      let guard: 'send' | 'skip' | 'retry';
+      let guard: ReleaseDecision;
       try {
         guard = await beforeReleaseSend(message.release);
       } catch {
         guard = 'retry';
+      }
+      if (typeof guard === 'object') {
+        if (!store.refreshReleaseMessage(message.id, message.leaseUntil, guard.replace)) return false;
+        const card = guard.replace;
+        Object.assign(message, {topic:card.topic,html:card.html,keyboard:card.keyboard,button:card.button,secondaryButton:card.secondaryButton,fallbackHtml:card.fallbackHtml,release:card.release});
+        return true;
       }
       if (guard === 'skip') {
         store.skipRelease(message.id, 'stale');
@@ -135,6 +142,7 @@ export async function deliverOnce({
           outboxId: message.id,
           originType: message.originType,
           originId: message.originId,
+          ...(message.release ? { releaseKey: message.release.key, repository: message.release.repository, releaseKind: message.release.kind, runAttempt: message.release.attempt } : {}),
           attempt: message.attempts,
           result: result.kind === 'retry' && result.ambiguous && message.release ? 'uncertain' : result.kind,
           ...(result.kind === 'sent'

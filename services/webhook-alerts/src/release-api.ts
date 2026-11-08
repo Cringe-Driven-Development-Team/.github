@@ -1,6 +1,5 @@
 import { GithubApiError } from './github-api';
 const REPO = 'Cringe-Driven-Development-Team/frontend';
-const PREFIX = `/repos/${REPO}`;
 type Obj = Record<string, unknown>;
 function obj(value: unknown): Obj {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -118,12 +117,13 @@ interface RecordInfo {
   runId: number;
   notification: Metadata | null;
 }
-function runId(value: unknown): number {
-  const match = new RegExp(`^https://github\\.com/${REPO}/actions/runs/([1-9][0-9]*)$`).exec(str(value));
+function runId(value: unknown, repository = REPO): number {
+  const match = new RegExp(`^https://github\\.com/${repository}/actions/runs/([1-9][0-9]*)$`).exec(str(value));
   if (!match) throw new GithubApiError('untrusted_run_url');
   return positive(Number(match[1]));
 }
-function record(value: unknown): RecordInfo {
+function record(value: unknown, repository = REPO): RecordInfo {
+  const backend = repository.endsWith("/backend");
   const r = obj(value),
     p = obj(r.payload),
     id = positive(r.id),
@@ -132,7 +132,7 @@ function record(value: unknown): RecordInfo {
     task = str(r.task);
   if (obj(r.creator).login !== 'github-actions[bot]') throw new GithubApiError('untrusted_creator');
   const kind =
-    environment === 'release-artifacts' && task === 'publish'
+    !backend && environment === 'release-artifacts' && task === 'publish'
       ? 'publish'
       : environment === 'production' && ['deploy', 'rollback'].includes(task) && p.action === task
         ? (task as 'deploy' | 'rollback')
@@ -140,12 +140,12 @@ function record(value: unknown): RecordInfo {
   if (!kind) throw new GithubApiError('untrusted_operation');
   const imageRef = str(p.image_ref);
   if (
-    !/^ghcr\.io\/cringe-driven-development-team\/bff@sha256:[0-9a-f]{64}$/.test(imageRef) ||
-    p.assets !== `releases/${target}/`
+    !(backend ? /^ghcr\.io\/cringe-driven-development-team\/backend@sha256:[0-9a-f]{64}$/ : /^ghcr\.io\/cringe-driven-development-team\/bff@sha256:[0-9a-f]{64}$/).test(imageRef) ||
+    (backend ? r.ref !== target : p.assets !== `releases/${target}/`)
   )
     throw new GithubApiError('untrusted_artifacts');
-  const sourceId = runId(kind === 'publish' ? p.ci_run : p.run),
-    url = `https://github.com/${REPO}/actions/runs/${sourceId}`;
+  const sourceId = runId(kind === 'publish' ? p.ci_run : p.run, repository),
+    url = `https://github.com/${repository}/actions/runs/${sourceId}`;
   let notification: Metadata | null = null;
   if (p.notification !== undefined) {
     const n = obj(p.notification);
@@ -154,7 +154,7 @@ function record(value: unknown): RecordInfo {
       report_url: n.report_url === null ? null : str(n.report_url),
       run_attempt: positive(n.run_attempt),
     };
-    if (notification.report_url !== null && notification.report_url !== `${url}#summary`)
+    if ((backend || notification.report_url !== null) && notification.report_url !== `${url}#summary`)
       throw new GithubApiError('untrusted_report_url');
   }
   const createdAt = str(r.created_at);
@@ -169,8 +169,11 @@ function outcome(value: unknown): ReleaseStep['outcome'] {
       : 'failure';
 }
 export function createReleaseApi(
-  options: { token?: string; fetch?: typeof fetch; timeoutMs?: number } = {},
+  options: { token?: string; fetch?: typeof fetch; timeoutMs?: number; repository?: string } = {},
 ): ReleaseApi {
+  const REPO = options.repository ?? "Cringe-Driven-Development-Team/frontend";
+  if (!["Cringe-Driven-Development-Team/frontend", "Cringe-Driven-Development-Team/backend"].includes(REPO)) throw new GithubApiError("untrusted_repository");
+  const PREFIX = `/repos/${REPO}`, backend = REPO.endsWith("/backend");
   const fetcher = options.fetch ?? fetch;
   async function request(path: string, init?: RequestInit): Promise<{ body: unknown; next: string | null }> {
     if (!options.token?.trim()) throw new GithubApiError('unavailable');
@@ -229,13 +232,14 @@ export function createReleaseApi(
       ),
       actualAttempt = positive(raw.run_attempt);
     const entry = [
-      ['ci.yml', 'CI', 'push', 'Publish release'],
+      ['ci.yml', 'CI', 'push', backend ? 'deploy / deploy' : 'Publish release'],
       ['cd.yml', 'CD', 'workflow_dispatch', 'CD'],
-      ['rollback.yml', 'Rollback', 'workflow_dispatch', 'Rollback'],
+      ['rollback.yml', 'Rollback', 'workflow_dispatch', backend ? 'rollback / deploy' : 'Rollback'],
     ] as const;
     const expected = entry.find((e) => raw.path === `.github/workflows/${e[0]}`);
     if (
       !expected ||
+      (backend && expected[1] === "CD") ||
       raw.id !== id ||
       (attempt !== undefined && attempt !== actualAttempt) ||
       raw.head_branch !== 'main' ||
@@ -250,13 +254,16 @@ export function createReleaseApi(
     if (withSteps) {
       try {
         const jobs = await pages(`/actions/runs/${id}/attempts/${actualAttempt}/jobs?per_page=100`, 'jobs'),
-          job = jobs.map(obj).find((j) => j.name === expected[3]);
+          candidates = jobs.map(obj).filter((j) => j.name === expected[3]);
+        if (backend && candidates.length !== 1) throw new GithubApiError('untrusted_job');
+        const job = candidates[0];
         if (job)
           steps = list(job.steps).map((s) => ({
             name: str(obj(s).name),
             outcome: outcome(obj(s).conclusion),
           }));
-      } catch {
+      } catch (error) {
+        if (backend) throw error;
         steps = null;
       }
     }
@@ -284,7 +291,7 @@ export function createReleaseApi(
   function matchSource(info: RecordInfo, run: VerifiedRun): void {
     if (
       (info.kind === 'publish' && (run.workflow !== 'CI' || run.headSha !== info.sha)) ||
-      (info.kind === 'deploy' && run.workflow !== 'CD') ||
+      (info.kind === 'deploy' && (backend ? run.workflow !== 'CI' || run.headSha !== info.sha : run.workflow !== 'CD')) ||
       (info.kind === 'rollback' && run.workflow !== 'Rollback')
     )
       throw new GithubApiError('untrusted_run');
@@ -294,7 +301,7 @@ export function createReleaseApi(
     let reference: string | null = null,
       found = false;
     for (const raw of rows) {
-      const info = record(raw);
+      const info = record(raw, REPO);
       if (info.kind !== 'publish' || info.sha !== target) continue;
       const state = await statuses(info.id);
       if (state.state !== 'success') continue;
@@ -306,6 +313,25 @@ export function createReleaseApi(
     if (!found) throw new GithubApiError('untrusted_artifacts');
   }
 
+  async function rollbackTarget(current: RecordInfo): Promise<void> {
+    let found = false;
+    const refs = new Set<string>();
+    for (const raw of await pages(`/deployments?environment=production&sha=${current.sha}&per_page=100`)) {
+      const r = obj(raw);
+      if (r.id === current.id || Date.parse(str(r.created_at)) > Date.parse(current.createdAt)) continue;
+      let info: RecordInfo;
+      try { info = record(raw, REPO); } catch (e) {
+        if (e instanceof GithubApiError && e.code.startsWith('untrusted')) continue;
+        throw e;
+      }
+      if (info.sha !== current.sha || !info.notification || !(await statuses(info.id)).everSucceeded) continue;
+      matchSource(info, await readRun(info.runId, info.notification.run_attempt));
+      refs.add(info.imageRef);
+      if (info.imageRef === current.imageRef) found = true;
+    }
+    if (!found || refs.size !== 1) throw new GithubApiError('untrusted_rollback_target');
+  }
+
   const api: ReleaseApi = {
     pullRequest: async (number) => {
       const issues = new Map<string, LinkedIssue>();
@@ -315,7 +341,7 @@ export function createReleaseApi(
         const data = await graphql(
             `
               query ReleaseIssues($number: Int!, $cursor: String) {
-                repository(owner: "Cringe-Driven-Development-Team", name: "frontend") {
+                repository(owner: "Cringe-Driven-Development-Team", name: "${backend ? 'backend' : 'frontend'}") {
                   pullRequest(number: $number) {
                     title
                     closingIssuesReferences(first: 100, after: $cursor) {
@@ -362,7 +388,7 @@ export function createReleaseApi(
       const data = await graphql(
           `
             query ReleaseQueue($number: Int!) {
-              repository(owner: "Cringe-Driven-Development-Team", name: "frontend") {
+              repository(owner: "Cringe-Driven-Development-Team", name: "${backend ? 'backend' : 'frontend'}") {
                 pullRequest(number: $number) {
                   merged
                   state
@@ -402,12 +428,13 @@ export function createReleaseApi(
       };
     },
     operation: async (id) => {
-      const info = record(await get(`/deployments/${positive(id)}`));
+      const info = record(await get(`/deployments/${positive(id)}`), REPO);
       if (info.id !== id || !info.notification) throw new GithubApiError('notification_missing');
       const run = await readRun(info.runId, info.notification.run_attempt, info.kind !== 'publish');
       matchSource(info, run);
       const state = await statuses(id);
-      if (info.kind !== 'publish' || state.state === 'success') await published(info.sha, info.imageRef);
+      if (!backend && (info.kind !== 'publish' || state.state === 'success')) await published(info.sha, info.imageRef);
+      if (backend && info.kind === 'rollback') await rollbackTarget(info);
       return { ...info, notification: info.notification, run, ...state };
     },
     production: async () => {
@@ -416,12 +443,12 @@ export function createReleaseApi(
         const r = obj(raw),
           p = obj(r.payload);
         if (!p.image_ref && !p.action && !p.run) continue;
-        const info = record(raw);
+        const info = record(raw, REPO);
         if (info.kind === 'publish') throw new GithubApiError('untrusted_operation');
         const run = await readRun(info.runId, info.notification?.run_attempt);
         matchSource(info, run);
         const state = await statuses(info.id);
-        await published(info.sha, info.imageRef);
+        if (!backend) await published(info.sha, info.imageRef);
         result.push({
           id: info.id,
           kind: info.kind,
@@ -489,7 +516,7 @@ export function createReleaseApi(
       if (raw.id !== id) throw new GithubApiError('invalid_job');
       const run = await readRun(positive(raw.run_id), positive(raw.run_attempt), true),
         name = str(raw.name),
-        expected = run.workflow === 'CI' ? 'Publish release' : run.workflow;
+        expected = backend ? (run.workflow === 'CI' ? 'deploy / deploy' : 'rollback / deploy') : run.workflow === 'CI' ? 'Publish release' : run.workflow;
       if (
         name !== expected ||
         raw.head_sha !== run.headSha ||
@@ -498,7 +525,7 @@ export function createReleaseApi(
       )
         throw new GithubApiError('untrusted_job');
       let operation: VerifiedOperation | null = null;
-      const environment = run.workflow === 'CI' ? 'release-artifacts' : 'production';
+      const environment = !backend && run.workflow === 'CI' ? 'release-artifacts' : 'production';
       for (const value of await pages(`/deployments?environment=${environment}&per_page=100`)) {
         const p = obj(obj(value).payload);
         if (

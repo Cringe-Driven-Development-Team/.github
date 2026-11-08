@@ -911,3 +911,112 @@ queue/start/ready пропускаются. Telegram timeout/5xx или сбой
 дедупликация сохраняются. Для uncertain после ручной проверки доступен прежний
 `retry <outbox-id>`; он не создаёт нового source event. Не сбрасывайте всю очередь.
 Перед переключением и ручными исправлениями используйте существующий snapshot.
+
+## Backend / Releases (.github#59)
+
+Backend использует тот же worker и outbox, отдельный топик
+`TELEGRAM_BACKEND_RELEASES_TOPIC_ID` (ожидаемый ID `3377`; перед применением
+сверьте существующий Backend / Releases). `TELEGRAM_RELEASES_TOPIC_ID` и
+сохранённая frontend activation не меняются. Значение backend topic и существующий
+`GITHUB_API_TOKEN` передаются через `vault_hooks_env`: роль hooks уже передаёт весь
+словарь в `/opt/hooks/.env` и контейнер. Новый GHCR token для sender не нужен.
+
+Разрешён только `Cringe-Driven-Development-Team/backend`, `production`,
+`task/payload.action=deploy|rollback`, полный совпадающий `ref/sha`, образ
+`ghcr.io/cringe-driven-development-team/backend@sha256:<64 hex>`.
+`payload.run` указывает на текущую операцию; `notification` содержит положительный
+`run_attempt`, `base_sha` (полный SHA или null), `report_url=<run>#summary`.
+Публикация backend не создаёт frontend `release-artifacts`, поля assets не нужны.
+Источник каждого результата проверяется повторным чтением GitHub API:
+
+- deploy: `.github/workflows/ci.yml`, `push/main`, job **`deploy / deploy`**
+  (reusable `.github/workflows/cd.yml` в исходном CI run);
+- rollback: `.github/workflows/rollback.yml`, `workflow_dispatch/main`, job
+  **`rollback / deploy`** согласно целевому контракту backend#42. Имя необходимо
+  подтвердить Jobs API первого разрешённого запуска; пробный rollback для этого
+  не выполняется. SHA цели может отличаться от head SHA workflow; digest/SHA
+  подтверждаются прежним успешным production Deployment.
+
+Карточки начала/результата строятся по `deployment_status`. При ошибке/отмене
+production job до итогового status используется `workflow_job.completed`.
+`lint/test/docker/course-sync` не считаются выкаткой. Общий semantic key
+`result:<repository>:<action>:<run_id>:<run_attempt>` не смешивает reruns.
+Терминальный результат заменяет ещё не отправленный fallback. После начала
+доставки/неопределённого ответа Telegram автоматической повторной отправки нет.
+
+Карточка отдельно показывает последний подтверждённый релиз из GitHub, цель,
+выбранный образ, Health Check и этап сбоя. История не доказывает состояние VPS
+сейчас. `Switch backend` подтверждает переключение на соответствующем этапе;
+`Health check` успешен только после всех обязательных проверок infra#69:
+образ и контейнер, внутренний Go с gateway, внешний отрицательный login через
+BFF, закрытость публичных Go-маршрутов. Sender читает эти шаги, не запускает probes.
+Без результата проверки состояние неизвестно; fallback без подробных свидетельств
+не придумывает target или отрицательный результат. Успешный Health check и поздний
+сбой Summary/cleanup отделяются от результата выкатки. Это не подтверждение
+успешной пользовательской сессии, Redis или runtime-VPS.
+
+До трёх изменений со ссылками показываются в карточке; полный отчёт — Summary
+текущей попытки, логи — URL конкретного attempt. При rollback это **снимаемые**
+изменения. Недоступное GitHub enrichment помечается как неполные данные и не
+блокирует основной результат. «↩️ Откатить» открывает backend Rollback workflow,
+не содержит старую цель и не выполняет переключение через Telegram.
+
+### Подготовка и включение backend sender
+
+1. Подготовьте producer backend#42 и infra#69; удалите прямой backend Telegram
+   sender до включения нового. Backend-events старого формата не восстанавливаются.
+2. Дайте **существующему** service `GITHUB_API_TOKEN` read-доступ к backend:
+   Actions runs/jobs/attempts, Contents/compare, Deployments/statuses, Issues,
+   Pull requests и Metadata. Сохраните frontend-доступ; write sender не нужен.
+   Секрет редактируется через Vault, без вывода в shell/логи.
+3. Сохраните backend topic в `vault_hooks_env`, соберите/опубликуйте image после
+   review и укажите полученный **реальный digest** через существующий hooks path
+   infra. Не подставляйте synthetic digest из tests и не сбрасывайте SQLite.
+4. В обновлённом контейнере выполните `bun run src/cli.ts backend-release-check`.
+   Это read-only проверка topic-конфигурации и GitHub endpoints, без Telegram API.
+   Она не доказывает принадлежность topic чату, доставку org webhook и возможность
+   отправки Telegram. Если rollback.yml ещё нет на main, preflight ожидаемо не готов.
+   Отдельно проверьте org hook: backend охвачен, `deployment_status` и
+   `workflow_job` включены; сохраните остальные subscriptions.
+5. После готовности producer запустите
+   `bun run src/cli.ts backend-release-activate <UTC-ISO>` с фактической UTC-границей.
+   Это отдельная неизменяемая activation. Frontend `release-activate` повторять
+   и менять не нужно. События backend до границы автоматически не отправляются.
+6. На штатной выкатке проверьте digest → Deployment → webhook → одну итоговую
+   карточку в Backend / Releases, кнопки/отсутствие link preview/старого сообщения.
+   В эксплуатационном отчёте запишите run/attempt, Deployment и delivery/outbox ID.
+   До этой проверки задача не считается полностью принятой.
+
+### Диагностика и локальная проверка
+
+Результат операции смотрите в backend Actions/Deployments/Summary. Доставку —
+в SQLite outbox и worker logs: `releaseKey`, repository, run/attempt, outbox/origin
+ID, result/errorCode. Deployment ID есть в `release_notices.metadata_json`;
+`origin_id` связывает outbox с raw delivery. Telegram failure не меняет Deployment
+и не обязан появляться в Actions. Подтверждённый 429 повторяется по штатной политике;
+`release_uncertain` требует ручной сверки чата перед `retry <outbox-id>`.
+Не сбрасывайте очередь/activation ради одного сообщения. Адресный `release-recover`
+сохраняет source verification и дедупликацию; legacy backend payload всё равно
+отклоняется.
+
+Контрактные fixtures находятся в `tests/fixtures/github/backend-release-contract.json`;
+они предназначены для совместного использования producer backend#42. Пока producer
+не реализован, совпадение обеих сторон и реальная интеграция не заявляются.
+Локальные tests используют fake GitHub/Telegram и настоящую временную SQLite:
+
+```bash
+bun install --frozen-lockfile
+bun test
+bun run typecheck
+# Из корня .github, без сетевых вызовов:
+bun run scripts/preview-backend-release.ts
+```
+
+Превью: `docs/superpowers/previews/github-59-backend-cards.html`, четыре примера:
+успех, ошибка Health Check, rollback и отказ до Deployment. Оно не является
+доказательством доставки в реальный Telegram.
+
+PR до готовности producer/config/общей приёмки пишет
+`Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/59`;
+после полной приёмки сервисный PR может закрыть #59. Небольшой infra PR пишет
+`Part of` на #59. Родитель backend#42 закрывается после sub-issues и интеграции.

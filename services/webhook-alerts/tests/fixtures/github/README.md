@@ -11,3 +11,10 @@ webhooks repository (`payload-examples/api.github.com/`):
 
 Tests derive cases from these examples by overriding event-specific fields with
 fictional names, IDs and times. No production payloads or secrets are included.
+
+`backend-release-contract.json` — синтетические backend Deployment/previous success,
+run/attempt и reusable job/steps по backend#42. Job `deploy / deploy` подтверждён
+реальным CI run backend 42370270096, attempt 1; SHA/digest/IDs внутри fixture
+вымышленные. Backend API tests читают этот JSON напрямую. Producer #42 должен
+использовать ту же fixture; после его реализации сравнить файлы побайтно.
+Rollback job `rollback / deploy` пока целевое имя, не свидетельство запуска.
