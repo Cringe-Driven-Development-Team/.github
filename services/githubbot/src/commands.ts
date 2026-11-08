@@ -4,6 +4,7 @@ export interface IssueRef { repo: string; number: number; url: string }
 export interface Context { chatId: string; threadId?: number; messageId: number }
 export interface Actor { id: string; username?: string; configuredUsername: string }
 export type Command = { name: 'issue'; title: string; body: string }
+  | { name: 'help' }
   | { name: 'sprint'; username?: string }
   | { name: 'close' | 'assign' | 'assignme' | 'unassign' | 'tosprint'; target: IssueRef; username?: string };
 export type Input = { updateId: number; context: Context; actor: Actor } & (
@@ -112,7 +113,7 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, obs
   const match = /^\/([a-z]+)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(msg.text);
   if (!match || (match[2] && match[2].toLowerCase() !== bot.username.toLowerCase())) return null;
   const name = match[1]!.toLowerCase();
-  if (!['issue', 'sprint', 'close', 'assign', 'assignme', 'unassign', 'tosprint'].includes(name)) return null;
+  if (!['help', 'issue', 'sprint', 'close', 'assign', 'assignme', 'unassign', 'tosprint'].includes(name)) return null;
   const rest = msg.text.slice(match[0].length);
   if (name === 'issue') {
     const newline = rest.indexOf('\n');
@@ -121,6 +122,10 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, obs
     return { ...base, kind: 'command', command: { name, title, body: newline < 0 ? '' : rest.slice(newline + 1) } };
   }
   const args = rest.trim() ? rest.trim().split(/\s+/) : [];
+  if (name === 'help') {
+    if (args.length) fail('Формат: /help');
+    return { ...base, kind: 'command', command: { name } };
+  }
   let username: string | undefined;
   if (name === 'assign' || name === 'unassign' || (name === 'sprint' && args.length)) {
     const alias = args.shift();

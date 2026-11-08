@@ -232,3 +232,22 @@ test('invalid credentials and malformed config errors do not echo secret values'
     try { loadConfig(values); } catch (error) { expect(String(error)).not.toMatch(/secret-/); }
   }
 });
+
+test.each(['/help', '/help@GitHubBot'])('decodes %s without a target in any topic or reply', text => {
+  const raw = message(text, { text: 'not an issue card' }) as any;
+  raw.message.message_thread_id = 999;
+  expect(decodeUpdate(raw, config(), bot)).toMatchObject({ context: { threadId: 999 }, command: { name: 'help' } });
+});
+
+test('help rejects arguments with its own format hint', () => {
+  expect(() => decodeUpdate(message('/help extra'), config(), bot)).toThrow(CommandError);
+  expect(() => decodeUpdate(message('/help extra'), config(), bot)).toThrow('Формат: /help');
+});
+
+test.each(['other bot', 'unknown user', 'private', 'foreign chat'])('help ignores %s', reason => {
+  const raw = message(reason === 'other bot' ? '/help@other_bot' : '/help') as any;
+  if (reason === 'unknown user') raw.message.from.id = 999;
+  if (reason === 'private') raw.message.chat = { id: 101, type: 'private' };
+  if (reason === 'foreign chat') raw.message.chat.id = -999;
+  expect(decodeUpdate(raw, config(), bot)).toBeNull();
+});

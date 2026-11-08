@@ -52,6 +52,7 @@ BotFather: отключите Group Privacy (`/setprivacy` → Disable) для G
 | `/assignme [URL]` | Назначить автора команды по Telegram ID. |
 | `/unassign @username [URL]` | Снять только указанного исполнителя. |
 | `/tosprint [URL]` | Обеспечить членство в Scrumban и записать текущий Sprint, не менять Status. |
+| `/help` | Список команд с короткими описаниями. |
 | `/sprint [@username]` | Показать неархивированные Issues текущего Sprint, включая закрытые. |
 
 Вместо URL ответьте на оригинальную карточку GitHubBot или доверенного notification bot в том же топике. Ответ и явный URL одновременно запрещены, даже если ведут к одной задаче. Принимаются полные HTTPS-ссылки `https://github.com/Cringe-Driven-Development-Team/<repo>/issues/<number>`; PR и чужие repo не поддерживаются. В группе можно адресовать команду как `/issue@<актуальное_имя_бота>`.
