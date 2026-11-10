@@ -5,7 +5,7 @@ import type { ApidogMr } from './apidog-api';
 import { githubReview } from './github';
 
 export type DeliveryLane = 'ordinary' | 'release-queue' | 'release-operation';
-export type ReleaseNotice = { key: string } & (
+export type ReleaseNotice = { key: string; repository?: string; action?: 'deploy'|'rollback'; attempt?: number } & (
   {kind:'queue';prNumber:number;queueEntryId:string} | {kind:'dequeue';prNumber:number} |
   {kind:'ready';sha:string;operationKey:string} | {kind:'start'|'result';deploymentId:number;runId:number} |
   {kind:'job-error'|'retention';runId:number;attempt:number;jobId:number}
@@ -135,9 +135,9 @@ function lane(input: DeliveryInput): DeliveryLane {
   if (input.source !== 'github') return 'ordinary';
   try {
     const payload=JSON.parse(new TextDecoder().decode(input.raw));
-    if (payload?.repository?.full_name !== 'Cringe-Driven-Development-Team/frontend') return 'ordinary';
-    if (input.event === 'pull_request' && ['enqueued','dequeued'].includes(payload.action)) return 'release-queue';
-    if (['deployment_status','workflow_job','release'].includes(input.event)) return 'release-operation';
+    if (!['Cringe-Driven-Development-Team/frontend','Cringe-Driven-Development-Team/backend'].includes(payload?.repository?.full_name)) return 'ordinary';
+    if (payload.repository.full_name.endsWith('/frontend') && input.event === 'pull_request' && ['enqueued','dequeued'].includes(payload.action)) return 'release-queue';
+    if (['deployment_status','workflow_job'].includes(input.event) || (payload.repository.full_name.endsWith('/frontend') && input.event === 'release')) return 'release-operation';
   } catch { /* Other accepted events retain their original preparation path. */ }
   return 'ordinary';
 }
@@ -221,15 +221,19 @@ export class Store {
   claimUnprepared(now: number, leaseMs: number, selectedLane: DeliveryLane = 'ordinary'): Delivery[] {
     this.checkLease(now, leaseMs);
     return this.db.transaction(() => {
-      const cutoff=this.releaseActivation();
-      if (selectedLane !== 'ordinary' && cutoff === null) return [];
-      const pending = this.db.query<DeliveryRow, [string, number]>(
+
+      const pending = this.db.query<DeliveryRow, [string]>(
         `SELECT *, EXISTS(SELECT 1 FROM release_recovery r WHERE r.delivery_id=deliveries.id) AS recovery_allowed FROM deliveries WHERE prepared = 0 AND lane = ?
-         AND (lane = 'ordinary' OR received_at >= ? OR id IN (SELECT delivery_id FROM release_recovery)) ORDER BY received_at, id`,
-      ).all(selectedLane,cutoff ?? 0);
+         ORDER BY received_at, id`,
+      ).all(selectedLane);
       const rows: DeliveryRow[] = [];
       const reviewKeys = new Set<string>();
       for (const row of pending) {
+        if (selectedLane !== 'ordinary') {
+          const repository = JSON.parse(new TextDecoder().decode(row.raw)).repository?.full_name;
+          const cutoff = this.releaseActivation(repository);
+          if (cutoff === null || (row.received_at < cutoff && !row.recovery_allowed)) continue;
+        }
         let review;
         try { review = githubReview(delivery(row)); }
         catch { /* Invalid input still reaches preparation and its safe diagnostic. */ }
@@ -262,13 +266,12 @@ export class Store {
         (origin_type, origin_id, ordinal, topic, html, button_json, fallback_html, keyboard_json, due_at)
         VALUES ('delivery', ?, ?, ?, ?, ?, ?, ?, ?)`);
       messages.forEach((item, ordinal) => {
-        if (item.release && this.db.query('SELECT outbox_id FROM release_notices WHERE notice_key = ?').get(item.release.key)) return;
         const operationKey = item.release?.kind === 'ready' ? item.release.operationKey
           : item.release?.kind === 'result' || item.release?.kind === 'job-error' ? item.release.key : null;
         const previous = operationKey ? this.db.query<{outbox_id:number;metadata_json:string;sending_at:number|null;status:string;error_code:string|null},[string]>(`SELECT n.*,o.status,o.error_code FROM release_notices n
           JOIN outbox o ON o.id=n.outbox_id WHERE operation_key=?`).get(operationKey) : null;
         if (previous) {
-          if (item.release?.kind === 'ready' && JSON.parse(previous.metadata_json).kind === 'job-error'
+          if ((item.release?.kind === 'ready' || item.release?.kind === 'result') && JSON.parse(previous.metadata_json).kind === 'job-error'
             && previous.sending_at === null && (['pending','leased'].includes(previous.status) || previous.error_code === 'release_skipped')) {
             this.db.query(`UPDATE outbox SET topic=?,html=?,button_json=?,fallback_html=?,keyboard_json=?,status='pending',due_at=?,lease_until=NULL,error_code=NULL WHERE id=?`)
               .run(item.topic,item.html,buttonJson(item),item.fallbackHtml??null,item.keyboard?JSON.stringify(item.keyboard):null,row.received_at,previous.outbox_id);
@@ -277,6 +280,7 @@ export class Store {
           }
           return;
         }
+        if (item.release && this.db.query('SELECT outbox_id FROM release_notices WHERE notice_key = ?').get(item.release.key)) return;
         const inserted=insert.run(id, ordinal, item.topic, item.html, buttonJson(item),
           item.fallbackHtml ?? null, item.keyboard ? JSON.stringify(item.keyboard) : null, row.received_at);
         if (item.release) this.db.query('INSERT INTO release_notices (notice_key,operation_key,outbox_id,metadata_json) VALUES (?,?,?,?)').run(item.release.key,operationKey,inserted.lastInsertRowid,JSON.stringify(item.release));
@@ -367,6 +371,19 @@ export class Store {
     }).immediate();
   }
 
+  refreshReleaseMessage(id: number, leaseUntil: number, card: OutgoingMessage): boolean {
+    if (!card.release) return false;
+    return this.db.transaction(() => {
+      const updated = this.db.query(`UPDATE outbox SET topic=?,html=?,button_json=?,fallback_html=?,keyboard_json=?
+        WHERE id=? AND status='leased' AND lease_until=? AND EXISTS
+        (SELECT 1 FROM release_notices WHERE outbox_id=? AND notice_key=? AND sending_at IS NULL)`)
+        .run(card.topic,card.html,buttonJson(card),card.fallbackHtml??null,card.keyboard?JSON.stringify(card.keyboard):null,id,leaseUntil,id,card.release!.key);
+      if (!updated.changes) return false;
+      this.db.query('UPDATE release_notices SET metadata_json=? WHERE outbox_id=?').run(JSON.stringify(card.release),id);
+      return true;
+    }).immediate();
+  }
+
   markSent(id: number, telegramMessageId: number): void {
     this.db.query("UPDATE outbox SET status = 'sent', telegram_message_id = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'leased'").run(telegramMessageId, id);
   }
@@ -401,17 +418,21 @@ export class Store {
     }).immediate();
   }
 
-  releaseActivation(): number | null {
+  releaseActivation(repository = 'Cringe-Driven-Development-Team/frontend'): number | null {
+    if (repository === 'Cringe-Driven-Development-Team/backend') return this.db.query<{cutoff_ms:number},[]>('SELECT cutoff_ms FROM backend_release_activation WHERE id=1').get()?.cutoff_ms ?? null;
+    if (repository !== 'Cringe-Driven-Development-Team/frontend') return null;
     return this.db.query<{cutoff_ms:number},[]>('SELECT cutoff_ms FROM release_activation WHERE id=1').get()?.cutoff_ms ?? null;
   }
 
-  activateReleases(cutoffMs: number): void {
+  activateReleases(cutoffMs: number, repository = 'Cringe-Driven-Development-Team/frontend'): void {
+    if (!['Cringe-Driven-Development-Team/frontend','Cringe-Driven-Development-Team/backend'].includes(repository)) throw new Error('invalid release repository');
+    const table = repository.endsWith('/backend') ? 'backend_release_activation' : 'release_activation';
     if (!Number.isSafeInteger(cutoffMs) || cutoffMs < 0) throw new Error('invalid release activation');
     this.db.transaction(()=>{
-      const old=this.releaseActivation();
+      const old=this.releaseActivation(repository);
       if (old !== null && old !== cutoffMs) throw new Error('release activation is immutable');
-      this.db.query('INSERT OR IGNORE INTO release_activation (id,cutoff_ms) VALUES (1,?)').run(cutoffMs);
-      this.db.query("UPDATE deliveries SET prepared=1,lease_until=NULL WHERE lane != 'ordinary' AND received_at < ? AND id NOT IN (SELECT delivery_id FROM release_recovery)").run(cutoffMs);
+      this.db.query(`INSERT OR IGNORE INTO ${table} (id,cutoff_ms) VALUES (1,?)`).run(cutoffMs);
+      this.db.query("UPDATE deliveries SET prepared=1,lease_until=NULL WHERE lane != 'ordinary' AND received_at < ? AND json_extract(CAST(raw AS TEXT),'$.repository.full_name') = ? AND id NOT IN (SELECT delivery_id FROM release_recovery)").run(cutoffMs,repository);
     }).immediate();
   }
 
@@ -472,7 +493,7 @@ export function openStore(path: string): Store {
     db.exec('PRAGMA foreign_keys = ON');
     db.transaction(() => {
       const version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
-      if (version > 4) throw new Error('unsupported database schema');
+      if (version > 5) throw new Error('unsupported database schema');
       if (version === 0) {
         db.exec(schema);
       }
@@ -487,6 +508,10 @@ export function openStore(path: string): Store {
       if (version < 4) {
         db.exec('CREATE TABLE release_contract (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
         db.exec('PRAGMA user_version = 4');
+      }
+      if (version < 5) {
+        db.exec('CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
+        db.exec('PRAGMA user_version = 5');
       }
     }).immediate();
     return new Store(db);

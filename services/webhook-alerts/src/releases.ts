@@ -1,3 +1,4 @@
+import { BACKEND_REPO, backendOperationMessage, backendJobMessage } from './backend-releases';
 import { escapeHtml, fitHtml, link, mention, truncate } from './format';
 import { GithubApiError } from './github-api';
 import type { ChangeReport, OperationKind, ReleaseApi, VerifiedOperation, VerifiedRun } from './release-api';
@@ -5,6 +6,7 @@ import type { Delivery, OutgoingMessage, ReleaseNotice } from './store';
 const REPO = 'Cringe-Driven-Development-Team/frontend',
   REPO_URL = `https://github.com/${REPO}`;
 interface Config {
+  repository?: string;
   topic: number;
   siteUrl: string;
   userMap?: Record<string, string | number>;
@@ -78,6 +80,7 @@ async function operationMessage(
   api: ReleaseApi,
   config: Config,
 ): Promise<OutgoingMessage> {
+  if (config.repository === BACKEND_REPO) return backendOperationMessage(op, api, config);
   const start = op.state === 'in_progress',
     ready = op.kind === 'publish' && op.state === 'success',
     rollback = op.kind === 'rollback';
@@ -178,8 +181,10 @@ export async function projectRelease(
 ): Promise<OutgoingMessage[]> {
   if (delivery.source !== 'github') return [];
   const payload = object(JSON.parse(new TextDecoder().decode(delivery.raw)));
-  if (object(payload.repository).full_name !== REPO) return [];
+  const repository = config.repository ?? REPO, backend = repository === BACKEND_REPO;
+  if (object(payload.repository).full_name !== repository) return [];
   if (delivery.event === 'pull_request') {
+    if (backend) return [];
     if (!['enqueued', 'dequeued'].includes(String(payload.action))) return [];
     const pr = object(payload.pull_request);
     if (object(pr.base).ref !== 'main') return [];
@@ -226,6 +231,7 @@ export async function projectRelease(
     ];
   }
   if (delivery.event === 'release') {
+    if (backend) return [];
     if (payload.action !== 'published') return [];
     let op: VerifiedOperation;
     try {
@@ -270,7 +276,7 @@ export async function projectRelease(
     const raw = object(payload.workflow_job);
     if (
       payload.action !== 'completed' ||
-      !['CD', 'Rollback', 'Publish release'].includes(String(raw.name)) ||
+      !(backend ? ['deploy / deploy', 'rollback / deploy'] : ['CD', 'Rollback', 'Publish release']).includes(String(raw.name)) ||
       ['success', 'skipped', null, undefined].includes(raw.conclusion as null | undefined | string)
     )
       return [];
@@ -280,8 +286,12 @@ export async function projectRelease(
       !delivery.releaseRecovery
     )
       return [];
-    const job = await api.job(number(raw.id)),
-      run = job.run,
+    let job;
+    try { job = await api.job(number(raw.id)); } catch (e) {
+      if (e instanceof GithubApiError && e.code.startsWith('untrusted')) return [];
+      throw e;
+    }
+    const run = job.run,
       kind = run.workflow === 'CI' ? 'publish' : run.workflow === 'CD' ? 'deploy' : 'rollback';
     if (job.conclusion === 'success' || job.conclusion === 'skipped') return [];
     if (job.operation && ['success', 'failure', 'error'].includes(job.operation.state)) {
@@ -306,6 +316,7 @@ export async function projectRelease(
       }
       return [await operationMessage(job.operation, api, config)];
     }
+    if (backend) return [backendJobMessage(job, config)];
     const label = kind === 'publish' ? 'Заливка' : kind === 'rollback' ? 'Откат' : 'Выкатка';
     return [
       {
@@ -332,11 +343,29 @@ export async function projectRelease(
   }
   return [];
 }
+export type ReleaseDecision = 'send' | 'skip' | 'retry' | { replace: OutgoingMessage };
 export async function checkReleaseNotice(
   notice: ReleaseNotice,
   api: ReleaseApi,
-): Promise<'send' | 'skip' | 'retry'> {
+  config?: Config,
+): Promise<ReleaseDecision> {
   try {
+    if (notice.repository === BACKEND_REPO && (notice.kind === 'result' || notice.kind === 'job-error')) {
+      const job = 'jobId' in notice ? await api.job(notice.jobId) : null;
+      const op = job ? job.operation : await api.operation((notice as Extract<ReleaseNotice, {deploymentId:number}>).deploymentId);
+      if (op && ['success','failure','error'].includes(op.state)) {
+        const key = `result:${BACKEND_REPO}:${op.kind}:${op.run.id}:${op.run.attempt}`;
+        if (key !== notice.key || op.run.id !== notice.runId || op.run.attempt !== notice.attempt) return 'skip';
+        if (config) return {replace: await backendOperationMessage(op, api, config)};
+        return notice.kind === 'job-error' ? 'retry' : 'send';
+      }
+      if (!job) return 'retry';
+      const action = job.run.workflow === 'Rollback' ? 'rollback' : 'deploy';
+      if (notice.key !== `result:${BACKEND_REPO}:${action}:${job.run.id}:${job.run.attempt}`) return 'skip';
+      // A completed job may never acquire a terminal Deployment status. Its
+      // honest fallback must not wait forever for an event that cannot arrive.
+      return job.conclusion === 'failure' || job.conclusion === 'cancelled' ? 'send' : 'skip';
+    }
     if (notice.kind === 'queue' || notice.kind === 'dequeue') {
       const state = await api.queue(notice.prNumber);
       if (state.merged || state.baseRef !== 'main') return 'skip';

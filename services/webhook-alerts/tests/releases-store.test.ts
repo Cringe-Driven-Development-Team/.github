@@ -67,7 +67,7 @@ test('v2_database_keeps_existing_outbox_and_review_groups', () => {
   });
   const inspect = new Database(file);
   expect(inspect.query('SELECT count(*) AS n FROM review_groups').get()).toEqual({ n: 1 });
-  expect(inspect.query('PRAGMA user_version').get()).toEqual({ user_version: 4 });
+  expect(inspect.query('PRAGMA user_version').get()).toEqual({ user_version: 5 });
   inspect.close();
 });
 test('activation_is_persistent_and_immutable', () => {

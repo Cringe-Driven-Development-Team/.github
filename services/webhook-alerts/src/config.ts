@@ -16,6 +16,7 @@ export interface Config {
   githubApiToken?: string;
   githubTopic: number;
   releasesTopic?: number;
+  backendReleasesTopic?: number;
   reviewTopic: number;
   apidogTopic?: number;
   userMap: Record<string, string | number>;
@@ -50,6 +51,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   };
   const githubTopic = topic('TELEGRAM_TOPIC_ID', 26)!;
   const releasesTopic = topic('TELEGRAM_RELEASES_TOPIC_ID');
+  const backendReleasesTopic = topic('TELEGRAM_BACKEND_RELEASES_TOPIC_ID');
+  if (backendReleasesTopic !== undefined && !env.GITHUB_API_TOKEN?.trim()) throw new Error('GITHUB_API_TOKEN is required for backend releases');
   const reviewTopic = topic('TELEGRAM_REVIEW_TOPIC_ID', 1513)!;
   const apidogTopic = topic('TELEGRAM_APIDOG_TOPIC_ID');
   const proxyUrl = env.TELEGRAM_PROXY_URL;
@@ -109,5 +112,5 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     apidogMerge = { projectId, targetBranchId, projectName, contractUrl, peopleMap, reviewers };
   }
   return { apidogMerge, apidogAccessToken, githubWebhookSecret, apidogSignatureKey, apidogSignatureHeader, databasePath, port, sendEnabled,
-    telegram, apidogTelegram, githubApiToken: env.GITHUB_API_TOKEN, githubTopic, releasesTopic, reviewTopic, apidogTopic, userMap };
+    telegram, apidogTelegram, githubApiToken: env.GITHUB_API_TOKEN, githubTopic, releasesTopic, backendReleasesTopic, reviewTopic, apidogTopic, userMap };
 }
