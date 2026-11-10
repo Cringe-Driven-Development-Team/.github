@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { projectRelease } from '../src/releases';
 import { releaseFixture, delivery, A, B } from './helpers/release';
 const repo='Cringe-Driven-Development-Team/backend';
-const config={topic:3377,siteUrl:'https://cellestial.ru',repository:repo};
+const config={topic:3377,siteUrl:'https://cellestial.ru',repository:repo,userMap:{YarikMix:'123456789'}};
 function fixture(){
   const f=releaseFixture();
   f.operation.imageRef=`ghcr.io/cringe-driven-development-team/backend@sha256:${'d'.repeat(64)}`;
@@ -13,25 +13,56 @@ function fixture(){
   f.job.name='deploy / deploy';
   return f;
 }
-const status=()=>delivery('deployment_status',{repository:{full_name:repo},action:'created',deployment:{id:1,environment:'production'},deployment_status:{state:'success'}});
+const status=(state='success')=>delivery('deployment_status',{repository:{full_name:repo},action:'created',deployment:{id:1,environment:'production'},deployment_status:{state}});
 const job=()=>delivery('workflow_job',{repository:{full_name:repo},action:'completed',workflow_job:{id:100,name:'deploy / deploy',conclusion:'failure'}});
-test('backend result has confirmed versions, digest, Summary, three changes and workflow-only rollback',async()=>{
+test('backend result matches frontend layout with short versions, tasks, health, Telegram mention and actions',async()=>{
   const f=fixture();
   f.report.issues=Array.from({length:5},(_,i)=>({id:`I${i}`,number:i+1,title:`Backend change ${i}`,repo,prNumbers:[125]}));
   const [card]=await projectRelease(status(),f.api,config);
-  expect(card?.topic).toBe(3377);expect(card?.html).toContain('Выкатка backend');expect(card?.html).toContain('Health Check ✅');
-  expect(card?.html).toContain('последний подтверждённый');expect(card?.html).toContain('backend@sha256:');
+  expect(card?.topic).toBe(3377);expect(card?.html).toStartWith('<b>✅ Выкатка бэка: успешно</b>\nhttps://cellestial.ru · production\n\n');
+  expect(card?.html).toContain(`<b>Версия:</b> <a href="https://github.com/${repo}/commit/${A}">aaaaaaa</a> → <a href="https://github.com/${repo}/commit/${B}">bbbbbbb</a>`);
+  const visible=card!.html.replace(/<[^>]*>/g,'');
+  for (const technical of [A, B, f.operation.imageRef, 'VPS', 'последний подтверждённый', 'Целевая версия']) {
+    expect(visible).not.toContain(technical);
+  }
+  expect(card!.html.indexOf('<b>Задачи</b>')).toBeLessThan(card!.html.indexOf('Health Check ✅'));
+  expect(card?.html).toContain('\n\nHealth Check ✅\n\nЗапустил: <a href="tg://user?id=123456789">YarikMix</a>');
+  expect(card?.html).not.toContain('Выбранная версия подтверждена');
   expect(card?.html.match(/Backend change/g)).toHaveLength(3);
   expect(JSON.stringify(card?.keyboard)).toContain('actions/workflows/rollback.yml');
   expect(JSON.stringify(card?.keyboard)).toContain('runs/10#summary');
+  expect(JSON.stringify(card?.keyboard)).toContain(`/compare/${A}...${B}`);
+  expect(card!.keyboard![0]!.map(b=>b.text)).toEqual(['🌐 Открыть прод','↩️ Откатить']);
+  expect(card!.keyboard![1]).toEqual([{text:'PR',url:f.report.prs[0]!.url}]);
+  expect(card!.keyboard!.at(-1)).toEqual([{text:'Логи выкатки',url:'https://github.com/Cringe-Driven-Development-Team/backend/actions/runs/10/attempts/1'}]);
   expect(card?.release?.key).toBe(`result:${repo}:deploy:10:1`);
+});
+for (const action of ['deploy','rollback'] as const) for (const count of [1,2]) test(`backend ${action} uses the heading for ${count} tasks`,async()=>{
+  const f=fixture();f.operation.kind=action;
+  f.report.issues=Array.from({length:count},(_,i)=>({id:`I${i}`,number:i+1,title:`Task ${i}`,repo,prNumbers:[125]}));
+  const [card]=await projectRelease(status(),f.api,config);
+  const heading=action==='rollback'?(count===1?'Отменённая задача':'Отменённые задачи'):(count===1?'Задача':'Задачи');
+  expect(card!.html).toContain(`<b>${heading}</b>`);
+  expect(card!.html.match(/• /g)).toHaveLength(count);
+});
+for (const state of ['in_progress','failure','error'] as const) test(`backend ${state} card also keeps technical details out of alert text`,async()=>{
+  const f=fixture();f.operation.state=state;f.operation.kind='rollback';
+  if(state==='failure') f.operation.run.steps![1]!.outcome='failure';
+  const [card]=await projectRelease(status(state),f.api,config);
+  expect(card).toBeDefined();
+  for(const technical of [A,B,f.operation.imageRef,'VPS','Deployment']) expect(card!.html.replace(/<[^>]*>/g,'')).not.toContain(technical);
+  expect(card!.html).toContain('Отменённая задача');
+  expect(JSON.stringify(card!.keyboard)).toContain('runs/10#summary');
 });
 test('backend switch and health fail are distinguished from old historical release',async()=>{
   const f=fixture();f.operation.state='failure';f.operation.run.steps![1]!.outcome='failure';
   const [card]=await projectRelease(status(),f.api,config);
   expect(card?.html).toContain('Health Check ❌');expect(card?.html).toContain('Новая версия запущена');
   f.operation.run.steps![0]!.outcome='cancelled';f.operation.run.steps![1]!.outcome='skipped';
-  expect((await projectRelease(status(),f.api,config))[0]?.html).toContain('Состояние прода: неизвестно');
+  const unknown=(await projectRelease(status(),f.api,config))[0]!;
+  expect(unknown.html).toContain('Состояние прода: неизвестно');
+  expect(unknown.html).toContain(' → неизвестна');
+  expect(unknown.html).not.toContain(`/commit/${B}`);
 });
 test('backend fallback before Deployment has no invented target and late health success is preserved',async()=>{
   const f=fixture();f.job.operation=null;f.job.run.steps=[{name:'Prepare target',outcome:'failure'},{name:'Switch backend',outcome:'skipped'},{name:'Health check',outcome:'skipped'}];
@@ -39,7 +70,9 @@ test('backend fallback before Deployment has no invented target and late health 
   expect(card?.html).toContain('Health Check ⚪');expect(card?.html).toContain('неизвестно');expect(card?.html).not.toContain('→');
   f.job.run.steps=[{name:'Switch backend',outcome:'success'},{name:'Health check',outcome:'success'},{name:'Summary',outcome:'failure'}];
   [card]=await projectRelease(job(),f.api,config);
-  expect(card?.html).toContain('Health Check ✅');expect(card?.html).toContain('проверена успешно');
+  expect(card?.html).toContain('Health Check ✅');expect(card?.html).toContain('Выкатка бэка: успешно');
+  expect(card?.html).toContain('Запустил: <a href="tg://user?id=123456789">YarikMix</a>');
+  expect(card?.html).not.toContain('Deployment');
 });
 test('backend ignores unrelated jobs and frontend-only publication',async()=>{
   const f=fixture();const d=job();const p=JSON.parse(new TextDecoder().decode(d.raw));p.workflow_job.name='test';d.raw=new TextEncoder().encode(JSON.stringify(p));
@@ -49,7 +82,7 @@ test('backend ignores unrelated jobs and frontend-only publication',async()=>{
 });
 test('backend rollback labels removed changes and enrichment failure still gives result',async()=>{
   const f=fixture();f.operation.kind='rollback';
-  let [card]=await projectRelease(status(),f.api,config);expect(card?.html).toContain('Снимаемые изменения');
+  let [card]=await projectRelease(status(),f.api,config);expect(card?.html).toContain('Отменённая задача');
   f.api.changes=async()=>{throw new Error('unavailable')};
   [card]=await projectRelease(status(),f.api,config);expect(card?.html).toContain('Health Check ✅');expect(card?.html).toContain('неполные');
 });

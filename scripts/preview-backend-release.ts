@@ -51,6 +51,7 @@ for (const kind of ['success', 'health-failure', 'rollback', 'preflight-refusal'
     topic: 3377,
     siteUrl: 'https://cellestial.ru',
     repository,
+    userMap: { YarikMix: '123456789' },
   });
   if (!card) throw new Error('Missing preview');
 
