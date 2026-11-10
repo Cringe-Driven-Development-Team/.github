@@ -37,6 +37,7 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
         return projectRelease(delivery, backend ? backendReleaseApi : releaseApi, {
           topic, siteUrl:'https://cellestial.ru', userMap:config.userMap, repository,
           cutoffMs:store.releaseActivation(repository) ?? Infinity,
+          releaseCutoffMs:store.releaseContract() ?? Infinity,
         });
       },
       beforeReleaseSend: (notice: import('./store').ReleaseNotice) => checkReleaseNotice(notice, notice.repository === BACKEND_REPO ? backendReleaseApi : releaseApi, notice.repository === BACKEND_REPO ? {topic:config.backendReleasesTopic!,siteUrl:'https://cellestial.ru',userMap:config.userMap,repository:BACKEND_REPO} : undefined),

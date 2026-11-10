@@ -11,6 +11,7 @@ interface Config {
   siteUrl: string;
   userMap?: Record<string, string | number>;
   cutoffMs?: number;
+  releaseCutoffMs?: number;
 }
 type Button = { text: string; url: string };
 function object(value: unknown): Record<string, unknown> {
@@ -116,12 +117,16 @@ async function operationMessage(
   } else if (ready) {
     header = ['📦 Релиз фронта залит, ждёт выкатки'];
     footer = [
-      `Релиз <code>${op.sha}</code>`,
+      `Тег для CD (поле release): <code>${op.release!.tag}</code>`,
       `Образ BFF <code>${op.imageRef.split('@')[1]}</code>`,
       link('CI выпуска', run.url),
+      `Запустил: ${mention(run.actor, config.userMap)}`,
     ];
     keyboard = [
-      [{ text: 'Выкатить', url: `${REPO_URL}/actions/workflows/cd.yml` }],
+      [
+        { text: 'Выкатить', url: `${REPO_URL}/actions/workflows/cd.yml` },
+        { text: 'Релиз и файлы', url: op.release!.url },
+      ],
       ...prButtons(report, op.notification.report_url),
     ];
     notice = {
@@ -225,16 +230,30 @@ export async function projectRelease(
       },
     ];
   }
+  if (delivery.event === 'release') {
+    if (backend) return [];
+    if (payload.action !== 'published') return [];
+    let op: VerifiedOperation;
+    try {
+      op = await api.release(number(object(payload.release).id));
+    } catch (e) {
+      if (e instanceof GithubApiError && e.code.startsWith('untrusted')) return [];
+      throw e;
+    }
+    // Imported and pre-contract Releases are catalog entries, not new ready events.
+    if (op.release!.imported || (Date.parse(op.createdAt) < (config.releaseCutoffMs ?? 0) && !delivery.releaseRecovery))
+      return [];
+    return [await operationMessage(op, api, config)];
+  }
   if (delivery.event === 'deployment_status') {
     const raw = object(payload.deployment),
       state = object(payload.deployment_status).state;
     if (
       payload.action !== 'created' ||
-      !(backend ? ['production'] : ['production', 'release-artifacts']).includes(String(raw.environment)) ||
+      raw.environment !== 'production' ||
       !['in_progress', 'success', 'failure', 'error'].includes(String(state))
     )
       return [];
-    if (raw.environment === 'release-artifacts' && state !== 'success') return [];
     let op: VerifiedOperation;
     try {
       op = await api.operation(number(raw.id));
@@ -251,7 +270,6 @@ export async function projectRelease(
     if (op.state === 'inactive') return [];
     if (state !== 'in_progress' && ['pending', 'queued', 'in_progress'].includes(op.state))
       throw new GithubApiError('operation_not_ready');
-    if (op.kind === 'publish' && op.state !== 'success') throw new GithubApiError('publication_not_ready');
     return [await operationMessage(op, api, config)];
   }
   if (delivery.event === 'workflow_job') {
@@ -333,16 +351,20 @@ export async function checkReleaseNotice(
 ): Promise<ReleaseDecision> {
   try {
     if (notice.repository === BACKEND_REPO && (notice.kind === 'result' || notice.kind === 'job-error')) {
-      const op = 'jobId' in notice
-        ? (await api.job(notice.jobId)).operation
-        : await api.operation(notice.deploymentId);
-      if (op) {
-        if (!['success','failure','error'].includes(op.state)) return 'retry';
+      const job = 'jobId' in notice ? await api.job(notice.jobId) : null;
+      const op = job ? job.operation : await api.operation((notice as Extract<ReleaseNotice, {deploymentId:number}>).deploymentId);
+      if (op && ['success','failure','error'].includes(op.state)) {
         const key = `result:${BACKEND_REPO}:${op.kind}:${op.run.id}:${op.run.attempt}`;
         if (key !== notice.key || op.run.id !== notice.runId || op.run.attempt !== notice.attempt) return 'skip';
         if (config) return {replace: await backendOperationMessage(op, api, config)};
         return notice.kind === 'job-error' ? 'retry' : 'send';
       }
+      if (!job) return 'retry';
+      const action = job.run.workflow === 'Rollback' ? 'rollback' : 'deploy';
+      if (notice.key !== `result:${BACKEND_REPO}:${action}:${job.run.id}:${job.run.attempt}`) return 'skip';
+      // A completed job may never acquire a terminal Deployment status. Its
+      // honest fallback must not wait forever for an event that cannot arrive.
+      return job.conclusion === 'failure' || job.conclusion === 'cancelled' ? 'send' : 'skip';
     }
     if (notice.kind === 'queue' || notice.kind === 'dequeue') {
       const state = await api.queue(notice.prNumber);

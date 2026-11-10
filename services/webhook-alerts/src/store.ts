@@ -137,7 +137,7 @@ function lane(input: DeliveryInput): DeliveryLane {
     const payload=JSON.parse(new TextDecoder().decode(input.raw));
     if (!['Cringe-Driven-Development-Team/frontend','Cringe-Driven-Development-Team/backend'].includes(payload?.repository?.full_name)) return 'ordinary';
     if (payload.repository.full_name.endsWith('/frontend') && input.event === 'pull_request' && ['enqueued','dequeued'].includes(payload.action)) return 'release-queue';
-    if (['deployment_status','workflow_job'].includes(input.event)) return 'release-operation';
+    if (['deployment_status','workflow_job'].includes(input.event) || (payload.repository.full_name.endsWith('/frontend') && input.event === 'release')) return 'release-operation';
   } catch { /* Other accepted events retain their original preparation path. */ }
   return 'ordinary';
 }
@@ -436,6 +436,19 @@ export class Store {
     }).immediate();
   }
 
+  releaseContract(): number | null {
+    return this.db.query<{cutoff_ms:number},[]>('SELECT cutoff_ms FROM release_contract WHERE id=1').get()?.cutoff_ms ?? null;
+  }
+
+  activateReleaseContract(cutoffMs: number): void {
+    if (!Number.isSafeInteger(cutoffMs) || cutoffMs < 0) throw new Error('invalid release contract');
+    this.db.transaction(()=>{
+      const old=this.releaseContract();
+      if (old !== null && old !== cutoffMs) throw new Error('release contract is immutable');
+      this.db.query('INSERT OR IGNORE INTO release_contract (id,cutoff_ms) VALUES (1,?)').run(cutoffMs);
+    }).immediate();
+  }
+
   recoverReleaseDelivery(id: number): boolean {
     return this.db.transaction(()=>{
       const row=this.db.query<DeliveryRow,[number]>("SELECT * FROM deliveries WHERE id=? AND source='github' AND lane != 'ordinary'").get(id);
@@ -480,7 +493,7 @@ export function openStore(path: string): Store {
     db.exec('PRAGMA foreign_keys = ON');
     db.transaction(() => {
       const version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
-      if (version > 4) throw new Error('unsupported database schema');
+      if (version > 5) throw new Error('unsupported database schema');
       if (version === 0) {
         db.exec(schema);
       }
@@ -493,8 +506,12 @@ export function openStore(path: string): Store {
         db.exec('PRAGMA user_version = 3');
       }
       if (version < 4) {
-        db.exec('CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
+        db.exec('CREATE TABLE release_contract (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
         db.exec('PRAGMA user_version = 4');
+      }
+      if (version < 5) {
+        db.exec('CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
+        db.exec('PRAGMA user_version = 5');
       }
     }).immediate();
     return new Store(db);

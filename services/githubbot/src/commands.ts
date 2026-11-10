@@ -4,6 +4,7 @@ export interface IssueRef { repo: string; number: number; url: string }
 export interface Context { chatId: string; threadId?: number; messageId: number }
 export interface Actor { id: string; username?: string; configuredUsername: string }
 export type Command = { name: 'issue'; title: string; body: string }
+  | { name: 'help' }
   | { name: 'sprint'; username?: string }
   | { name: 'close' | 'assign' | 'assignme' | 'unassign' | 'tosprint'; target: IssueRef; username?: string };
 export type Input = { updateId: number; context: Context; actor: Actor } & (
@@ -112,7 +113,7 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, obs
   const match = /^\/([a-z]+)(?:@([a-z0-9_]+))?(?=\s|$)/i.exec(msg.text);
   if (!match || (match[2] && match[2].toLowerCase() !== bot.username.toLowerCase())) return null;
   const name = match[1]!.toLowerCase();
-  if (!['issue', 'sprint', 'close', 'assign', 'assignme', 'unassign', 'tosprint'].includes(name)) return null;
+  if (!['help', 'issue', 'sprint', 'close', 'assign', 'assignme', 'unassign', 'tosprint'].includes(name)) return null;
   const rest = msg.text.slice(match[0].length);
   if (name === 'issue') {
     const newline = rest.indexOf('\n');
@@ -121,6 +122,10 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, obs
     return { ...base, kind: 'command', command: { name, title, body: newline < 0 ? '' : rest.slice(newline + 1) } };
   }
   const args = rest.trim() ? rest.trim().split(/\s+/) : [];
+  if (name === 'help') {
+    if (args.length) fail('Формат: /help');
+    return { ...base, kind: 'command', command: { name } };
+  }
   let username: string | undefined;
   if (name === 'assign' || name === 'unassign' || (name === 'sprint' && args.length)) {
     const alias = args.shift();
@@ -132,7 +137,11 @@ export function decodeUpdate(raw: unknown, config: Config, bot: BotIdentity, obs
     if (args.length) fail('Формат: /sprint [@telegram_username]');
     return { ...base, kind: 'command', command: { name, ...(username === undefined ? {} : { username }) } };
   }
-  if (args.length > 1 || (args.length && msg.reply_to_message !== undefined) || (!args.length && msg.reply_to_message === undefined)) fail('Выберите один способ: ответ на карточку или полная ссылка на issue.');
+  const reply = object(msg.reply_to_message);
+  const isTopicStarter = msg.is_topic_message === true && context.threadId !== undefined
+    && reply.message_id === context.threadId && telegramId(object(reply.chat).id) === context.chatId;
+  const hasReply = msg.reply_to_message !== undefined && !isTopicStarter;
+  if (args.length > 1 || (args.length && hasReply) || (!args.length && !hasReply)) fail('Выберите один способ: ответ на карточку или полная ссылка на issue.');
   let target: IssueRef;
   try { target = args.length ? parseIssueUrl(args[0]!, config) : cardTarget(msg.reply_to_message, context, config, bot); }
   catch (error) { fail(error instanceof Error ? error.message : 'Не удалось выбрать задачу.'); }

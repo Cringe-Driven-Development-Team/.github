@@ -20,7 +20,7 @@ jobs:
         run: bun install --frozen-lockfile --cwd services/githubbot
       - name: Test and typecheck GitHubBot
         run: |
-          bun test services/githubbot/tests tests/githubbot-workflows.test.ts
+          bun test services/githubbot/tests tests/githubbot-workflows.test.ts tests/auxiliary-publish.test.ts
           bun run --cwd services/githubbot typecheck
       - name: Build and smoke test GitHubBot image
         run: |

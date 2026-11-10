@@ -289,3 +289,27 @@ test('expired and out-of-snapshot choices only answer callback with rejection', 
   expect(answers).toHaveLength(2); expect(answers.every(answer => answer.text.includes('недоступен'))).toBe(true);
   expect(deps.store.job(1).phase).toBe('waiting_repo'); expect(api.createCalls).toHaveLength(0);
 });
+
+test('help delivers one saved message in an unmapped topic after transient failure and restart without API calls', async () => {
+  let calls = 0;
+  for (const service of [deps.github, deps.projects]) {
+    for (const key of Object.keys(service)) {
+      (service as any)[key] = async () => { calls++; throw new Error('help must not call APIs'); };
+    }
+  }
+  let sends = 0;
+  deps.send = async (context, message) => {
+    if (++sends === 1) throw new ApiError('telegram', 'retryable', 'offline', 8000);
+    sent.push({ context, message }); return 20;
+  };
+  const value = input({ name: 'help' }, 1, 999);
+  await run(value);
+  expect(deps.store.job(1)).toMatchObject({ phase: 'reply_pending', nextAttemptAt: now + 8000 });
+  const savedOutput = deps.store.job(1).output;
+  expect(savedOutput).toHaveLength(1);
+  reopen(); now += 8000; await resume(); await resume();
+  expect(sent).toEqual([{ context: value.context, message: savedOutput![0]! }]);
+  expect(sent[0]?.message.html).toContain('<code>/help</code>');
+  expect(calls).toBe(0);
+  expect(deps.store.job(1).phase).toBe('done');
+});

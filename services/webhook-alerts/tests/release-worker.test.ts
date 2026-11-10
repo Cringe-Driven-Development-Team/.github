@@ -9,7 +9,7 @@ import { createApp } from '../src/http';
 import { loadConfig } from '../src/config';
 import { prepareOnce, deliverOnce, startWorker } from '../src/worker';
 import { projectRelease, checkReleaseNotice } from '../src/releases';
-import { releaseFixture, enqueue, status, REPO } from './helpers/release';
+import { releaseFixture, enqueue, status, published, REPO } from './helpers/release';
 const resources: { dir: string; store: Store }[] = [];
 function store() {
   const dir = mkdtempSync(join(tmpdir(), 'release-worker-')),
@@ -159,7 +159,7 @@ test('blocked_ready_guard_does_not_hold_queue_or_ordinary_sends_and_transport_st
     await blocked;
     return [];
   };
-  const d = status('success', 'release-artifacts');
+  const d = published();
   s.accept({ source: 'github', event: d.event, deliveryId: 'ready', raw: d.raw, receivedAt: 1000 });
   await prepareOnce({
     store: s,

@@ -59,3 +59,10 @@ test('backend result guard rechecks Deployment and attempt before sending',async
  f.api.operation=async()=>{throw new Error('http_403')};
  expect(await checkReleaseNotice(card.release!,f.api)).toBe('retry');
 });
+for(const conclusion of ['failure','cancelled'] as const) test(`completed ${conclusion} job fallback sends while Deployment stays in_progress`,async()=>{
+ const {checkReleaseNotice}=await import('../src/releases');const f=fixture();f.operation.state='in_progress';f.job.operation=f.operation;f.job.conclusion=conclusion;
+ f.job.run.steps=[{name:'Switch backend',outcome:'success'},{name:'Health check',outcome:'failure'},{name:'Record final Deployment status',outcome:'failure'}];
+ const d=job();const payload=JSON.parse(new TextDecoder().decode(d.raw));payload.workflow_job.conclusion=conclusion;d.raw=new TextEncoder().encode(JSON.stringify(payload));
+ const [card]=await projectRelease(d,f.api,config);expect(card?.release?.kind).toBe('job-error');expect(card?.html).toContain('Health Check ⚪');
+ expect(await checkReleaseNotice(card!.release!,f.api,config)).toBe('send');
+});

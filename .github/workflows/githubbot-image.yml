@@ -3,6 +3,22 @@ name: GitHubBot image
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/githubbot/src/**'
+      - 'services/githubbot/tests/**'
+      - 'services/githubbot/package.json'
+      - 'services/githubbot/bun.lock'
+      - 'services/githubbot/tsconfig.json'
+      - 'services/githubbot/Dockerfile'
+      - 'services/githubbot/.dockerignore'
+      - 'services/webhook-alerts/src/format.ts'
+      - '.github/workflows/githubbot-image.yml'
+      - '.github/workflows/checks.yml'
+      - 'tests/githubbot-workflows.test.ts'
+      - 'tests/githubbot-docker.sh'
+      - 'scripts/auxiliary-publish.sh'
+      - 'tests/auxiliary-publish.test.ts'
+      - '.dockerignore'
 
 permissions:
   contents: read
@@ -12,6 +28,8 @@ jobs:
   publish:
     if: github.repository == 'Cringe-Driven-Development-Team/.github' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.release.outputs.image_ref }}
     concurrency:
       group: githubbot-image-${{ github.sha }}
       cancel-in-progress: false
@@ -23,7 +41,7 @@ jobs:
       - name: Install, test and typecheck GitHubBot
         run: |
           bun install --frozen-lockfile --cwd services/githubbot
-          bun test services/githubbot/tests tests/githubbot-workflows.test.ts
+          bun test services/githubbot/tests tests/githubbot-workflows.test.ts tests/auxiliary-publish.test.ts
           bun run --cwd services/githubbot typecheck
       - name: Build and smoke test GitHubBot image
         run: |
@@ -34,19 +52,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish full commit tag and verify registry digest
+      - name: Publish or reuse verified immutable release
+        id: release
         env:
-          REGISTRY_OWNER: ${{ github.repository_owner }}
           IMAGE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          repository="ghcr.io/${REGISTRY_OWNER,,}/githubbot"
-          image="$repository:sha-$IMAGE_SHA"
-          docker tag githubbot:test "$image"
-          docker push "$image"
-          docker pull "$image"
-          digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
-          [[ "$digest" == "$repository"@sha256:* ]]
-          [[ "${digest#"$repository"@sha256:}" =~ ^[0-9a-f]{64}$ ]]
-          echo "Published $digest from $IMAGE_SHA"
-          echo "GitHubBot: $digest (source $IMAGE_SHA)" >> "$GITHUB_STEP_SUMMARY"
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/auxiliary-publish.sh githubbot githubbot:test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-githubbot-${{ github.run_attempt }}
+          path: release.json
+          if-no-files-found: error

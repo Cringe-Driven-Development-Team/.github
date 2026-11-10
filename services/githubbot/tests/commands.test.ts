@@ -39,6 +39,26 @@ describe.each(['close', 'assign', 'assignme', 'unassign', 'tosprint'])('%s targe
       expect(decodeUpdate(raw, config(), bot)).toMatchObject({ kind: 'command', command: { name, target } });
     }
   });
+  test.each([true, false])('explicit URL resolves with topic starter creation metadata: %s', withCreationMetadata => {
+    const raw = message(`/${name}${args} ${url}`, {
+      message_id: 11, chat: { id: -1001, type: 'supergroup' },
+      ...(withCreationMetadata ? { forum_topic_created: { name: 'Tasks', icon_color: 7322096 } } : {}),
+    }) as { message: Record<string, unknown> };
+    raw.message.is_topic_message = true;
+    expect(decodeUpdate(raw, config(), bot)).toMatchObject({ kind: 'command', command: { name, target } });
+  });
+  test.each(['no URL', 'real reply', 'other topic', 'other chat', 'non-forum'])(
+    'rejects ambiguous or missing forum target: %s', variant => {
+      const root = {
+        message_id: variant === 'other topic' ? 12 : 11,
+        chat: { id: variant === 'other chat' ? -1002 : -1001, type: 'supergroup' },
+        forum_topic_created: { name: 'Tasks', icon_color: 7322096 },
+      };
+      const raw = message(`/${name}${args}${variant === 'no URL' ? '' : ` ${url}`}`,
+        variant === 'real reply' ? card() : root) as { message: Record<string, unknown> };
+      raw.message.is_topic_message = variant !== 'non-forum';
+      expect(() => decodeUpdate(raw, config(), bot)).toThrow(CommandError);
+    });
   test.each(['none', 'both', 'short'])('rejects %s target with contextual CommandError', variant => {
     const raw = variant === 'both' ? message(`/${name}${args} ${url}`, card()) : message(`/${name}${args}${variant === 'short' ? ' #7' : ''}`);
     try { decodeUpdate(raw, config(), bot); throw new Error('expected CommandError'); }
@@ -211,4 +231,23 @@ test('invalid credentials and malformed config errors do not echo secret values'
     expect(() => loadConfig(values)).toThrow();
     try { loadConfig(values); } catch (error) { expect(String(error)).not.toMatch(/secret-/); }
   }
+});
+
+test.each(['/help', '/help@GitHubBot'])('decodes %s without a target in any topic or reply', text => {
+  const raw = message(text, { text: 'not an issue card' }) as any;
+  raw.message.message_thread_id = 999;
+  expect(decodeUpdate(raw, config(), bot)).toMatchObject({ context: { threadId: 999 }, command: { name: 'help' } });
+});
+
+test('help rejects arguments with its own format hint', () => {
+  expect(() => decodeUpdate(message('/help extra'), config(), bot)).toThrow(CommandError);
+  expect(() => decodeUpdate(message('/help extra'), config(), bot)).toThrow('Формат: /help');
+});
+
+test.each(['other bot', 'unknown user', 'private', 'foreign chat'])('help ignores %s', reason => {
+  const raw = message(reason === 'other bot' ? '/help@other_bot' : '/help') as any;
+  if (reason === 'unknown user') raw.message.from.id = 999;
+  if (reason === 'private') raw.message.chat = { id: 101, type: 'private' };
+  if (reason === 'foreign chat') raw.message.chat.id = -999;
+  expect(decodeUpdate(raw, config(), bot)).toBeNull();
 });
