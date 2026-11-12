@@ -16,7 +16,7 @@ test('signed backend webhook reaches its own topic and preserves outbox after re
   return f.fetcher(input,init);
  }) as typeof fetch;
  const config=loadConfig({DATABASE_PATH:path,GITHUB_WEBHOOK_SECRET:'test',GITHUB_API_TOKEN:'test',APIDOG_SIGNATURE_KEY:'test',APIDOG_SIGNATURE_HEADER:'X-Test',
-  WEBHOOK_ALERTS_SEND_ENABLED:'true',TELEGRAM_BOT_TOKEN:'fake',TELEGRAM_CHAT_ID:'-1001',TELEGRAM_RELEASES_TOPIC_ID:'99',TELEGRAM_BACKEND_RELEASES_TOPIC_ID:'3377',
+  WEBHOOK_ALERTS_SEND_ENABLED:'true',TELEGRAM_BOT_TOKEN:'fake',TELEGRAM_CHAT_ID:'-1001',TELEGRAM_RELEASES_TOPIC_ID:'99',TELEGRAM_BACKEND_RELEASES_TOPIC_ID:'3377',TELEGRAM_USER_MAP:'{"GrayMouse9":"123456789"}',
   TELEGRAM_APIDOG_BOT_TOKEN:'fake',TELEGRAM_APIDOG_TOPIC_ID:'88',APIDOG_ACCESS_TOKEN:'fake',APIDOG_PROJECT_ID:'1',APIDOG_TARGET_BRANCH_ID:'2',
   APIDOG_PROJECT_NAME:'test',APIDOG_CONTRACT_URL:'https://example.test',APIDOG_TELEGRAM_USER_MAP:'{}',APIDOG_MR_REVIEWERS:'[{"name":"A","telegramId":"1"},{"name":"B","telegramId":"2"}]'});
  let service=startService(config,{fetch:fetcher});const db=new Database(path);
@@ -27,6 +27,7 @@ test('signed backend webhook reaches its own topic and preserves outbox after re
   expect((await post('one','deployment_status',payload)).status).toBe(202);
   const until=Date.now()+4000;while(!sent.length&&Date.now()<until)await Bun.sleep(20);
   expect(sent).toHaveLength(1);expect(sent[0]!.message_thread_id).toBe(3377);expect(sent[0]!.link_preview_options).toEqual({is_disabled:true});expect(String(sent[0]!.text)).toContain('Health Check ✅');
+  expect(sent[0]!.parse_mode).toBe('HTML');expect(String(sent[0]!.text)).toContain('Запустил: <a href="tg://user?id=123456789">GrayMouse9</a>');
   await service.stop();service=startService(config,{fetch:fetcher});
   expect((await post('two','deployment_status',payload)).status).toBe(202);
   expect((await post('job','workflow_job',{action:'completed',workflow_job:{id:200,name:'deploy / deploy',conclusion:'failure'}})).status).toBe(202);
