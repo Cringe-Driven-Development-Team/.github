@@ -1022,13 +1022,7 @@ ID, result/errorCode. Deployment ID есть в `release_notices.metadata_json`;
 bun install --frozen-lockfile
 bun test
 bun run typecheck
-# Из корня .github, без сетевых вызовов:
-bun run scripts/preview-backend-release.ts
 ```
-
-Превью: `docs/superpowers/previews/github-59-backend-cards.html`, четыре примера:
-успех, ошибка Health Check, rollback и отказ до Deployment. Оно не является
-доказательством доставки в реальный Telegram.
 
 PR до готовности producer/config/общей приёмки пишет
 `Part of https://github.com/Cringe-Driven-Development-Team/.github/issues/59`;
