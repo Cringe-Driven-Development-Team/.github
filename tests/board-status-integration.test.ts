@@ -1,216 +1,222 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { reconcileClosedIssue } from '../scripts/issue-status.ts';
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
+import { reconcileClosedIssue, reconcileMergedPullRequest } from '../scripts/issue-status.ts';
 
 const frontendDir = process.env.FRONTEND_DIR;
 if (!frontendDir?.startsWith('/')) throw Error('Set FRONTEND_DIR to the absolute frontend checkout path');
 const { updateReleaseBoard } = await import(`${frontendDir}/scripts/release/board.ts`);
+const { recoverReleaseBoard } = await import(`${frontendDir}/scripts/release/recovery.ts`);
 const { readChangeReport } = await import(`${frontendDir}/scripts/release/report.ts`);
 const { fixture, REPO } = await import(`${frontendDir}/scripts/release/test/fixture.ts`);
-const shared: any = Bun.YAML.parse(await Bun.file(`${import.meta.dir}/../.github/workflows/add-to-project.yml`).text());
-const releaseWorkflows = await Promise.all(['ci', 'cd', 'rollback'].map(async name => Bun.YAML.parse(await Bun.file(`${frontendDir}/.github/workflows/${name}.yml`).text()) as any));
-const boardConfigs = [releaseWorkflows[0].jobs.publish.concurrency, releaseWorkflows[1].jobs.cd.concurrency, releaseWorkflows[2].jobs.rollback.concurrency];
-const operations = ['publish', 'deploy', 'rollback'] as const;
-const statuses = ['Ready for release', 'Done', 'Rollback from production'];
-const closeConfig = shared.jobs['issue-status'].concurrency;
-const boardConfig = boardConfigs[0];
-const closeGroup = Function('github', `return (${closeConfig.group.replace(/^\$\{\{\s*|\s*\}\}$/g, '')});`)({ repository: REPO });
+const owner = 'Cringe-Driven-Development-Team';
 const when = '2026-11-01T01:00:00Z';
 const after = '2026-11-01T04:00:00Z';
+const page = (nodes: any[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } });
 let f: ReturnType<typeof fixture>;
-let cards: Map<number, any>;
-let writes: { issue: number; status: string }[];
-let pauseClose: (() => Promise<void>) | undefined;
-let fail = false;
-let failSet = false;
-let staleTimestamp = false;
-let resets = 0;
-const input = (number: number, closedAt = when) => ({ repository: REPO, issueId: `I${number}`, closedAt });
-const page = (nodes: any[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null, hasPreviousPage: false, startCursor: null } });
+let intercept: ((url: URL, body: any, init?: RequestInit) => Response | undefined) | undefined;
+let warn: ReturnType<typeof spyOn>;
+let expectedWarnings: string[];
 
 beforeEach(() => {
-  f = fixture(); f.publish();
-  process.env.GITHUB_STEP_SUMMARY = `${f.dir}/summary.md`;
-  cards = new Map([1, 2, 3].map(number => [number, { closed: true, closedAt: when, reason: 'COMPLETED', closer: number, status: { name: 'In review', updatedAt: '2026-10-31T00:00:00Z' } }]));
-  writes = []; pauseClose = undefined; fail = false; failSet = false; staleTimestamp = false; resets = 0;
-  f.extra = async (url: URL, body: any) => {
-    if (url.pathname !== '/graphql' || String(body?.query).includes('LinkedIssues')) return;
-    const query = String(body.query); const v = body.variables;
-    if (fail) return new Response('unavailable', { status: 503 });
-    if (query.includes('IssueStatusProject') || query.includes('ReleaseProject')) return Response.json({ data: { organization: { projectV2: {
-      id: 'P', viewerCanUpdate: true, fields: page([{ id: 'F', name: 'Status', options: ['Ready for build', 'Ready for release', 'Done', 'Rollback from production'].map(name => ({ id: name, name })) }]),
-    } } } });
-    if (query.includes('mutation')) {
-      if (query.includes('IssueStatusUpdate')) await pauseClose?.();
-      const number = Number(v.item.slice(1));
-      if (v.reset) {
-        resets++;
-        cards.get(number).status = null;
-        if (failSet) return Response.json({ errors: [{ message: 'set failed after clear' }] });
-      }
-      // A same-option no-op need not update GitHub's timestamp.
-      if (cards.get(number).status?.name !== v.option) cards.get(number).status = { name: v.option, updatedAt: staleTimestamp ? '2026-10-31T00:00:00Z' : after };
-      writes.push({ issue: number, status: v.option });
-      return Response.json({ data: { clearProjectV2ItemFieldValue: v.reset ? { projectV2Item: { id: v.item } } : undefined, updateProjectV2ItemFieldValue: { projectV2Item: { id: v.item } } } });
-    }
-    const number = Number(v.id.slice(1)); const state = cards.get(number);
-    if (!state) throw Error(`Unexpected issue ${v.id}`);
-    if (query.includes('IssueStatusIssue') || query.includes('BoardIssue')) {
-      const closer = state.closer === null ? null : {
-        __typename: 'PullRequest', kind: 'PullRequest', number: state.closer, merged: true, baseRefName: 'main',
-        repository: { nameWithOwner: REPO, defaultBranchRef: { name: 'main' } },
-      };
-      return Response.json({ data: { node: {
-        __typename: 'Issue', id: v.id, closed: state.closed, closedAt: state.closedAt, stateReason: state.reason, title: 'Без префикса', repository: { nameWithOwner: REPO },
-        timelineItems: page([{ __typename: 'ClosedEvent', kind: 'ClosedEvent', createdAt: state.closedAt, closer }]),
-      } } });
-    }
-    if (query.includes('IssueStatusCards') || query.includes('BoardCard')) return Response.json({ data: { node: { projectItems: page([{
-      id: `C${number}`, project: { id: 'P', number: 1, owner: { login: 'Cringe-Driven-Development-Team' } }, fieldValueByName: state.status,
+  f = fixture();
+  f.issues.delete(1); f.issues.delete(3);
+  f.issues.get(2)!.card = { id: 'C2', status: 'In review', updatedAt: '2026-10-31T00:00:00Z' };
+  f.publish();
+  intercept = undefined;
+  expectedWarnings = [];
+  warn = spyOn(console, 'warn').mockImplementation(() => {});
+  const pr = (number: number) => ({ ...f.prs.get(number), repository: { nameWithOwner: REPO, defaultBranchRef: { name: 'main', target: { oid: f.main } } } });
+  // Both implementations share one state; only GitHub HTTP responses are replaced.
+  f.extra = (url, body, init) => {
+    const override = intercept?.(url, body, init);
+    if (override) return override;
+    if (url.pathname !== '/graphql') return;
+    const query = String(body.query), v = body.variables;
+    if (query.includes('BoardCard') && f.issues.get(2)!.card.status === '') return Response.json({ data: { node: { projectItems: page([{ id: 'C2', project: { id: 'P' }, fieldValueByName: null }]) } } });
+    if (!/IssueStatus/.test(query)) return;
+    const issue = f.issues.get(Number(String(v.id).slice(1)));
+    if (query.includes('IssueStatusPullRequest')) return Response.json({ data: { repository: {
+      nameWithOwner: REPO, defaultBranchRef: { name: 'main', target: { oid: f.main } },
+      pullRequest: { ...pr(v.number), closingIssuesReferences: page([...f.issues.values()].filter(i => i.prs.includes(v.number)).map(i => ({ id: i.id, number: i.number, repository: { nameWithOwner: REPO } }))) },
+    } } });
+    if (query.includes('IssueStatusLinks')) return Response.json({ data: { node: { closedByPullRequestsReferences: page(issue!.prs.map(pr)) } } });
+    if (query.includes('IssueStatusIssue')) return Response.json({ data: { node: {
+      __typename: 'Issue', id: issue!.id, closed: issue!.state === 'closed', closedAt: issue!.state === 'closed' ? after : null,
+      stateReason: issue!.state_reason?.toUpperCase() ?? null, repository: { nameWithOwner: REPO },
+      timelineItems: page(issue!.events.map(event => ({ ...event, __typename: event.kind }))),
+    } } });
+    if (query.includes('IssueStatusCards')) return Response.json({ data: { node: { projectItems: page([{
+      id: issue!.card.id, project: { id: 'P', number: 1, owner: { login: owner } },
+      fieldValueByName: issue!.card.status ? { name: issue!.card.status, updatedAt: issue!.card.updatedAt } : null,
     }]) } } });
-    throw Error(`Unexpected query ${query}`);
+    if (query.includes('IssueStatusProject')) return Response.json({ data: { organization: { projectV2: {
+      id: 'P', viewerCanUpdate: true, fields: page([{ id: 'F', name: 'Status', options: ['Ready for build', 'Done'].map(name => ({ id: name, name })) }]),
+    } } } });
+    if (query.includes('IssueStatusUpdate')) {
+      const item = f.issues.get(Number(v.item.slice(1)))!;
+      item.card.status = v.option; item.card.updatedAt = after;
+      f.writes.push({ kind: 'status', issue: item.number, status: v.option });
+      return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: v.item } } } });
+    }
+    throw Error(`Unexpected shared query ${query}`);
   };
 });
-afterEach(() => f.restore());
-
-// Models group exclusion, not GitHub's implementation or its hosted queue capacity.
-function scheduler() {
-  const tails = new Map<string, Promise<unknown>>();
-  return <T>(group: string, work: () => Promise<T>): Promise<T> => {
-    const promise = (tails.get(group) ?? Promise.resolve()).then(work);
-    tails.set(group, promise.catch(() => {}));
-    return promise;
-  };
+afterEach(() => {
+  try { expect(warn.mock.calls).toEqual(expectedWarnings.map(message => [message])); }
+  finally { warn.mockRestore(); f.restore(); }
+});
+const input = () => ({ repository: REPO, issueId: 'I2', closedAt: after });
+const closed = () => reconcileClosedIssue(input(), 'project-token');
+const merge = () => reconcileMergedPullRequest({ repository: REPO, number: 2 }, 'project-token');
+const report = () => readChangeReport(REPO, f.root, f.b);
+function production(...args: Parameters<typeof f.production>) {
+  const id = f.production(...args);
+  // CD closes at 04:00; subsequent operations must have strictly later success timestamps.
+  f.deployments[0]!.created_at = `2026-11-01T0${id + 3}:00:00Z`;
+  return id;
 }
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>(done => { resolve = done; });
-  return { promise, resolve };
-}
-async function report() { return readChangeReport(REPO, f.root, f.b); }
-async function board(kind: 'publish' | 'deploy' | 'rollback' = 'publish') {
-  const result = await updateReleaseBoard(kind, await report());
+async function board(kind: 'publish' | 'deploy' | 'rollback', id?: number) {
+  const result = await updateReleaseBoard(kind, await report(), id);
+  expectedWarnings.push(...result.errors);
   expect(result.errors).toEqual([]);
+  return result;
 }
-async function overlapping(group: string, kind: 'publish' | 'deploy' | 'rollback' = 'publish') {
-  const schedule = scheduler(); const reachedWrite = deferred(); const allowWrite = deferred();
-  pauseClose = async () => { reachedWrite.resolve(); await allowWrite.promise; };
-  const close = schedule(closeGroup, () => reconcileClosedIssue(input(2), 'project-token'));
-  await reachedWrite.promise;
-  let boardEntered = false;
-  const reconcile = schedule(group, async () => { boardEntered = true; await board(kind); });
-  // A microtask turn lets an unlocked Board enter; a locked Board cannot start.
-  await Promise.resolve(); await Promise.resolve();
-  const overlapped = boardEntered;
-  if (overlapped) await reconcile;
-  allowWrite.resolve();
-  await Promise.all([close, reconcile]);
-  return overlapped;
+function pair(state: string, status: string) {
+  const issue = f.issues.get(2)!;
+  expect([issue.state, issue.card.status]).toEqual([state, status]);
+}
+function manuallyClose(reason = 'completed') {
+  const issue = f.issues.get(2)!;
+  issue.state = 'closed'; issue.state_reason = reason;
+  issue.events.push({ kind: 'ClosedEvent', createdAt: after, closer: null });
 }
 
-test.each([0, 1, 2])('actual workflow groups serialize close and inline operation %i', async index => {
-  expect(await overlapping(boardConfigs[index].group, operations[index])).toBe(false);
-  expect(cards.get(2).status.name).toBe(statuses[index]);
-  const count = writes.length;
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  await board(operations[index]);
-  expect(writes).toHaveLength(count);
+test('merge → publish → deploy → rollback → deploy survives delayed events without reopening', async () => {
+  expect((await merge()).changed).toBe(1); pair('open', 'Ready for build');
+  await board('publish'); pair('open', 'Ready for release');
+  await merge(); pair('open', 'Ready for release');
+  expect(await closed()).toBe('skipped');
+  expect(f.writes.filter(w => w.kind === 'close')).toHaveLength(0);
+  const deploy = production();
+  await board('deploy', deploy); pair('closed', 'Done');
+  expect(await closed()).toBe('unchanged');
+  await merge(); await board('publish'); pair('closed', 'Done');
+  const rollback = production('rollback', f.root, f.b);
+  await board('rollback', rollback); pair('closed', 'Rollback from production');
+  await closed(); await merge(); await board('publish'); await board('deploy', deploy);
+  pair('closed', 'Rollback from production');
+  await board('deploy', production()); pair('closed', 'Done');
+  await closed(); await board('rollback', rollback); pair('closed', 'Done');
+  expect(f.writes.filter(w => w.kind === 'close')).toHaveLength(1);
+  expect(f.writes.filter(w => w.kind === 'reopen')).toHaveLength(0);
 });
 
-test('different group fixture exposes the real read/write regression', async () => {
-  const broken = { ...boardConfig, group: 'wrong-board-group' };
-  expect(await overlapping(broken.group)).toBe(true);
-  expect(writes.some(write => write.issue === 2 && write.status === 'Ready for release')).toBe(true);
-  expect(cards.get(2).status.name).toBe('Ready for build');
+test('close 403 then Project 503 recover using original ID after B→B→C', async () => {
+  await merge(); await board('publish');
+  const id = production();
+  intercept = (url, _body, init) => url.pathname.endsWith('/issues/2') && init?.method === 'PATCH' ? new Response('denied', { status: 403 }) : undefined;
+  const first = await updateReleaseBoard('deploy', await report(), id);
+  expectedWarnings.push(...first.errors);
+  expect(first.errors).toHaveLength(1); expect(first.errors[0]).toContain('403');
+  pair('open', 'Ready for release');
+  intercept = (_url, body) => body?.query?.includes('UpdateReleaseStatus') ? new Response('unavailable', { status: 503 }) : undefined;
+  const second = await updateReleaseBoard('deploy', await report(), id);
+  expectedWarnings.push(...second.errors);
+  expect(second.errors).toHaveLength(1); expect(second.errors[0]).toContain('503');
+  pair('closed', 'Ready for release');
+  intercept = undefined;
+  production('deploy', f.b, f.b); production('deploy', f.c, f.b);
+  expect((await recoverReleaseBoard(id)).errors).toEqual([]); pair('closed', 'Done');
+  await closed(); await merge(); await board('publish'); pair('closed', 'Done');
+  expect(f.writes.filter(w => w.kind === 'close')).toHaveLength(1);
 });
 
-test.each([0, 1, 2])('inline operation %i before delayed close preserves its result', async index => {
-  await board(operations[index]);
-  const count = writes.length;
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  expect(cards.get(2).status.name).toBe(statuses[index]);
-  expect(writes).toHaveLength(count);
+test('manual completed retains Done across unrelated B→B→C', async () => {
+  manuallyClose();
+  expect(await closed()).toBe('changed'); pair('closed', 'Done');
+  production('deploy', f.b, f.b); production('deploy', f.c, f.b);
+  f.issues.get(2)!.card.status = 'In review';
+  expect(await closed()).toBe('changed'); pair('closed', 'Done');
+  await board('publish'); pair('closed', 'Done');
+  expect(f.writes.filter(w => w.kind === 'close' || w.kind === 'reopen')).toHaveLength(0);
 });
 
-test('three different closures use a non-replacing queue and all complete', async () => {
-  expect(closeConfig.queue).toBe('max'); expect(closeConfig['cancel-in-progress']).toBe(false);
-  for (const config of boardConfigs) { expect(config.queue).toBe('max'); expect(config['cancel-in-progress']).toBe(false); }
-  const schedule = scheduler();
-  expect(await Promise.all([1, 2, 3].map(number => schedule(closeGroup, () => reconcileClosedIssue(input(number), 'project-token'))))).toEqual(['changed', 'changed', 'changed']);
-  expect(writes).toEqual([1, 2, 3].map(issue => ({ issue, status: 'Ready for build' })));
+test('manual completed participates in rollback only after a confirmed CD', async () => {
+  manuallyClose(); await closed();
+  await board('rollback', production('rollback', f.root, f.b)); pair('closed', 'Done');
+  await board('deploy', production());
+  await board('rollback', production('rollback', f.root, f.b)); pair('closed', 'Rollback from production');
+  await closed(); pair('closed', 'Rollback from production');
+  expect(f.writes.filter(w => w.kind === 'close' || w.kind === 'reopen')).toHaveLength(0);
 });
 
-test('old closure cannot write a new cycle; manual close remains Done through Board', async () => {
-  const state = cards.get(2);
-  state.closed = false;
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('skipped');
-  state.closed = true; state.closedAt = after; state.closer = null;
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('skipped');
-  expect(await reconcileClosedIssue(input(2, after), 'project-token')).toBe('changed');
-  await board();
-  expect(writes.filter(write => write.issue === 2)).toEqual([{ issue: 2, status: 'Done' }]);
+test.each(['not_planned', 'duplicate'])('manual %s is untouched by merge and release operations', async reason => {
+  manuallyClose(reason); await closed(); pair('closed', 'Done');
+  await merge(); await board('publish'); await board('deploy', production());
+  await board('rollback', production('rollback', f.root, f.b)); pair('closed', 'Done');
+  expect(f.writes).toEqual([{ kind: 'status', issue: 2, status: 'Done' }]);
 });
 
-test('API failure rejects and rerun recovers without duplicate writes', async () => {
-  fail = true;
-  await expect(reconcileClosedIssue(input(2), 'project-token')).rejects.toThrow('HTTP 503');
-  expect(writes).toEqual([]);
-  fail = false;
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('changed');
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  expect(writes).toEqual([{ issue: 2, status: 'Ready for build' }]);
+test('manual reopen after merge protects the issue from all delayed operations', async () => {
+  f.issues.get(2)!.events.push({ kind: 'ReopenedEvent', createdAt: after });
+  await merge(); await board('publish'); await board('deploy', production()); await closed();
+  pair('open', 'In review'); expect(f.writes).toEqual([]);
 });
 
-
-test.each([0, 1, 2])('operation %i confirms old matching Status before delayed close', async index => {
-  const target = statuses[index];
-  cards.get(2).status = { name: target, updatedAt: '2026-10-31T00:00:00Z' };
-  await board(operations[index]);
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  expect(cards.get(2).status.name).toBe(target);
-  expect(resets).toBe(1);
-  const count = writes.length;
-  await board(operations[index]);
-  expect(writes).toHaveLength(count);
+test('native linked PR pagination protects against a newer merge on its last page', async () => {
+  f.prs.set(4, { ...f.prs.get(2)!, number: 4, mergeCommit: { oid: f.c } });
+  intercept = (_url, body) => {
+    if (!/IssueStatusLinks|MergedIssuePullRequests/.test(String(body?.query))) return;
+    const cursor = body.variables.cursor;
+    const pr = { ...f.prs.get(cursor ? 4 : 2), repository: { nameWithOwner: REPO, defaultBranchRef: { name: 'main', target: { oid: f.main } } } };
+    return Response.json({ data: { node: { repository: pr.repository, closedByPullRequestsReferences: { nodes: [pr], pageInfo: { hasNextPage: !cursor, endCursor: cursor ? null : 'next' } } } } });
+  };
+  await merge(); await board('publish'); await board('deploy', production());
+  expect(f.writes).toEqual([]); pair('open', 'In review');
 });
 
-test('failed set after clear is visible and rerun repairs the empty status', async () => {
-  cards.get(2).status = { name: 'Ready for release', updatedAt: '2026-10-31T00:00:00Z' };
-  failSet = true;
-  expect((await updateReleaseBoard('publish', await report())).errors.length).toBeGreaterThan(0);
-  expect(cards.get(2).status).toBeNull();
-  failSet = false;
-  await board();
-  expect(cards.get(2).status.name).toBe('Ready for release');
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
+test('clear succeeds but set fails, then retry repairs the empty Status', async () => {
+  const issue = f.issues.get(2)!;
+  issue.card.status = 'Ready for release';
+  intercept = (_url, body) => {
+    if (!body?.query?.includes('UpdateReleaseStatus')) return;
+    expect(body.variables.reset).toBe(true);
+    issue.card.status = '';
+    return Response.json({ errors: [{ message: 'set failed after clear' }] });
+  };
+  const result = await updateReleaseBoard('publish', await report()); expectedWarnings.push(...result.errors);
+  expect(result.errors).toHaveLength(1); expect(issue.card.status).toBe('');
+  intercept = undefined;
+  await board('publish'); pair('open', 'Ready for release');
 });
 
-test('Board reports an unconfirmed current-cycle timestamp after reset', async () => {
-  cards.get(2).status = { name: 'Ready for release', updatedAt: '2026-10-31T00:00:00Z' };
-  staleTimestamp = true;
-  const result = await updateReleaseBoard('publish', await report());
-  expect(result.errors.join()).toContain('Status');
+test('same Status from older cycle must obtain a confirmed current timestamp', async () => {
+  const issue = f.issues.get(2)!; issue.card.status = 'Ready for release';
+  let resets = 0;
+  intercept = (_url, body) => {
+    if (body?.query?.includes('UpdateReleaseStatus')) { expect(body.variables.reset).toBe(true); resets++; }
+  };
+  await board('publish'); expect(resets).toBe(1);
+  await merge(); await board('publish'); expect(resets).toBe(1);
 });
 
-test('rollback → late close → deploy preserves the current closure cycle', async () => {
-  await board('rollback');
-  expect(cards.get(2).status.name).toBe('Rollback from production');
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  await board('deploy');
-  expect(cards.get(2).status.name).toBe('Done');
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('unchanged');
-  expect(writes.filter(write => write.issue === 2).map(write => write.status)).toEqual(['Rollback from production', 'Done']);
+test('unconfirmed timestamp is reported rather than accepted as success', async () => {
+  f.issues.get(2)!.card.status = 'Ready for release';
+  intercept = (_url, body) => body?.query?.includes('UpdateReleaseStatus') ? Response.json({ data: {
+    clearProjectV2ItemFieldValue: { projectV2Item: { id: 'C2' } }, updateProjectV2ItemFieldValue: { projectV2Item: { id: 'C2' } },
+  } }) : undefined;
+  const result = await updateReleaseBoard('publish', await report()); expectedWarnings.push(...result.errors);
+  expect(result.errors).toHaveLength(1); expect(result.errors[0]).toContain('Нет подтверждения Status');
 });
 
-test('publish preserves advanced statuses of this cycle and refreshes an older cycle', async () => {
-  await board('rollback');
-  const count = writes.length;
-  await board('publish');
-  expect(writes).toHaveLength(count);
-  const state = cards.get(2);
-  state.closedAt = after;
-  state.status.updatedAt = when;
-  await board('publish');
-  expect(state.status.name).toBe('Ready for release');
-  expect(await reconcileClosedIssue(input(2, after), 'project-token')).toBe('unchanged');
-  expect(await reconcileClosedIssue(input(2), 'project-token')).toBe('skipped');
+test('all real workflow writers use the same non-replacing release-board queue', async () => {
+  const shared: any = Bun.YAML.parse(await Bun.file(`${import.meta.dir}/../.github/workflows/add-to-project.yml`).text());
+  const configs = [shared.jobs['issue-status'].concurrency];
+  for (const [name, job] of [['ci', 'publish'], ['cd', 'cd'], ['rollback', 'rollback'], ['reconcile-issues', 'reconcile']]) {
+    const workflow: any = Bun.YAML.parse(await Bun.file(`${frontendDir}/.github/workflows/${name}.yml`).text());
+    configs.push(workflow.jobs[job].concurrency);
+  }
+  for (const config of configs) {
+    const group = config.group.startsWith('${{') ? Function('github', `return (${config.group.replace(/^\$\{\{\s*|\s*\}\}$/g, '')});`)({ repository: REPO }) : config.group;
+    expect(group).toBe('release-board'); expect(config.queue).toBe('max'); expect(config['cancel-in-progress']).toBe(false);
+  }
 });

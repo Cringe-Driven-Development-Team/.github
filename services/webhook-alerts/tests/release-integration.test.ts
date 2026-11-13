@@ -12,6 +12,7 @@ import { A, B, C, REPO } from "./helpers/release";
 import { createHash } from "node:crypto";
 import releaseJson from "./fixtures/github/release-published.json";
 import manifestJson from "./fixtures/github/release-manifest.json";
+import issueJson from "./fixtures/github/issues-opened.json";
 
 test("HTTP release flow suppresses stale retries, deduplicates results and preserves uncertain delivery on reopen", async () => {
   const directory = mkdtempSync(join(tmpdir(), "release-http-"));
@@ -65,6 +66,9 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     productionVisible = false,
     failedVisible = false,
     productionState = "in_progress";
+  let issueState = "open";
+  let closeAttempts = 0;
+  const closeMessages = () => accepted.filter(body => String(body.text).includes("Задача закрыта"));
   let telegramAttempts = 0;
   const attempted: Record<string, unknown>[] = [],
     accepted: Record<string, unknown>[] = [],
@@ -80,11 +84,20 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
         attempted.push(body);
         if (String(body.text).includes("поставлен в очередь"))
           return Response.json({ ok: false, parameters: { retry_after: 1 } }, { status: 429 });
+        if (String(body.text).includes("Задача закрыта") && ++closeAttempts === 1)
+          return Response.json({ ok: false, parameters: { retry_after: 1 } }, { status: 429 });
         accepted.push(body);
         // A lost success response must stay manual even after the service restarts.
         if (String(body.text).includes("ошибка"))
           return new Response("upstream unavailable", { status: 503 });
         return Response.json({ ok: true, result: { message_id: accepted.length } });
+      }
+      if (p === "/issues/27" && request.method === "PATCH") {
+        const body = await request.json() as { state: string; state_reason: string };
+        expect(body).toEqual({ state: "closed", state_reason: "completed" });
+        issueState = body.state;
+        return Response.json({ ...issueJson.issue, number: 27, state: issueState, state_reason: body.state_reason,
+          title: "Frontend. Подстановка static", html_url: `https://github.com/${REPO}/issues/27` });
       }
       if (p.includes("/merge-requests") || p.includes("/sprint-branches"))
         return Response.json({ success: true, data: [], meta: { nextPage: null } });
@@ -99,6 +112,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
                   {
                     id: "ISSUE27",
                     number: 27,
+                    state: issueState.toUpperCase(),
                     title: "Frontend. Подстановка static",
                     repository: { nameWithOwner: REPO },
                   },
@@ -253,6 +267,8 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     await waitFor(() => telegramAttempts === 1);
     expect(attempted[0]!.parse_mode).toBe("HTML");
     expect(String(attempted[0]!.text)).toContain('tg://user?id=111');
+    expect(issueState).toBe("open");
+    expect(String(attempted[0]!.text)).toContain(`/issues/27`);
     merged = true;
     await waitFor(
       () => !!db.query("SELECT 1 FROM outbox WHERE error_code = 'release_skipped'").get(),
@@ -267,6 +283,9 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     expect(String(accepted[0]!.text)).toContain(`<code>release-${B}</code>`);
     expect(JSON.stringify(accepted[0]!.reply_markup)).toContain(`https://github.com/${REPO}/releases/tag/release-${B}`);
     expect((await post("ready-duplicate", "release", { action: "published", release: { id: 5 } })).status).toBe(202);
+    expect(issueState).toBe("open");
+    const closeMessagesBeforeDeploy = closeMessages();
+    expect(closeMessagesBeforeDeploy).toHaveLength(0);
     productionVisible = true;
     expect((await post("start", "deployment_status", status(1, "in_progress"))).status).toBe(202);
     await waitFor(() => accepted.length === 2);
@@ -281,6 +300,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     expect(JSON.stringify(accepted[2]!.reply_markup)).toContain(
       `https://github.com/${REPO}/pull/125`,
     );
+    expect(issueState).toBe("open");
     expect(accepted.every((body) => body.message_thread_id === 99)).toBe(true);
     expect((await post("result", "deployment_status", status(1, "success"))).status).toBe(200);
     expect((await post("result-duplicate", "deployment_status", status(1, "success"))).status).toBe(
@@ -298,6 +318,19 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     expect(accepted[3]!.parse_mode).toBe("HTML");
     expect(String(accepted[3]!.text)).toContain('tg://user?id=111');
     expect(String(accepted[3]!.text)).toContain("Health Check ❌");
+    const response = await fetch(new URL(`/repos/${REPO}/issues/27`, upstream.url), {
+      method: "PATCH", body: JSON.stringify({ state: "closed", state_reason: "completed" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const closedIssue = await response.json();
+    expect((await post("api-close", "issues", { action: "closed", issue: closedIssue, sender: { login: "github-actions[bot]" } })).status).toBe(202);
+    await waitFor(() => closeMessages().length === 1);
+    expect((await post("api-close", "issues", { action: "closed", issue: closedIssue, sender: { login: "github-actions[bot]" } })).status).toBe(200);
+    const closeMessagesAfterRetry = closeMessages();
+    expect(closeMessagesAfterRetry).toHaveLength(1);
+    expect(closeAttempts).toBe(2);
+    expect(closeMessagesAfterRetry[0]!.message_thread_id).toBe(26);
+    expect(String(closeMessagesAfterRetry[0]!.text)).toContain("#27");
     await service.stop();
     const snapshot = join(directory, "snapshot.sqlite");
     createSnapshot(path, snapshot);
@@ -310,12 +343,12 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     }
     service = startService(config, { fetch: fetcher });
     await Bun.sleep(1100);
-    expect(telegramAttempts).toBe(5);
-    expect(accepted).toHaveLength(4);
+    expect(telegramAttempts).toBe(7);
+    expect(accepted).toHaveLength(5);
     expect(queries.some((query) => /projectsV2|projectV2/.test(query))).toBe(false);
     expect(
       db.query("SELECT telegram_message_id FROM outbox WHERE status = 'sent' ORDER BY id").all(),
-    ).toEqual([{ telegram_message_id: 1 }, { telegram_message_id: 2 }, { telegram_message_id: 3 }]);
+    ).toEqual([{ telegram_message_id: 1 }, { telegram_message_id: 2 }, { telegram_message_id: 3 }, { telegram_message_id: 5 }]);
   } finally {
     await server.stop(true);
     await service.stop();
