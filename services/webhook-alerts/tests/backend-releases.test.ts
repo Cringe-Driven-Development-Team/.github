@@ -99,3 +99,12 @@ for(const conclusion of ['failure','cancelled'] as const) test(`completed ${conc
  const [card]=await projectRelease(d,f.api,config);expect(card?.release?.kind).toBe('job-error');expect(card?.html).toContain('Health Check ⚪');
  expect(await checkReleaseNotice(card!.release!,f.api,config)).toBe('send');
 });
+
+test('standalone CD deploy job failure produces an honest backend fallback', async () => {
+  const f=fixture();f.job.name='deploy';f.job.run.workflow='CD';f.job.run.event='workflow_dispatch';
+  f.job.operation=null;f.job.run.steps=[{name:'Prepare target',outcome:'failure'}];
+  const d=job();const payload=JSON.parse(new TextDecoder().decode(d.raw));payload.workflow_job.name='deploy';
+  d.raw=new TextEncoder().encode(JSON.stringify(payload));
+  const [card]=await projectRelease(d,f.api,config);
+  expect(card?.html).toContain('Выкатка бэка: ошибка');expect(card?.html).toContain('неизвестно');
+});
