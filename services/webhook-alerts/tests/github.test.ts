@@ -48,6 +48,15 @@ describe('GitHub event projection', () => {
     const [m] = await formatGithub(delivery('issues', issue(action)), api(), config);
     expect(m?.button?.text).toBe('Открыть задачу'); expect(m?.html).not.toContain('blockquote');
   });
+  test('API completed close by Actions uses the ordinary issue-closed card', async () => {
+    const payload = { ...issue('closed'), sender: { login: 'github-actions[bot]', type: 'Bot' } };
+    Object.assign(payload.issue, { state: 'closed', state_reason: 'completed', closed_at: '2026-10-24T12:00:00Z' });
+    const messages = await formatGithub(delivery('issues', payload), api(), config);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.html).toContain('✅ Задача закрыта');
+    expect(messages[0]?.button?.text).toBe('Открыть задачу');
+    expect(messages[0]?.topic).toBe(26);
+  });
   test('edited issue filters title-only and first ten minutes', async () => {
     const p = { ...issue('edited'), changes: {} as Record<string, unknown> };
     expect(await formatGithub(delivery('issues', p), api(), config)).toEqual([]);

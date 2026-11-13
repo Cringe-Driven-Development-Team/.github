@@ -360,7 +360,7 @@ function issuePage(number: number, more: boolean) {
   return Response.json({ data: { repository: { pullRequest: {
     title: 'Human readable PR',
     closingIssuesReferences: {
-      nodes: [{ id: `I${number}`, number, title: `Task ${number}`, repository: { nameWithOwner: REPO } }],
+      nodes: [{ id: `I${number}`, number, title: `Task ${number}`, state: 'OPEN', repository: { nameWithOwner: REPO } }],
       pageInfo: { hasNextPage: more, endCursor: more ? 'next-page' : null },
     },
   } } } });
@@ -444,4 +444,26 @@ test('publish_job_fallback_ignores_release_of_other_attempt_missing_or_untrusted
   expect((await f.api.job(300)).operation).toBeNull();
   tagStatus = 502;
   await expect(f.api.job(300)).rejects.toThrow('http_502');
+});
+
+
+test('open_native_linked_issue_survives_queue_ready_and_production_reports', async () => {
+  const f = fixture();
+  f.extra = (url, init) => {
+    if (url.pathname === '/graphql' && String(init?.body).includes('closingIssuesReferences')) {
+      expect(String(init?.body)).not.toMatch(/states:\s*\[?CLOSED/);
+      return issuePage(27, false);
+    }
+  };
+  const queue = await f.api.queue(125);
+  expect(queue.closed).toBe(false);
+  const queueIssues = await f.api.pullRequest(125);
+  const release = await f.api.release(5);
+  const ready = await f.api.changes(release.notification.base_sha!, release.sha);
+  const production = await f.api.operation(1);
+  const result = await f.api.changes(production.notification.base_sha!, production.sha);
+  for (const report of [queueIssues, ready, result]) {
+    const issueNumbers = report.issues.map(issue => issue.number);
+    expect(issueNumbers).toContain(27);
+  }
 });

@@ -48,7 +48,6 @@ chmod +x "$TMP/bin/gh"
 
 ORG=Cringe-Driven-Development-Team
 PR=https://github.com/frontend-park-mail-ru/2026_2_Cringe_Driven_Development/pull/40
-F=repos/$ORG/frontend/issues
 B=repos/$ORG/backend/issues
 
 # так GitHub заполняет env: пустое описание PR — пустая строка
@@ -98,48 +97,55 @@ no_calls() {
   pass
 }
 
+# frontend targets never close here, including from a foreign PR repository.
+when "frontend короткая/полная/разный регистр исключены, backend остаётся" \
+  BODY=$'Closes #5\nCloses '"$ORG"$'/frontend#5\nCLOSES cringe-driven-development-team/Frontend#6\nCloses https://github.com/Cringe-Driven-Development-Team/frontend/issues/8\nCloses '"$ORG"'/backend#7' \
+  GH_ISSUES='{"frontend#5":{"state":"open"},"frontend#6":{"state":"open"},"backend#7":{"state":"open"}}'
+calls_n 0 "PATCH repos/$ORG/frontend/issues/"
+calls_n 1 "PATCH $B/7 "
+
 # --- закрываем
 
 when "мерж с Closes: открытая задача закрыта, потом комментарий" \
-  BODY="Closes $ORG/frontend#5" GH_ISSUES='{"frontend#5":{"state":"open"}}'
-called "GET $F/5" "PATCH $F/5 state=closed state_reason=completed" \
-  "POST $F/5/comments body=<!-- auto -->Закрыта мержем $PR"
-in_order "PATCH $F/5" "POST $F/5/comments"
+  BODY="Closes $ORG/backend#5" GH_ISSUES='{"backend#5":{"state":"open"}}'
+called "GET $B/5" "PATCH $B/5 state=closed state_reason=completed" \
+  "POST $B/5/comments body=<!-- auto -->Закрыта мержем $PR"
+in_order "PATCH $B/5" "POST $B/5/comments"
 
 when "ключевые слова в любом регистре, в заголовке и описании; повтор — один раз" \
-  TITLE="WEB-5: Вход (fixes $ORG/frontend#5)" \
-  BODY=$'resolves: '"$ORG"$'/backend#7\nCLOSES cringe-driven-development-team/Frontend#5\n- Closes '"$ORG/frontend#5" \
-  GH_ISSUES='{"frontend#5":{"state":"open"},"backend#7":{"state":"open"}}'
-calls_n 1 "PATCH $F/5 "
+  TITLE="WEB-5: Вход (fixes $ORG/backend#5)" \
+  BODY=$'resolves: '"$ORG"$'/backend#7\nCLOSES cringe-driven-development-team/Backend#5\n- Closes '"$ORG/backend#5" \
+  GH_ISSUES='{"backend#5":{"state":"open"},"backend#7":{"state":"open"}}'
+calls_n 1 "PATCH $B/5 "
 calls_n 1 "PATCH $B/7 "
 
 when "описание с CRLF из веб-редактора GitHub" \
-  BODY=$'Сделал вход\r\nCloses '"$ORG"$'/frontend#5\r\n' GH_ISSUES='{"frontend#5":{"state":"open"}}'
-called "PATCH $F/5 state=closed state_reason=completed"
+  BODY=$'Сделал вход\r\nCloses '"$ORG"$'/backend#5\r\n' GH_ISSUES='{"backend#5":{"state":"open"}}'
+called "PATCH $B/5 state=closed state_reason=completed"
 
 # --- не трогаем
 
-when "задача уже закрыта" BODY="Closes $ORG/frontend#5" GH_ISSUES='{"frontend#5":{"state":"closed"}}'
-called "GET $F/5" "!PATCH" "!POST"
+when "задача уже закрыта" BODY="Closes $ORG/backend#5" GH_ISSUES='{"backend#5":{"state":"closed"}}'
+called "GET $B/5" "!PATCH" "!POST"
 
-when "номер указывает на PR" BODY="Fixes $ORG/frontend#6" \
-  GH_ISSUES='{"frontend#6":{"state":"open","pull_request":{"url":"u"}}}'
-called "GET $F/6" "!PATCH" "!POST"
+when "номер указывает на PR" BODY="Fixes $ORG/backend#6" \
+  GH_ISSUES='{"backend#6":{"state":"open","pull_request":{"url":"u"}}}'
+called "GET $B/6" "!PATCH" "!POST"
 
 when "короткий #N, чужая организация, ссылка без ключевого слова, ссылка без номера" \
-  BODY=$'Closes #5\nCloses frontend-park-mail-ru/2026_2_Cringe_Driven_Development#6\nsee '"$ORG"$'/frontend#7\nCloses '"$ORG"'/frontend#'
+  BODY=$'Closes #5\nCloses frontend-park-mail-ru/2026_2_Cringe_Driven_Development#6\nsee '"$ORG"$'/backend#7\nCloses '"$ORG"'/backend#'
 no_calls
 
-when "примеры в коде и HTML-комментариях — не команды, как у GitHub"   BODY=$'Пишите в PR `Closes '"$ORG"$'/frontend#12`
+when "примеры в коде и HTML-комментариях — не команды, как у GitHub"   BODY=$'Пишите в PR `Closes '"$ORG"$'/backend#12`
 <!-- пример:
-Closes '"$ORG"$'/frontend#1 -->
+Closes '"$ORG"$'/backend#1 -->
 ```
 Fixes '"$ORG"$'/backend#3
 ```'
 no_calls
 
 when "ключевое слово и ссылка на разных строках — не ссылка" BODY=$'Closes
-'"$ORG"'/frontend#5'
+'"$ORG"'/backend#5'
 no_calls
 
 when "PR без описания" BODY=
@@ -150,27 +156,27 @@ no_calls
 
 # --- ошибки
 
-when "ссылки есть, а PAT пуст" GH_TOKEN= BODY="Closes $ORG/frontend#5"
+when "ссылки есть, а PAT пуст" GH_TOKEN= BODY="Closes $ORG/backend#5"
 error "::error::Не задан секрет ADD_TO_PROJECT_PAT"
 if [ -s "$TMP/calls" ]; then fail "без токена были вызовы gh"; else pass; fi
 
 when "одна не закрылась — вторая закрыта, job падает" \
-  BODY=$'Closes '"$ORG"$'/frontend#5\nCloses '"$ORG"'/backend#7' \
-  GH_ISSUES='{"frontend#5":{"state":"open"},"backend#7":{"state":"open"}}' GH_FAIL='PATCH:frontend#5'
-error "::error::Не закрыл frontend#5"
+  BODY=$'Closes '"$ORG"$'/backend#5\nCloses '"$ORG"'/backend#7' \
+  GH_ISSUES='{"backend#5":{"state":"open"},"backend#7":{"state":"open"}}' GH_FAIL='PATCH:backend#5'
+error "::error::Не закрыл backend#5"
 if grep -qF "PATCH $B/7 state=closed" "$TMP/calls"; then pass; else fail "backend#7 не закрыта"; fi
-if grep -qF "POST $F/5/comments" "$TMP/calls"; then fail "комментарий к незакрытой задаче"; else pass; fi
+if grep -qF "POST $B/5/comments" "$TMP/calls"; then fail "комментарий к незакрытой задаче"; else pass; fi
 
-when "задача перенесена: PATCH ушёл по редиректу GET-ом и вернул open — ошибка"   BODY="Closes $ORG/frontend#5" GH_ISSUES='{"frontend#5":{"state":"open"}}' GH_PATCH='{"state":"open"}'
-error "::error::Не закрыл frontend#5: GitHub вернул состояние open"
-if grep -qF "POST $F/5/comments" "$TMP/calls"; then fail "комментарий к незакрытой задаче"; else pass; fi
+when "задача перенесена: PATCH ушёл по редиректу GET-ом и вернул open — ошибка"   BODY="Closes $ORG/backend#5" GH_ISSUES='{"backend#5":{"state":"open"}}' GH_PATCH='{"state":"open"}'
+error "::error::Не закрыл backend#5: GitHub вернул состояние open"
+if grep -qF "POST $B/5/comments" "$TMP/calls"; then fail "комментарий к незакрытой задаче"; else pass; fi
 
-when "задачи с таким номером нет" BODY="Closes $ORG/frontend#99"
-error "::error::Не закрыл frontend#99: gh: Not Found (HTTP 404)"
+when "задачи с таким номером нет" BODY="Closes $ORG/backend#99"
+error "::error::Не закрыл backend#99: gh: Not Found (HTTP 404)"
 
 when "закрыли, но комментарий не лёг — предупреждение, job зелёный" \
-  BODY="Closes $ORG/frontend#5" GH_ISSUES='{"frontend#5":{"state":"open"}}' GH_FAIL='POST:frontend#5'
-called "PATCH $F/5 state=closed"
-if grep -qF "::warning::Закрыл frontend#5, но не оставил комментарий" "$TMP/out"; then pass; else fail "нет предупреждения"; fi
+  BODY="Closes $ORG/backend#5" GH_ISSUES='{"backend#5":{"state":"open"}}' GH_FAIL='POST:backend#5'
+called "PATCH $B/5 state=closed"
+if grep -qF "::warning::Закрыл backend#5, но не оставил комментарий" "$TMP/out"; then pass; else fail "нет предупреждения"; fi
 
 summary

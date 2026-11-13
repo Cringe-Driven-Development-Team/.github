@@ -41,3 +41,17 @@ test('every workflow queue is valid despite the narrow actionlint exception', ()
     expect(() => validateQueue({ jobs: { test: { concurrency: block } } })).toThrow();
   }
 });
+
+test('merge job admits only merged frontend default PR and uses trusted checkout/Board queue', () => {
+  const job = workflow('add-to-project.yml').jobs['merge-status'];
+  expect(job).toBeDefined();
+  const github = {repository: 'Cringe-Driven-Development-Team/frontend', event_name: 'pull_request', event: {action: 'closed', pull_request: {merged: true, base: {ref: 'main'}}, repository: {default_branch: 'main'}}};
+  expect(evaluate(job.if, github)).toBe(true);
+  for (const other of [{...github, repository: 'Cringe-Driven-Development-Team/backend'}, {...github, event_name: 'issues'}, {...github, event: {...github.event, action: 'opened'}}, {...github, event: {...github.event, pull_request: {merged: false, base: {ref: 'main'}}}}, {...github, event: {...github.event, pull_request: {merged: true, base: {ref: 'topic'}}}}]) expect(evaluate(job.if, other)).toBe(false);
+  expect(job.concurrency).toEqual({group: 'release-board', 'cancel-in-progress': false, queue: 'max'});
+  const checkout = job.steps.find((step: any) => step.uses?.startsWith('actions/checkout@'));
+  expect(checkout.with).toEqual({repository: 'Cringe-Driven-Development-Team/.github', ref: 'main', path: 'automation', 'persist-credentials': false, token: '${{ secrets.ADD_TO_PROJECT_PAT }}'});
+  const run = job.steps.find((step: any) => step.run);
+  expect(run.run).toBe('bun automation/scripts/issue-status.ts');
+  expect(run.env.ADD_TO_PROJECT_PAT).toBe('${{ secrets.ADD_TO_PROJECT_PAT }}');
+});

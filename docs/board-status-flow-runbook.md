@@ -1,5 +1,47 @@
 # Подключение статусов доски
 
+## Frontend: закрытие после production
+
+Целевой порядок: merge native-linked frontend PR в default branch → Open /
+`Ready for build`; проверенный опубликованный Release → Open / `Ready for release`;
+Health check и сохранённый production success → Closed completed / `Done`.
+Успешный Rollback меняет только статус удалённых изменений на
+`Rollback from production`; последующий CD возвращает `Done`.
+`Closes #N` сохраняется. `Part of` и чужие issue не являются основанием перехода.
+
+При подключении изменений проверить frontend настройку **Auto-close issues with
+merged linked pull requests**: она должна быть выключена. Остальные репозитории
+сохраняют автозакрытие. Общий `close` исключает frontend из любого PR, в том числе
+по полной ссылке с иным регистром. Built-in Item closed также должен оставаться
+выключенным; проверить, что другие Projects workflows не ставят issue `Done`
+при merge. Этот документ сам по себе не подтверждает настройки прода.
+
+`merge-status` и `issue-status` исполняют только `.github/main` с PAT; код PR
+не запускается. Оба frontend job, Publish release, CD и Rollback используют
+`release-board`, `queue: max`, `cancel-in-progress: false`. Очередь не гарантирует
+порядок событий: перед записью перечитываются PR, issue и все страницы связей;
+последний native-linked merge определяется по Git ancestry в default branch.
+Поздний merge сохраняет Ready for release/Done/Rollback текущего цикла.
+Поздний closed больше не пишет Ready for build; подтверждённая последующая
+production-операция, затронувшая связанный PR и сохранившая эффект, защищает
+rollback независимо от actor, closer и времени карточки.
+
+Ручной completed до CD остаётся Closed/Done, merge/publish его не понижают.
+После первого подтверждённого CD изменений такой задачи допускается Rollback.
+Ручной reopen после merge защищён от старых событий; новый связанный merge
+после reopen начинает новый цикл. Not planned/duplicate и ручные задачи без PR
+сохраняют прежние правила; backend, infra и Figma не меняются.
+
+При failed merge/closed повторить конкретный job в Actions. Ошибка API или
+неполные данные видны в job; обрабатываемые issue перечитываются перед записью,
+поэтому повтор не закрывает issue и не применяет старый цикл. Для ошибки после
+production success сохранять исходный Deployment ID и Summary; повтор CD с пустым
+диапазоном не является ремонтом пропущенной карточки. Не включать Item closed
+или frontend autoclose в качестве fallback.
+
+Далее — журнал подключения предыдущего варианта от 2026-11-04; он описывает
+историческую проверку, а текущие правила frontend приведены выше.
+
 Состояние на 2026-11-04: все четыре PR влиты в main по поручению пользователя. Post-merge CI, публикация
 frontend и course-sync успешны. Item closed выключен пользователем и подтверждён через API; живая приёмка продолжается. Родитель: [.github#54](https://github.com/Cringe-Driven-Development-Team/.github/issues/54),
 sub-issue: [frontend#152](https://github.com/Cringe-Driven-Development-Team/frontend/issues/152).
@@ -61,10 +103,10 @@ ClosedEvent.createdAt = `2026-11-04T19:45:27Z`. Их равенство не г�
 Предыдущее строгое равенство пропускало такое событие. Регрессия воспроизведена
 RED→GREEN; старый payload нового цикла по-прежнему пропускается.
 
-Поздний frontend close сохраняет `Ready for release`, `Done` или
-`Rollback from production`, если timestamp статуса не старше текущего закрытия.
-Более старый статус разрешено заменить на `Ready for build`. Inline-шаги frontend
-используют этот же цикл закрытия; их подключение проверяется после merge.
+В варианте 2026-11-04 поздний frontend close ориентировался на timestamp Status
+и мог писать Ready for build. В новом варианте build-статус принадлежит merge,
+а closed сохраняет подтверждённый поздний production-результат по штатным связям
+и Git ancestry. Timestamp карточки сам по себе не доказывает production.
 
 ## Порядок подключения
 
@@ -94,8 +136,8 @@ result CD → Done; успешный Rollback → Rollback from production дл�
 изменений. Повторная выкатка через CD возвращает эти задачи в Done.
 `release report` один раз сохраняет состав в `${{ runner.temp }}/release-report.json`,
 а следующий шаг `release board` использует его без полного обхода доски и истории.
-Задачи вне диапазона операции не читаются. Публикация сохраняет Done/rollback,
-подтверждённые в текущем цикле закрытия; старый цикл не блокирует новую публикацию.
+Задачи вне диапазона операции не читаются. Публикация сохраняет Done/rollback актуального связанного merge;
+старый цикл не блокирует новую публикацию после reopen и нового merge.
 
 CD допускает только тот же SHA или потомка подтверждённого production; Rollback —
 предка или тот же SHA при восстановлении. Проверка Git выполняется до изменения VPS.
@@ -103,7 +145,7 @@ CD допускает только тот же SHA или потомка под�
 A → B → откат на A повторный Rollback, выбравший B, отклоняется без поиска другой
 цели; для возврата на B нужен CD.
 
-Publish release, CD, Rollback и frontend issues.closed используют общую группу
+Merge, Publish release, CD, Rollback и frontend issues.closed используют общую группу
 `release-board`, `queue: max`, `cancel-in-progress: false`. GitHub допускает до
 100 ожидающих jobs; порядок ожидания не гарантирует порядок событий. Check для PR
 остаётся независимым. Межрепозиторный integration test запускается локально с
@@ -115,9 +157,9 @@ Publish release, CD, Rollback и frontend issues.closed используют о�
 
 ## Восстановление
 
-- Failed issues.closed: повторить конкретный job в Actions. Он перечитает актуальный
-  цикл закрытия; повтор не пишет одинаковый Status и сохраняет публикацию/выкатку/откат
-  текущего цикла.
+- Failed merge/closed: повторить конкретный job в Actions. Он перечитает актуальные
+  PR, issue и связи; повтор не пишет одинаковый Status и сохраняет подтверждённый
+  результат текущего цикла.
 - Ошибка карточек после успешной операции делает job красным, но не переписывает
   success Deployment и не запускает откат. Summary отдельно показывает успешную
   операцию, количество изменений и ошибки карточек. Остальные карточки обрабатываются.

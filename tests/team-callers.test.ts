@@ -16,7 +16,21 @@ function enabled(expression: string, overrides: any = {}) {
   return Boolean(Function("github", "vars", "success", "always", "cancelled", "failure", "return (" + raw + ")")(
     github, vars, () => true, () => true, () => false, () => false));
 }
-test("production writes require exact repo, main and explicit flag", () => {
+test("production writes require exact repo/main and the area's configured gate", () => {
+  if (area === "frontend") {
+    for (const [name, job] of [["ci", ci.jobs.publish], ["cd", load("cd").jobs.cd], ["rollback", load("rollback").jobs.rollback]] as const) {
+      expect(enabled(job.if)).toBe(true);
+      for (const github of [{ repository: "other/team" }, { ref: "refs/heads/topic" }])
+        expect(enabled(job.if, { github })).toBe(false);
+      if (name === "ci") expect(enabled(job.if, { github: { event_name: "pull_request" } })).toBe(false);
+      else expect(Object.keys(load(name).on)).toEqual(["workflow_dispatch"]);
+    }
+    expect(ci.jobs.check.steps.some((step: any) => step.run === "bun test scripts/release/test")).toBe(true);
+    expect(ci.jobs.publish.permissions.issues).toBe("read");
+    expect(load("cd").jobs.cd.permissions.issues).toBe("write");
+    expect(load("rollback").permissions.issues).toBe("read");
+    return;
+  }
   const writes = area === "frontend"
     ? [ci.jobs.upload, load("cd").jobs.cd, load("rollback").jobs.rollback]
     : [ci.jobs.deploy, load("cd").jobs.deploy];
@@ -36,7 +50,7 @@ test("sync is independent of production/upload/deploy but gated on code checks",
   const job = ci.jobs["course-sync"];
   expect(job).toBeDefined();
   expect([job.needs].flat()).toEqual(area === "frontend" ? ["check"] : ["lint", "test", "docker"]);
-  expect(enabled(job.if)).toBe(false);
+  expect(enabled(job.if)).toBe(area === "frontend");
   expect(enabled(job.if, { vars: { COURSE_SYNC_ENABLED: "true" } })).toBe(true);
   expect(enabled(job.if, { vars: { COURSE_SYNC_ENABLED: "true", PRODUCTION_ENABLED: "false" } })).toBe(true);
   for (const github of [{ repository: "other/team" }, { ref: "refs/heads/topic" }, { event_name: "pull_request" }]) {
@@ -49,14 +63,16 @@ test("only CI run ID is accepted on manual retry; no production jobs", () => {
   expect(Object.keys(manual.on.workflow_dispatch.inputs)).toEqual(["ci_run_id"]);
   expect(manual.on.workflow_dispatch.inputs.ci_run_id.type).toBe("string");
   expect(Object.keys(manual.jobs).sort()).toEqual(["resolve", "sync"]);
-  expect(enabled(manual.jobs.resolve.if)).toBe(false);
+  expect(enabled(manual.jobs.resolve.if)).toBe(area === "frontend");
   expect(enabled(manual.jobs.resolve.if, { vars: { COURSE_SYNC_ENABLED: "true" } })).toBe(true);
   expect(enabled(manual.jobs.resolve.if, { github: { ref: "refs/heads/topic" }, vars: { COURSE_SYNC_ENABLED: "true" } })).toBe(false);
   expect([manual.jobs.sync.needs].flat()).toEqual(["resolve"]);
 });
-test("callers pin one trusted SHA and pass only sync credentials", () => {
+test("callers use the configured trusted automation ref and only sync credentials", () => {
   for (const job of [ci.jobs["course-sync"], load("sync-to-course").jobs.sync]) {
-    const match = job.uses.match(/^Cringe-Driven-Development-Team\/\.github\/\.github\/workflows\/sync-to-course\.yml@([a-f0-9]{40})$/);
+    const match = job.uses.match(area === "frontend"
+      ? /^Cringe-Driven-Development-Team\/\.github\/\.github\/workflows\/sync-to-course\.yml@(main)$/
+      : /^Cringe-Driven-Development-Team\/\.github\/\.github\/workflows\/sync-to-course\.yml@([a-f0-9]{40})$/);
     expect(match).not.toBeNull();
     expect(job.with.automation_ref).toBe(match[1]);
     expect(Object.keys(job.secrets).sort()).toEqual(["COURSE_SYNC_SSH_KEY", "TELEGRAM_BOT_TOKEN"]);
