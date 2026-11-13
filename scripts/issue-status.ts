@@ -274,7 +274,8 @@ async function laterProduction(input: Input, token: string): Promise<boolean> {
       if (!operation || operation.successAt <= timestamp(input.closedAt)
         || timestamp(pr.mergedAt) > operation.successAt) continue;
       if (operation.payload.action === 'deploy') {
-        if (present && await contains(pr.mergeCommit.oid, record.sha, token)) return true;
+        if (present && await contains(pr.mergeCommit.oid, record.sha, token)
+          && !await contains(pr.mergeCommit.oid, operation.payload.notification.base_sha, token)) return true;
       } else if (!present && !await contains(pr.mergeCommit.oid, record.sha, token)
         && await contains(pr.mergeCommit.oid, operation.payload.notification.base_sha, token)) return true;
     }

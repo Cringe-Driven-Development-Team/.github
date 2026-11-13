@@ -17,14 +17,17 @@ function fixture(repo = 'frontend') {
   const project: any = { id: 'P_1', viewerCanUpdate: true };
   const writes: any[] = [];
   let reads = 0;
-  const state = { input, issue, events, card, fields, project, writes, cards: [card], paged: false, beforeRead: (_: number) => {}, error: '', production: [] as any[], productionState: 'success', linkedPRs: [] as any[] };
+  const state = { input, issue, events, card, fields, project, writes, cards: [card], paged: false, beforeRead: (_: number) => {}, error: '', production: [] as any[], productionState: 'success', productionStatuses: {} as Record<number, {state: string; created_at: string}>, linkedPRs: [] as any[] };
   const page = (nodes: any[], cursor: string | null) => state.paged && !cursor
     ? { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'page2' } }
     : { nodes, pageInfo: { hasNextPage: false, endCursor: null } };
   globalThis.fetch = (async (url: any, init: any) => {
     if (String(url).includes('/deployments') || String(url).includes('/compare/')) {
       expect(init.headers.Authorization).toBe('Bearer test-token');
-      if (String(url).includes('/statuses')) return Response.json([{ state: state.productionState, created_at: '2026-11-05T00:00:00Z' }]);
+      if (String(url).includes('/statuses')) {
+        const id = Number(String(url).match(/deployments\/(\d+)\/statuses/)?.[1]);
+        return Response.json([state.productionStatuses[id] ?? {state: state.productionState, created_at: '2026-11-05T00:00:00Z'}]);
+      }
       if (String(url).includes('/compare/')) {
         const [base, head] = String(url).split('/compare/')[1].split('?')[0].split('...');
         const present = head >= base;
@@ -360,5 +363,28 @@ test('production proof rejects contradictory action and Git direction', async ()
 test.each(['pending', 'failure'])('unconfirmed latest production %s cannot justify a status write', async status => {
   const f = productionFixture(); f.productionState = status;
   await expect(reconcileClosedIssue(f.input, 'test-token')).rejects.toThrow('Latest production attempt is not success');
+  expect(f.writes).toEqual([]);
+});
+
+test.each([['B→B', 'b'], ['B→C', 'c']])('unrelated later CD %s preserves manual completed → Done for a PR already in B', async (_, head) => {
+  const f = productionFixture(); f.input.closedAt = '2026-11-06T00:00:00Z';
+  f.issue.closedAt = f.input.closedAt; f.events[0].createdAt = f.input.closedAt;
+  f.production = [
+    {id: 45, environment: 'production', task: 'deploy', sha: head.repeat(40), created_at: '2026-11-07T00:00:00Z', payload: {action: 'deploy', notification: {base_sha: 'b'.repeat(40)}}},
+    {id: 44, environment: 'production', task: 'deploy', sha: 'b'.repeat(40), created_at: '2026-11-05T00:00:00Z', payload: {action: 'deploy', notification: {base_sha: 'a'.repeat(40)}}},
+  ];
+  f.productionStatuses[45] = {state: 'success', created_at: '2026-11-07T00:00:00Z'};
+  expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('changed');
+  expect(f.writes).toEqual([{item: 'card-119', status: 'Done'}]);
+});
+
+test('unrelated later CD still searches an earlier relevant deploy after closure', async () => {
+  const f = productionFixture();
+  f.production = [
+    {id: 45, environment: 'production', task: 'deploy', sha: 'b'.repeat(40), created_at: '2026-11-07T00:00:00Z', payload: {action: 'deploy', notification: {base_sha: 'b'.repeat(40)}}},
+    {id: 44, environment: 'production', task: 'deploy', sha: 'b'.repeat(40), created_at: '2026-11-05T00:00:00Z', payload: {action: 'deploy', notification: {base_sha: 'a'.repeat(40)}}},
+  ];
+  f.productionStatuses[45] = {state: 'success', created_at: '2026-11-07T00:00:00Z'};
+  expect(await reconcileClosedIssue(f.input, 'test-token')).toBe('skipped');
   expect(f.writes).toEqual([]);
 });
