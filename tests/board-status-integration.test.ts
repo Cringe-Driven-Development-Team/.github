@@ -66,7 +66,11 @@ afterEach(() => {
 });
 const input = () => ({ repository: REPO, issueId: 'I2', closedAt: after });
 const closed = () => reconcileClosedIssue(input(), 'project-token');
-const merge = () => reconcileMergedPullRequest({ repository: REPO, number: 2 }, 'project-token');
+const merge = async () => {
+  const result = await reconcileMergedPullRequest({ repository: REPO, number: 2 }, 'project-token');
+  expect(result.errors).toEqual([]);
+  return result;
+};
 const report = () => readChangeReport(REPO, f.root, f.b);
 function production(...args: Parameters<typeof f.production>) {
   const id = f.production(...args);
