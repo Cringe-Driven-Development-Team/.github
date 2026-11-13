@@ -110,30 +110,43 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 ```
 
-### Статусы закрытых задач
+### Статусы задач
 
-Общий job `issue-status` обрабатывает только `issues.closed` этой организации,
-читает доверенный `.github/main` и меняет существующую issue-карточку Scrumban №1.
+Общие jobs `merge-status` и `issue-status` читают только доверенный `.github/main`
+и меняют существующие issue-карточки Scrumban №1. Первый обрабатывает успешный
+merge frontend PR в default branch, второй — `issues.closed` организации.
+Связи PR → issue берутся из GitHub API со всеми страницами, а не из собственного
+парсера описания. `Part of` не запускает переход.
 
-| Закрытие / выпуск | Status |
-| --- | --- |
-| frontend: merge PR в default branch, сборка/публикация ещё идут | Ready for build |
-| frontend: подтверждены статика S3 и образ BFF GHCR | Ready for release |
-| frontend: успешная выкатка production | Done |
-| frontend: успешный откат удалённых изменений | Rollback from production |
-| frontend: вручную без закрывающего PR или not planned | Done |
-| Любой другой рабочий репозиторий: закрытие issue | Done |
+| Подтверждённое событие | Issue | Status |
+| --- | --- | --- |
+| frontend: merge связанного PR в default branch | Open | Ready for build |
+| frontend: проверены S3, образ BFF GHCR и опубликованный Release | Open | Ready for release |
+| frontend: Health check и сохранённый production success | Closed / completed | Done |
+| frontend: успешный откат удалённых изменений | Не менять | Rollback from production |
+| frontend: ручное закрытие (включая completed до CD и not planned) | Closed | Done |
+| Любой другой рабочий репозиторий: закрытие issue | Closed | Done |
+
+`Closes #N` сохраняется как штатная связь. При подключении автоматики в frontend
+выключить **Auto-close issues with merged linked pull requests**; настройки
+других репозиториев не менять. Общий fallback `close` исключает целевые frontend
+issues из любого PR, включая полные ссылки и другое написание регистра.
+Ручной reopen после merge защищён; новый связанный merge после него начинает
+новый цикл. Merge/publish не понижают закрытые completed-задачи; Rollback
+допускается только после подтверждённого присутствия их изменений в production.
 
 Callers `automation.yml`: `.github`, `frontend`, `backend`, `docs`, `infra`,
 `figma`, `static`, `frontend-packages`. Для `agent-plugins` и
 `agent-plugins-private` предусмотрен `issue-status.yml` только с `issues.closed`.
 Учебные копии frontend/backend не подключаются, Actions там выключены.
 
-Frontend Publish release, CD, Rollback и общий обработчик используют job concurrency `release-board`
+Frontend merge, Publish release, CD, Rollback и closed используют job concurrency `release-board`
 в контексте frontend с `queue: max`, `cancel-in-progress: false`. В других
 репозиториях группа адресная: `issue-status-<issue node ID>`. Очередь вмещает
 до 100 ожидающих jobs; отменённый сверх лимита job нужно повторить адресно.
-Повтор failed `issues.closed` job безопасен; устаревший цикл закрытия пропускается.
+Повтор failed merge/`issues.closed` job перечитывает PR, issue и штатные связи;
+устаревший цикл пропускается. Более поздний production-результат проверяется по
+успешным Deployments и Git ancestry связанных PR, а не только timestamp карточки.
 Ошибки карточек исправляются вручную по Summary успешной операции; полного Board нет.
 Задержки Actions допустимы, мгновенный переход не гарантируется.
 
@@ -177,7 +190,9 @@ frontend и другие аккаунты исключение не затраг
 
 Для межрепозиторных PR GitHub может не закрыть задачу сам из-за прав автора merge.
 Job `close` в `add-to-project.yml` сохраняется: после мержа в default branch
-закрывает задачи организации по closing keywords и оставляет «Закрыта мержем …».
+закрывает задачи организации, кроме целевых frontend issues, по closing keywords
+и оставляет «Закрыта мержем …». Frontend issues этот job не закрывает независимо
+от репозитория PR; для них закрытие выполняет успешный CD.
 Уже закрытые задачи не трогает. `ADD_TO_PROJECT_PAT` требует записи в Issues
 организации; отказ завершает job ошибкой и попадает в ops.
 
