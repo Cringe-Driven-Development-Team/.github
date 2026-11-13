@@ -276,7 +276,7 @@ export async function projectRelease(
     const raw = object(payload.workflow_job);
     if (
       payload.action !== 'completed' ||
-      !(backend ? ['deploy / deploy', 'rollback / deploy'] : ['CD', 'Rollback', 'Publish release']).includes(String(raw.name)) ||
+      !(backend ? ['deploy', 'deploy / deploy', 'rollback / deploy'] : ['CD', 'Rollback', 'Publish release']).includes(String(raw.name)) ||
       ['success', 'skipped', null, undefined].includes(raw.conclusion as null | undefined | string)
     )
       return [];

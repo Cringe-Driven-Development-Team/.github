@@ -1,3 +1,4 @@
+import standalone from './fixtures/github/backend-cd-contract.json';
 import {expect,test} from 'bun:test';
 import {backendApiFixture,A,B,C} from './helpers/backend';
 test('backend push CI production needs no frontend assets or release-artifacts', async () => {
@@ -46,4 +47,14 @@ test('backend terminal status requires the production job and readable Jobs API'
  const {api,state}=backendApiFixture();state.jobName='test';await expect(api.operation(2)).rejects.toThrow();
  state.jobName='deploy / deploy';state.extra=url=>url.pathname.endsWith('/jobs')?new Response('',{status:403}):undefined;
  await expect(api.operation(2)).rejects.toThrow('http_403');
+});
+
+test('standalone backend CD verifies the deployment SHA independently of dispatch HEAD', async () => {
+  const {api,state} = backendApiFixture();
+  state.workflow='cd';state.event='workflow_dispatch';state.head=C;state.jobName='deploy';
+  Object.assign(state.current, standalone.deployment);
+  const op=await api.operation(2);
+  expect(op.sha).toBe(standalone.deployment.sha);expect(op.run.workflow).toBe('CD');expect(op.run.headSha).toBe(standalone.run.head_sha);
+  expect((await api.job(200)).run.workflow).toBe('CD');
+  state.event='push';await expect(api.operation(2)).rejects.toThrow('untrusted_run');
 });

@@ -271,14 +271,14 @@ export function createReleaseApi(
       actualAttempt = positive(raw.run_attempt);
     const entry = [
       ['ci.yml', 'CI', 'push', backend ? 'deploy / deploy' : 'Publish release'],
-      ['cd.yml', 'CD', 'workflow_dispatch', 'CD'],
+      ['cd.yml', 'CD', 'workflow_dispatch', backend ? 'deploy' : 'CD'],
       ['rollback.yml', 'Rollback', 'workflow_dispatch', backend ? 'rollback / deploy' : 'Rollback'],
       ['release-import.yml', 'Release import', 'workflow_dispatch', 'Release import'],
     ] as const;
     const expected = entry.find((e) => raw.path === `.github/workflows/${e[0]}`);
     if (
       !expected ||
-      (backend && !["CI", "Rollback"].includes(expected[1])) ||
+      (backend && !["CI", "CD", "Rollback"].includes(expected[1])) ||
       raw.id !== id ||
       (attempt !== undefined && attempt !== actualAttempt) ||
       raw.head_branch !== 'main' ||
@@ -328,7 +328,8 @@ export function createReleaseApi(
     return { state: (states[0] ?? 'pending') as OperationState, everSucceeded: states.includes('success') };
   }
   function matchSource(info: RecordInfo, run: VerifiedRun): void {
-    if (run.workflow !== (info.kind === 'deploy' ? (backend ? 'CI' : 'CD') : 'Rollback') || (backend && info.kind === 'deploy' && run.headSha !== info.sha)) throw new GithubApiError('untrusted_run');
+    const allowed = info.kind === 'deploy' ? (backend ? ['CI', 'CD'] : ['CD']) : ['Rollback'];
+    if (!allowed.includes(run.workflow) || (backend && run.workflow === 'CI' && run.headSha !== info.sha)) throw new GithubApiError('untrusted_run');
   }
   async function verifyRelease(value: unknown): Promise<VerifiedOperation> {
     const r = obj(value),
@@ -655,7 +656,7 @@ export function createReleaseApi(
       if (raw.id !== id) throw new GithubApiError('invalid_job');
       const run = await readRun(positive(raw.run_id), positive(raw.run_attempt), true),
         name = str(raw.name),
-        expected = backend ? (run.workflow === 'CI' ? 'deploy / deploy' : 'rollback / deploy') : run.workflow === 'CI' ? 'Publish release' : run.workflow;
+        expected = backend ? (run.workflow === 'CI' ? 'deploy / deploy' : run.workflow === 'CD' ? 'deploy' : 'rollback / deploy') : run.workflow === 'CI' ? 'Publish release' : run.workflow;
       if (
         name !== expected ||
         raw.head_sha !== run.headSha ||
