@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ApidogMr } from '../src/apidog-api';
 import { createHmac } from 'node:crypto';
 import { createApp } from '../src/http';
 import { loadConfig } from '../src/config';
@@ -72,31 +71,10 @@ describe('durable acceptance', () => {
     expect(store.claimUnprepared(1000, 100)[0]!.raw).toEqual(raw);
   });
 
-  test('source namespaces keep supplied Apidog IDs independent with permanent deduplication', () => {
-    const store = open();
-    store.accept(input());
-    const apidog = { ...input(), source: 'apidog' as const };
-    expect(store.accept(apidog)).toBe('accepted');
-    expect(store.accept({ ...apidog, receivedAt: 900000 })).toBe('duplicate');
-    expect(store.accept({ ...apidog, raw: new Uint8Array([123, 125]) })).toBe('conflict');
-    expect(store.claimUnprepared(900000, 100)).toHaveLength(2);
-  });
-
-  test('Apidog hash fallback uses a rolling five-minute window across clock bucket boundaries and restarts', () => {
-    const path = databasePath();
-    const first = open(path);
-    const apidog = { source: 'apidog' as const, event: 'changed', raw, receivedAt: 299999 };
-    expect(first.accept(apidog)).toBe('accepted');
-    first.close();
-    const reopened = open(path);
-    expect(reopened.accept({ ...apidog, receivedAt: 300001 })).toBe('duplicate');
-    expect(reopened.accept({ ...apidog, receivedAt: 599998 })).toBe('duplicate');
-    expect(reopened.accept({ ...apidog, receivedAt: 599999 })).toBe('accepted');
-    expect(reopened.claimUnprepared(599999, 100)).toHaveLength(2);
-  });
-
   test('GitHub cannot silently fall back to a body hash when its ID is absent', () => {
-    expect(() => open().accept({ source: 'github', event: 'issues', raw })).toThrow();
+    const { deliveryId: _, ...withoutId } = input();
+    // @ts-expect-error Untyped callers still have to provide a delivery ID.
+    expect(() => open().accept(withoutId)).toThrow('delivery ID required');
   });
 
   test('uses WAL and health detects a closed database', () => {
@@ -139,57 +117,6 @@ describe('transactional preparation and leases', () => {
     expect(reopened.claimDue(2099, 100)).toEqual([]);
     expect(reopened.claimDue(2100, 100).map(row => row.id)).toEqual(claimed.map(row => row.id));
     expect(reopened.claimUnprepared(2100, 100)).toEqual([]);
-  });
-
-  for (const origin of ['delivery', 'review_group'] as const) {
-    test(`${origin} preserves both buttons across reopening alongside a one-button card`, () => {
-      const path = databasePath();
-      const first = open(path);
-      first.accept(input());
-      const [delivery] = first.claimUnprepared(1000, 100);
-      const twoButtons = {
-        topic: 26, html: 'Apidog MR',
-        button: { text: 'Открыть MR', url: 'https://app.apidog.com/...' },
-        secondaryButton: { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' },
-      };
-      if (origin === 'delivery') first.prepare(delivery!.id, [twoButtons, messages[0]!]);
-      else {
-        first.recordReview(delivery!.id, { repository: 'org/repo', number: 1, reviewer: 'alice', id: 1, state: 'approved' }, 1000);
-        const [group] = first.dueReviewGroups(1000);
-        expect(first.releaseReviewGroup(group!.id, group!.revision, [twoButtons, messages[0]!], 1000)).toBe(true);
-      }
-      first.close();
-      const reopened = open(path);
-      const queued = reopened.claimDue(1100, 100);
-      expect(queued).toHaveLength(2);
-      expect(queued[0]!.button).toEqual({ text: 'Открыть MR', url: 'https://app.apidog.com/...' });
-      expect(queued[0]).toHaveProperty('secondaryButton', { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' });
-      expect(queued[1]!.button).toEqual({ text: 'Open issue', url: 'https://github.com/org/repo/issues/1' });
-      expect(queued[1]).not.toHaveProperty('secondaryButton');
-      const inspect = new Database(path);
-      try {
-        expect(inspect.query<{ button_json: string }, []>('SELECT button_json FROM outbox ORDER BY id DESC LIMIT 1').get()!.button_json)
-          .toBe('{"text":"Open issue","url":"https://github.com/org/repo/issues/1"}');
-      } finally { inspect.close(); }
-    });
-  }
-
-  test('a prepared Apidog message retains its source across restart and retry', () => {
-    const path = databasePath();
-    const first = open(path);
-    first.accept({ ...input('apidog-1'), source: 'apidog' });
-    const [delivery] = first.claimUnprepared(1000, 100);
-    first.prepare(delivery!.id, [{ topic: 26, html: 'Apidog update' }]);
-    first.close();
-
-    const reopened = open(path);
-    const [queued] = reopened.claimDue(1100, 100);
-    expect(queued).toMatchObject({ source: 'apidog', topic: 26, html: 'Apidog update', originType: 'delivery' });
-    reopened.markRetry(queued!.id, 1300, 'telegram_429');
-    reopened.close();
-
-    const retried = open(path);
-    expect(retried.claimDue(1300, 100)[0]).toMatchObject({ id: queued!.id, source: 'apidog', attempts: 2 });
   });
 
   test('preparation rolls back both outbox insertion and completion if one message cannot be inserted', () => {
@@ -239,7 +166,7 @@ test('real HTTP acceptance survives reopening and returns duplicate or conflict 
   const path = databasePath();
   const store = open(path);
   const secret = 'test-only-secret';
-  const config = loadConfig({ GITHUB_WEBHOOK_SECRET: secret, APIDOG_SIGNATURE_KEY: 'test-apidog', APIDOG_SIGNATURE_HEADER: 'X-Test-Signature' });
+  const config = loadConfig({ GITHUB_WEBHOOK_SECRET: secret });
   const request = (body = raw) => new Request('http://localhost/webhooks/github', {
     method: 'POST', body: new Uint8Array(body), headers: {
       'content-type': 'application/json', 'x-github-event': 'issues', 'x-github-delivery': 'http-1',
@@ -258,77 +185,134 @@ test('real HTTP acceptance survives reopening and returns duplicate or conflict 
   expect((await next.request('/health')).status).toBe(503);
 });
 
-
-describe('Apidog MR monitoring', () => {
-  const mr = (overrides: Partial<ApidogMr> = {}): ApidogMr => ({ id: 7, sourceBranchId: 2, targetBranchId: 1, createdById: 3, reviewerIds: [4], description: 'Review me', status: 'OPEN', createdAt: new Date(999).toISOString(), closedAt: null, closedById: null, ...overrides });
-  test('first cutoff persists across restart, with equality eligible', () => {
-    const path = databasePath(); const first = open(path);
-    first.startApidogMrMonitoring(1000);
-    expect(first.claimUnprepared(1000, 100)).toEqual([]);
-    first.close(); const store = open(path); store.startApidogMrMonitoring(5000);
-    expect(store.recordApidogMergeRequests([mr(), mr({ id: 8, createdAt: new Date(1000).toISOString() })])).toBe(1);
-    expect(store.claimUnprepared(5000, 100).map(row => [row.deliveryId, row.event, row.receivedAt])).toEqual([['mr-poll:8:OPENED', 'MR_OPENED', 1000]]);
-    const inspect = new Database(path);
-    try {
-      expect(inspect.query('SELECT prepared, received_at FROM deliveries WHERE delivery_id = ?').get('mr-poll:cutoff')).toEqual({ prepared: 1, received_at: 1000 });
-      expect(inspect.query('SELECT prepared FROM deliveries WHERE delivery_id = ?').get('mr-poll:7:OPENED')).toEqual({ prepared: 1 });
-    } finally { inspect.close(); }
-  });
-  test('existing OPEN later CLOSED queues only closure, once across restart', () => {
-    const path = databasePath(); const store = open(path); store.startApidogMrMonitoring(1000);
-    expect(store.recordApidogMergeRequests([mr()])).toBe(0);
-    const closed = mr({ status: 'CLOSED', closedAt: new Date(2000).toISOString(), closedById: 4 });
-    expect(store.recordApidogMergeRequests([closed])).toBe(1);
-    store.close(); const reopened = open(path);
-    expect(reopened.recordApidogMergeRequests([closed])).toBe(0);
-    const pending = reopened.claimUnprepared(3000, 100);
-    expect(pending.map(row => [row.deliveryId, row.event, row.receivedAt])).toEqual([['mr-poll:7:CLOSED', 'MR_CLOSED', 2000]]);
-    expect(JSON.parse(new TextDecoder().decode(pending[0]!.raw))).toEqual(closed);
-  });
-  test('new terminal MR records opened then merged and suppresses historical terminal events', () => {
-    const store = open(); store.startApidogMrMonitoring(1000);
-    const merged = mr({ status: 'MERGED', createdAt: new Date(1000).toISOString(), closedAt: new Date(2000).toISOString(), closedById: 4 });
-    expect(store.recordApidogMergeRequests([merged, mr({ id: 8, status: 'CLOSED', closedAt: new Date(999).toISOString(), closedById: 4 })])).toBe(2);
-    expect(store.recordApidogMergeRequests([merged])).toBe(0);
-    expect(store.claimUnprepared(3000, 100).map(row => row.event)).toEqual(['MR_OPENED', 'MR_MERGED']);
-  });
-  test('requires initialization and rejects invalid or partial terminal snapshots atomically', () => {
-    const store = open(); expect(() => store.recordApidogMergeRequests([mr()])).toThrow();
-    expect(() => store.startApidogMrMonitoring(NaN)).toThrow(); store.startApidogMrMonitoring(1000);
-    for (const invalid of [mr({ id: 8, createdAt: 'invalid' }), mr({ id: 8, status: 'CLOSED' }), mr({ id: 8, status: 'MERGED', closedAt: new Date(2000).toISOString() })]) {
-      expect(() => store.recordApidogMergeRequests([mr({ createdAt: new Date(1000).toISOString() }), invalid])).toThrow();
-      expect(store.claimUnprepared(3000, 100)).toEqual([]);
-    }
-    expect(store.recordApidogMergeRequests([mr({ createdAt: new Date(1000).toISOString() })])).toBe(1);
-  });
-  test('database insert failure rolls back the entire snapshot', () => {
-    const path = databasePath(); const store = open(path); store.startApidogMrMonitoring(1000); const inspect = new Database(path);
-    try {
-      inspect.exec("CREATE TRIGGER reject_terminal BEFORE INSERT ON deliveries WHEN NEW.event = 'MR_MERGED' BEGIN SELECT RAISE(ABORT, 'test write failure'); END");
-      const merged = mr({ status: 'MERGED', createdAt: new Date(1000).toISOString(), closedAt: new Date(2000).toISOString(), closedById: 4 });
-      expect(() => store.recordApidogMergeRequests([merged])).toThrow();
-      expect(store.claimUnprepared(3000, 100)).toEqual([]);
-      inspect.exec('DROP TRIGGER reject_terminal'); expect(store.recordApidogMergeRequests([merged])).toBe(2);
-    } finally { inspect.close(); }
-  });
-});
-
-test('manual retry cannot reactivate suppressed Apidog messages but still retries other failures', () => {
+test('manual retry requeues failed GitHub messages with or without an error code', () => {
   const path = databasePath();
   const store = open(path);
+  store.accept(input());
+  const [delivery] = store.claimUnprepared(1000, 100);
+  store.prepare(delivery!.id, messages);
   const inspect = new Database(path);
   try {
-    inspect.exec(`INSERT INTO outbox (origin_type, origin_id, ordinal, topic, html, status, error_code, due_at) VALUES
-      ('delivery', 1, 0, 88, 'suppressed', 'failed', 'APIDOG_RAW_SUPPRESSED', 1),
-      ('delivery', 2, 0, 26, 'retryable', 'failed', 'telegram_400', 1),
-      ('delivery', 3, 0, 26, 'retryable without code', 'failed', NULL, 1)`);
-    expect(store.retryFailed(1, 1000)).toBe(false);
+    inspect.exec("UPDATE outbox SET status = 'failed', error_code = 'telegram_400' WHERE id = 1");
+    inspect.exec("UPDATE outbox SET status = 'failed' WHERE id = 2");
+    expect(store.retryFailed(1, 1000)).toBe(true);
     expect(store.retryFailed(2, 1000)).toBe(true);
-    expect(store.retryFailed(3, 1000)).toBe(true);
     expect(inspect.query('SELECT status, error_code FROM outbox ORDER BY id').all()).toEqual([
-      { status: 'failed', error_code: 'APIDOG_RAW_SUPPRESSED' },
       { status: 'pending', error_code: null },
       { status: 'pending', error_code: null },
     ]);
   } finally { inspect.close(); }
+});
+
+function openV5(path: string) {
+  const db = new Database(path);
+  db.exec('PRAGMA foreign_keys = ON');
+  for (const schema of ['schema.sql', 'review-groups-schema.sql', 'release-schema.sql']) {
+    db.exec(readFileSync(new URL(`../src/${schema}`, import.meta.url), 'utf8'));
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS deliveries_body_window
+      ON deliveries (source, body_hash, received_at) WHERE dedupe_kind = 'body_hash';
+    CREATE TABLE release_contract (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL);
+    CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL);
+    PRAGMA user_version = 5;
+  `);
+  return db;
+}
+
+test('v6 deletes Apidog deliveries and their outbox while preserving GitHub deliveries and links', () => {
+  const path = databasePath();
+  const legacy = openV5(path);
+  const preservedRows = (db: Database) => ({
+    deliveries: db.query("SELECT * FROM deliveries WHERE source = 'github' ORDER BY id").all(),
+    outbox: db.query('SELECT * FROM outbox WHERE id IN (5, 6, 7) ORDER BY id').all(),
+    groups: db.query('SELECT * FROM review_groups').all(),
+    members: db.query('SELECT * FROM review_group_deliveries').all(),
+    notices: db.query('SELECT * FROM release_notices').all(),
+    recovery: db.query('SELECT * FROM release_recovery').all(),
+  });
+  const original = (() => {
+    try {
+      legacy.exec(`
+        INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared, lane) VALUES
+          (1, 'apidog', 'raw-hash:old', 'body_hash', 'API_UPDATED', X'7B7D', 'hash', 1, 1, 'ordinary'),
+          (2, 'apidog', 'mr-poll:cutoff', 'id', 'MR_CUTOFF', X'7B7D', 'hash', 1, 1, 'ordinary'),
+          (3, 'apidog', 'mr-poll:7:OPENED', 'id', 'MR_OPENED', X'7B7D', 'hash', 1, 1, 'ordinary'),
+          (4, 'github', 'release-card', 'id', 'pull_request', X'7B7D', 'hash', 1, 1, 'release-queue'),
+          (5, 'github', 'review-delivery', 'id', 'pull_request_review', X'7B7D', 'hash', 1, 1, 'ordinary');
+        INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at)
+          VALUES (6, 'apidog', 'delivery-1', 'id', 'BRANCH_CREATED', X'7B7D', 'hash', 1);
+        INSERT INTO outbox (id, origin_type, origin_id, ordinal, topic, html, status, due_at, lease_until, error_code, telegram_message_id) VALUES
+          (1, 'delivery', 1, 0, 26, 'Old raw', 'sent', 1, NULL, NULL, 123),
+          (2, 'delivery', 3, 0, 26, 'Old MR', 'pending', 1, NULL, NULL, NULL),
+          (3, 'delivery', 3, 1, 26, 'Old MR', 'leased', 1, 100, NULL, NULL),
+          (4, 'delivery', 1, 1, 26, 'Old raw', 'failed', 1, NULL, 'APIDOG_RAW_SUPPRESSED', NULL),
+          (5, 'delivery', 4, 0, 88, 'Release', 'sent', 1, NULL, NULL, 124),
+          (6, 'review_group', 1, 0, 1513, 'Review', 'pending', 1, NULL, NULL, NULL),
+          (7, 'delivery', 7, 0, 26, 'Issue', 'failed', 1, NULL, 'telegram_400', NULL);
+        INSERT INTO review_groups (id, repository, pr_number, reviewer, due_at, released, revision)
+          VALUES (1, 'org/repo', 1, 'reviewer', 1, 1, 1);
+        INSERT INTO review_group_deliveries (delivery_id, group_id, review_id, repository)
+          VALUES (5, 1, 1, 'org/repo');
+        INSERT INTO release_notices (notice_key, outbox_id, metadata_json)
+          VALUES ('queue:entry-1', 5, '{"kind":"queue","key":"queue:entry-1","prNumber":1,"queueEntryId":"entry-1"}');
+        INSERT INTO release_activation (id, cutoff_ms) VALUES (1, 11);
+        INSERT INTO backend_release_activation (id, cutoff_ms) VALUES (1, 12);
+        INSERT INTO release_contract (id, cutoff_ms) VALUES (1, 13);
+        INSERT INTO release_recovery (delivery_id) VALUES (4);
+      `);
+      legacy.query(`INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
+        VALUES (7, 'github', ?, 'id', ?, ?, '94c5be35049d121380268abbc7c1da2fc90a0ba05d9265ba04155322edd89c68', ?, 1)`)
+        .run(input().deliveryId, input().event, raw, input().receivedAt);
+      return preservedRows(legacy);
+    } finally { legacy.close(); }
+  })();
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const store = open(path);
+    const db = new Database(path, { readonly: true });
+    try {
+      expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 6 });
+      expect(db.query("SELECT id FROM deliveries WHERE source = 'apidog'").all()).toEqual([]);
+      expect(db.query('SELECT id FROM outbox ORDER BY id').all()).toEqual([{ id: 5 }, { id: 6 }, { id: 7 }]);
+      expect(db.query("SELECT name FROM sqlite_master WHERE name = 'deliveries_body_window'").all()).toEqual([]);
+      expect(preservedRows(db)).toEqual(original);
+      expect(store.releaseActivation()).toBe(11);
+      expect(store.releaseActivation('Cringe-Driven-Development-Team/backend')).toBe(12);
+      expect(store.releaseContract()).toBe(13);
+      expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(store.retryFailed(4, 1000)).toBe(false);
+      expect(store.accept(input())).toBe('duplicate');
+    } finally {
+      db.close();
+      store.close();
+    }
+  }
+});
+
+test('failed v6 migration rolls back outbox deletion and can be retried', () => {
+  const path = databasePath();
+  const db = openV5(path);
+  try {
+    db.exec(`
+      INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at)
+        VALUES (1, 'apidog', 'old', 'id', 'API_UPDATED', X'7B7D', 'hash', 1);
+      INSERT INTO outbox (id, origin_type, origin_id, ordinal, topic, html, status, due_at)
+        VALUES (1, 'delivery', 1, 0, 26, 'Old raw', 'failed', 1);
+      CREATE TRIGGER deny_delete BEFORE DELETE ON deliveries
+        BEGIN SELECT RAISE(ABORT, 'test migration write failure'); END;
+    `);
+    const deliveries = db.query('SELECT * FROM deliveries').all();
+    const outbox = db.query('SELECT * FROM outbox').all();
+    expect(() => open(path)).toThrow('test migration write failure');
+    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 5 });
+    expect(db.query('SELECT * FROM deliveries').all()).toEqual(deliveries);
+    expect(db.query('SELECT * FROM outbox').all()).toEqual(outbox);
+
+    db.exec('DROP TRIGGER deny_delete');
+    open(path);
+    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 6 });
+    expect(db.query('SELECT * FROM deliveries').all()).toEqual([]);
+    expect(db.query('SELECT * FROM outbox').all()).toEqual([]);
+  } finally { db.close(); }
 });

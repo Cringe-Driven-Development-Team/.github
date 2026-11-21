@@ -1,24 +1,14 @@
 # Webhook alerts: текущий runbook
 
-Сервис принимает `POST /webhooks/github` и `POST /webhooks/apidog`, проверяет
+Сервис принимает `POST /webhooks/github`, проверяет
 подпись по исходным байтам и подтверждает запрос после транзакционной записи
 SQLite. При `WEBHOOK_ALERTS_SEND_ENABLED=false` (по умолчанию) worker не запускается:
 приём и `/health` работают без Telegram, payload остаётся для последующей обработки.
 
-Apidog отправляет только события MR: открытие, закрытие без слияния и слияние.
-Подписанные raw webhooks сохраняются, но не создают Telegram-сообщений, включая
-изменения API, схем и веток. При включённом sender сервис перед первым API-запросом
-сохраняет постоянную границу начала мониторинга в SQLite. Более ранние события
-остаются только базовой историей; перезапуск не сбрасывает границу. Полный список
-MR целевой ветки читается с пагинацией и атомарно сохраняется перед обработкой
-очереди. Следующий опрос начинается через 30 секунд после завершения предыдущего,
-без пересечения запросов. При сбое список не сохраняется частично; следующий опрос
-повторяет чтение, лог содержит только `apidog_mr_poll_failed`. Остановка прекращает
-новые опросы и ожидает текущий ограниченный таймаутом запрос. Apidog использует
-отдельного бота `TELEGRAM_APIDOG_BOT_TOKEN` и тему `TELEGRAM_APIDOG_TOPIC_ID`.
-При старте включённого sender старые raw Apidog outbox со статусом `pending`,
-`leased` или `failed` становятся `failed` с кодом `APIDOG_RAW_SUPPRESSED` и без
-возможности ручного retry; `sent`, GitHub и синтетические `mr-poll:` MR не меняются.
+Прежний маршрут `POST /webhooks/apidog` отвечает `404`. При открытии рабочей базы
+миграция SQLite до v6 удаляет доставки Apidog и созданные из них outbox-строки. Доставки GitHub, группы ревью, релизные карточки
+и их связи сохраняются. Миграция выполняется до запуска worker. Ранее созданные
+снимки и копии Restic сохраняют данные на момент создания снимка.
 
 Необязательный `TELEGRAM_PROXY_URL` задаёт HTTP/HTTPS-прокси только для отправки
 Telegram (`sendMessage`), например `http://proxy.internal:2080`. `TELEGRAM_PROXY_URL` не применяется к GitHub API. Без этой настройки Telegram отправляется напрямую; пустой URL,
@@ -90,22 +80,14 @@ PR Task 9 (образ по digest, snapshot → Restic → restore) → жива
 | Переменная | Требование |
 | --- | --- |
 | `GITHUB_WEBHOOK_SECRET` | Обязательный ключ GitHub HMAC SHA-256 |
-| `APIDOG_SIGNATURE_KEY` | Обязательный отдельный ключ Apidog HMAC SHA-1 |
-| `APIDOG_SIGNATURE_HEADER` | Обязательное имя HTTP-заголовка, сверить с реальной доставкой |
 | `WEBHOOK_ALERTS_SEND_ENABLED` | `false` или `true`, по умолчанию `false` |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Обязательны при отправке; chat ID — целое число |
-| `TELEGRAM_APIDOG_BOT_TOKEN` | Обязателен при отправке; бот для уведомлений Apidog в том же чате и теме Apidog |
-| `TELEGRAM_APIDOG_TOPIC_ID` | Обязателен при отправке, положительный ID темы Apidog |
 | `TELEGRAM_TOPIC_ID`, `TELEGRAM_REVIEW_TOPIC_ID` | По умолчанию `26` и `1513` |
 | `TELEGRAM_USER_MAP` | Необязательный JSON GitHub login → Telegram user ID |
 | `GITHUB_API_TOKEN` | Необязательный read-only токен дополнений GitHub |
 | `DATABASE_PATH`, `PORT` | По умолчанию `/data/queue.sqlite`, `8080` |
 
 При неверной конфигурации процесс завершается с именем переменной без её значения.
-GitHub и сгруппированные ревью отправляет `TELEGRAM_BOT_TOKEN`, события Apidog —
-`TELEGRAM_APIDOG_BOT_TOKEN`. Оба бота используют общий chat ID и Telegram proxy.
-Источник сообщения хранится в очереди, поэтому повторная отправка после перезапуска
-сохраняет выбор бота. Группировка ревью сохраняется.
 `SIGTERM`/`SIGINT` прекращает приём, дожидается worker и закрывает SQLite.
 
 Организационная Actions variable `TELEGRAM_EVENTS_SOURCE` — отдельная настройка
@@ -122,7 +104,7 @@ course-sync и workflow релизных уведомлений. Их секре
 
 - Payload URL: `https://hooks.cellestial.ru/webhooks/github`;
 - Content type: `application/json`, SSL verification включена;
-- Secret совпадает с `GITHUB_WEBHOOK_SECRET`, ключ отдельный от Apidog;
+- Secret совпадает с `GITHUB_WEBHOOK_SECRET`;
 - Individual events: Pushes, Issues, Issue comments, Pull requests, Pull request
   reviews (`push`, `issues`, `issue_comment`, `pull_request`, `pull_request_review`).
 
@@ -147,46 +129,8 @@ SQLite недоступна — `503`, доставка подлежит пов�
 В shadow intake старый sender продолжает писать в рабочий чат; новый только
 сохраняет. Не включать worker с боевым токеном для проверки shadow-очереди.
 Формат и отправку проверять отдельным экземпляром/БД с тестовым чатом и темами;
-тестовая БД не становится боевой очередью. Live GitHub/Apidog, права токенов,
+тестовая БД не становится боевой очередью. Живые доставки GitHub, права токенов,
 доступность образа и восстановление фиксируются в журнале ниже.
-
-## Apidog: приём и live-проверка
-
-[Официальные настройки уведомлений Apidog](https://share.apidog.com/apidoc/docs-site/544525/notification-settings-616240m0)
-описывают `Signature Auth` как HMAC SHA-1 с префиксом `sha1=`. Контроллер
-подтвердил настоящую доставку обычного create/update endpoint: заголовок
-`X-Apidog-Signature` содержит канонический base64 HMAC SHA-1 от исходных байтов
-тела. Приёмник поддерживает обе кодировки и проверяет подпись до сохранения.
-
-Наблюдаемая структура содержит строки `event`, `title`, `content`, `appLink`;
-для обновления API получено `event=API_UPDATED`, `content` содержит переводы строк,
-ссылка ведёт на `app.apidog.com`. Fixture `anonymized-live-structure.json` повторяет
-эту структуру с вымышленными значениями, без сохранения настоящего payload.
-Карточка экранирует и ограничивает title/content, сохраняет переводы строк и
-показывает кнопку только для безопасного `appLink`, в настроенной теме Apidog.
-
-Старая версия ответила `401` на настоящую base64-подпись. Исправление вошло в
-[`.github` PR #32](https://github.com/Cringe-Driven-Development-Team/.github/pull/32),
-образ с digest `sha256:8ca5549293a571ae2de60c638bc9cd9a67f59aa158df1d2f8b0d2ce5ddbe6901`
-развёрнут через [infra PR #79](https://github.com/Cringe-Driven-Development-Team/infra/pull/79).
-Повторное изменение временного endpoint `45845223` в sprint-ветке
-`webhook-alerts-smoke-20261025` сохранено как `API_UPDATED`, delivery `130`.
-После включения worker сообщение `7508` отправлено в тему `6033`; новое изменение
-после переключения дало delivery `139` и сообщение `7511` в ту же тему.
-Удаление временного endpoint после live-проверки дало `API_DELETED`, delivery
-`145` и сообщение `7517` в теме `6033`. Main Apidog не менялась. Raw JSON
-сохраняется целиком, без вывода тела и ключей в лог.
-
-Если подтверждён устойчивый ID уведомления, дедупликация постоянная по
-`(source, delivery_id)`. Без него HTTP не передаёт `deliveryId`, и SQLite использует
-SHA-256 исходного тела в скользящем пятиминутном окне. Две легитимные дословно
-одинаковые доставки в этом окне могут быть подавлены: это следует учитывать при
-live-проверке. Generic object `id` ключом доставки не считается.
-
-`401` — подпись отсутствует/неверна; `400` — неверный JSON/UTF-8; `415` — требуется
-`application/json`; `413` — больше 1 МиБ; `503` — запись не выполнена; `409` — один
-ID с разными телами; `202` — сохранено; `200` — дубликат. Payload без валидной
-подписи не сохраняется.
 
 ## Согласованный снимок SQLite и изолированное восстановление
 
@@ -232,12 +176,12 @@ bun -e '
   const path = process.argv[1];
   const db = new Database(path, { readonly: true });
   let row;
-  try { row = db.query("SELECT source, delivery_id, event, raw FROM deliveries WHERE dedupe_kind = ? LIMIT 1").get("id"); }
+  try { row = db.query("SELECT delivery_id, event, raw FROM deliveries WHERE source = ? LIMIT 1").get("github"); }
   finally { db.close(); }
   if (!row) throw new Error("restored snapshot needs a stable-ID delivery for duplicate check");
   const store = openStore(path);
   try {
-    if (store.accept({ source: row.source, deliveryId: row.delivery_id, event: row.event, raw: row.raw }) !== "duplicate") throw new Error("restored delivery was not deduplicated");
+    if (store.accept({ source: "github", deliveryId: row.delivery_id, event: row.event, raw: row.raw }) !== "duplicate") throw new Error("restored delivery was not deduplicated");
   } finally { store.close(); }
   console.log("Restored stable-ID duplicate rejected");
 ' "$restore_dir/queue.sqlite"
@@ -254,7 +198,7 @@ pending-доставки в боевой Telegram при проверке. Пе�
 
 Локальная автоматическая проверка `bun test tests/snapshot.test.ts` оставляет
 исходную WAL-базу открытой, восстанавливает только снимок, сверяет `pending`/`sent`,
-ID и повторную доставку GitHub/Apidog, затем проверяет `/health` и отсутствие
+ID и повторную доставку GitHub, затем проверяет `/health` и отсутствие
 сетевых вызовов при отключённой отправке. Живое восстановление из Restic на VPS выполнено в Task 9 с синтетическими
 строками и выключенным sender; результат и ограничения записаны в журнале ниже.
 
@@ -262,15 +206,14 @@ ID и повторную доставку GitHub/Apidog, затем провер
 
 Этот порядок нужен при первом переключении и при повторном включении после
 отката; фактические результаты Task 10 записаны ниже. Перед новым переходом
-проверить подписанные live-доставки обоих источников, snapshot → Restic →
+проверить подписанные live-доставки GitHub, snapshot → Restic →
 изолированное restore и границу прежней отправки. Пока сверка очереди не
 завершена, оставить `WEBHOOK_ALERTS_SEND_ENABLED=false`.
 
 1. Сохранить в журнале UTC-время начала, SHA/digest образа, прежнее значение и
    visibility `TELEGRAM_EVENTS_SOURCE`, ID hook, GitHub delivery GUID, Actions
    run/job URLs и Telegram message IDs. Список подключённых callers проверить
-   по репозиториям, включая локальные overrides variable. Для Apidog подтвердить
-   отсутствие другого notification target, пишущего те же события в тот же чат.
+   по репозиториям, включая локальные overrides variable.
 2. Пока worker выключен, установить organization Actions variable
    `TELEGRAM_EVENTS_SOURCE=webhook` для всех нужных репозиториев. Дождаться конца
    всех уже начавшихся `notify`, включая трёхминутные серии ревью; не отменять
@@ -316,16 +259,15 @@ ID и повторную доставку GitHub/Apidog, затем провер
 
    Это сохраняет payload и `(source, delivery_id)`, поэтому повторная доставка
    уже сверенного события не создаёт рассылку. Новые события, недоставленные
-   старым sender, и Apidog остаются unprepared для worker. Отдельно сверить
-   изолированные тестовые Apidog события, чтобы они не стали боевой рассылкой.
+   старым sender, остаются unprepared для worker.
    Не применять этот рецепт к очереди, где worker уже работал: подготовленные
    outbox/группы требуют сверки каждого сообщения, не только delivery.
 5. Повторно проверить пограничные доставки, пришедшие во время сверки. Сохранить
    журнал соответствий и новый snapshot. Через Ansible Vault выставить
    `WEBHOOK_ALERTS_SEND_ENABLED=true`, применить роль `hooks` и пересоздать сервис
    с обновлённым `.env`. Изменение env-файла без пересоздания недостаточно.
-6. Создать по одному новому GitHub и Apidog событию. Проверить ожидаемое число
-   карточек, GitHub тему `26`, review `1513`, Apidog выбранную тему и записи
+6. Создать новое событие GitHub. Проверить ожидаемое число карточек в темах
+   GitHub `26` и Code Review `1513` для соответствующих событий и записи
    `sent`/`telegram_message_id`. Redelivery того же GitHub GUID не добавляет
    карточку. Проверить добавление issue на доску, `close` и обычный запуск
    reminders. Только после этого записать приёмку; #20 пока не закрывать до
@@ -384,9 +326,6 @@ Worker остаётся включённым; рабочую очередь не
    Сначала сверить GUID/объекты/message IDs для периода отката; перед повторным
    включением worker вновь разобрать outbox и группы, чтобы не повторить сообщения
    старого sender. Рецепт чистого shadow выше к такой очереди неприменим.
-4. Apidog при выключенном worker накапливается до восстановления сервиса;
-   отдельного старого Actions sender у него нет. После сверки возобновить его
-   через worker. Не включать параллельный target в тот же Telegram чат.
 
 Для GitHub в organization hook → Recent Deliveries открыть нужную доставку и
 нажать Redeliver после устранения ошибки. GitHub не повторяет неудачные webhook
@@ -394,9 +333,6 @@ Worker остаётся включённым; рабочую очередь не
 [GitHub best practices](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks).
 Уже сохранённый GUID вернёт `200`, он не сбрасывает `prepared` и `sent`.
 `409` требует разбирательства с отличающимся телом, не удаления dedupe-ключа.
-Для Apidog способ live redelivery и наличие постоянного notification ID ещё
-нужно подтвердить; без ID повтор спустя пять минут может стать новой доставкой.
-Не переотправлять его без сверки с очередью.
 
 Если исходная доставка сохранена, а её outbox-строка имеет `failed`, после
 проверки фактической отправки в Telegram можно повторить именно эту строку:
@@ -411,6 +347,8 @@ worker. При сетевом обрыве или аварии после при
 `message_id`, исход может быть неизвестен: сверить чат до ручного retry.
 
 ## Журнал живой приёмки
+
+Исторический раздел описывает состояние сервиса на момент проверок в октябре 2026 года.
 
 Инфраструктурная приёмка Task 9 выполнена без сообщений в Telegram. Результаты
 Task 10 ниже фиксируют фактические доставки, переключение и оставшиеся проверки.
@@ -741,32 +679,6 @@ Sprint-ветка архивирована и удалена. Три тесто�
 Тест подтверждает живую маршрутизацию и отправку, но не является настоящей
 доставкой GitHub после пользовательского ревью.
 
-Для включённого sender обязательны `APIDOG_PROJECT_ID` (положительный числовой
-ID проекта), `APIDOG_TARGET_BRANCH_ID` (ID main), `APIDOG_PROJECT_NAME` (точное
-имя проекта), `APIDOG_CONTRACT_URL` (публичный HTTP/HTTPS URL контракта),
-`APIDOG_ACCESS_TOKEN` (токен чтения MR и sprint-веток), `APIDOG_TELEGRAM_USER_MAP`
-и `APIDOG_MR_REVIEWERS`. Последняя настройка — JSON-массив ровно из двух объектов
-с непустым `name` и разными положительными десятичными строками `telegramId`
-(до 20 цифр, без ведущих нулей). Пример с синтетическими IDs:
-
-```json
-[{"name":"Reviewer One","telegramId":"333"},{"name":"Reviewer Two","telegramId":"444"}]
-```
-
-Храните `APIDOG_MR_REVIEWERS` в `vault_hooks_env`. При каждом `MR_OPENED`
-после создателя появляется строка «Ревьюверы» в порядке настройки, независимо
-от `reviewerIds` Apidog. Совпадение с создателем не вызывает повторный пинг.
-В `MR_CLOSED` и `MR_MERGED` эта строка не добавляется.
-
-
-Карта — JSON-объект: ключ — числовой Apidog user ID, значение — объект с
-непустым `name` и строковым числовым `telegramId`. Токен и карту храните в
-`vault_hooks_env`; Telegram IDs берите из проверенной карты организации,
-дополняйте при появлении участников и обновляйте при смене IDs. Не публикуйте
-реальные значения в репозитории или логах. Пустая карта `{}` допустима:
-неизвестные участники отображаются без пинга. Карточка MR содержит кнопки
-«Открыть MR» и «Контракт API»; данные MR берутся из полного снимка API.
-
 ### Завершение охвата GitHub callers — 2026-10-31 UTC
 
 В `17:36:11.152Z` worker уже включён и healthy, `integrity_check=ok`:
@@ -905,7 +817,7 @@ digest BFF и пояснение к левой версии в результа�
 Перед enqueue/retry проверяются актуальная main-ветка и ID entry. Устаревшие
 queue/start/ready пропускаются. Telegram timeout/5xx или сбой записи после принятия
 оставляет release-сообщение с `release_uncertain`, без автоматического повтора;
-429 допускает retry. Обычные GitHub/Apidog сообщения сохраняют прежнюю политику.
+429 допускает retry. Обычные сообщения GitHub сохраняют прежнюю политику.
 
 При пропуске события оператор сверяет Telegram и исходный run/delivery, затем
 может адресно вызвать `release-recover <raw-delivery-id>`. Это разрешает только

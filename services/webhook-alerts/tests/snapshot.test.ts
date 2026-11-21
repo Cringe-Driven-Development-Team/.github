@@ -15,7 +15,7 @@ function directory() {
   directories.push(path);
   return path;
 }
-const raw = new TextEncoder().encode('{"event":"endpoint.updated"}');
+const raw = new TextEncoder().encode('{"ref":"refs/heads/main"}');
 
 test('snapshots committed WAL rows and restores pending/sent deliveries and dedupe without sending', async () => {
   const root = directory();
@@ -25,7 +25,7 @@ test('snapshots committed WAL rows and restores pending/sent deliveries and dedu
   try {
     store.accept({ source: 'github', deliveryId: 'sent-delivery', event: 'push', raw, receivedAt: 100 });
     store.accept({ source: 'github', deliveryId: 'pending-delivery', event: 'push', raw, receivedAt: 200 });
-    store.accept({ source: 'apidog', event: 'endpoint.updated', raw, receivedAt: 300 });
+    store.accept({ source: 'github', deliveryId: 'unprepared-delivery', event: 'push', raw, receivedAt: 300 });
     store.prepare(1, [{ topic: 26, html: 'sent' }]);
     store.prepare(2, [{ topic: 26, html: 'pending' }]);
     store.markSent(store.claimDue(100, 1000)[0]!.id, 42);
@@ -42,7 +42,7 @@ test('snapshots committed WAL rows and restores pending/sent deliveries and dedu
       expect(restored.query('SELECT id, delivery_id, dedupe_kind FROM deliveries ORDER BY id').all()).toEqual([
         { id: 1, delivery_id: 'sent-delivery', dedupe_kind: 'id' },
         { id: 2, delivery_id: 'pending-delivery', dedupe_kind: 'id' },
-        { id: 3, delivery_id: expect.stringMatching(/^sha256:/), dedupe_kind: 'body_hash' },
+        { id: 3, delivery_id: 'unprepared-delivery', dedupe_kind: 'id' },
       ]);
       expect(restored.query('SELECT id, origin_id, status, telegram_message_id FROM outbox ORDER BY id').all()).toEqual([
         { id: 1, origin_id: 1, status: 'sent', telegram_message_id: 42 },
@@ -54,12 +54,12 @@ test('snapshots committed WAL rows and restores pending/sent deliveries and dedu
     try {
       expect(reopened.accept({ source: 'github', deliveryId: 'sent-delivery', event: 'push', raw })).toBe('duplicate');
       expect(reopened.accept({ source: 'github', deliveryId: 'pending-delivery', event: 'push', raw })).toBe('duplicate');
-      expect(reopened.accept({ source: 'apidog', event: 'endpoint.updated', raw, receivedAt: 301 })).toBe('duplicate');
+      expect(reopened.accept({ source: 'github', deliveryId: 'unprepared-delivery', event: 'push', raw, receivedAt: 301 })).toBe('duplicate');
     } finally { reopened.close(); }
     let calls = 0;
     const service = startService(loadConfig({
       DATABASE_PATH: restoredPath, WEBHOOK_ALERTS_SEND_ENABLED: 'false',
-      GITHUB_WEBHOOK_SECRET: 'test', APIDOG_SIGNATURE_KEY: 'test', APIDOG_SIGNATURE_HEADER: 'x-test-signature',
+      GITHUB_WEBHOOK_SECRET: 'test',
     }), { fetch: (async () => { calls++; throw new Error('network forbidden during restore'); }) as unknown as typeof fetch });
     try {
       expect((await service.app.request('/health')).status).toBe(200);

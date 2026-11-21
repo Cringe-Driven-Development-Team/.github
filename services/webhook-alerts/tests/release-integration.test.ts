@@ -203,7 +203,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
   });
   const fetcher = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(String(input));
-    if (!["api.github.com", "api.telegram.org", "api.apidog.com", "release-assets.githubusercontent.com"].includes(url.hostname))
+    if (!["api.github.com", "api.telegram.org", "release-assets.githubusercontent.com"].includes(url.hostname))
       throw new Error("Unexpected test origin");
     return fetch(new URL(url.pathname + url.search, upstream.url), init);
   }) as typeof fetch;
@@ -211,22 +211,11 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     DATABASE_PATH: path,
     GITHUB_WEBHOOK_SECRET: "test",
     GITHUB_API_TOKEN: "test",
-    APIDOG_SIGNATURE_KEY: "test",
-    APIDOG_SIGNATURE_HEADER: "X-Test",
     WEBHOOK_ALERTS_SEND_ENABLED: "true",
     TELEGRAM_BOT_TOKEN: "test",
-    TELEGRAM_APIDOG_BOT_TOKEN: "test-apidog",
     TELEGRAM_CHAT_ID: "-1001",
-    TELEGRAM_APIDOG_TOPIC_ID: "88",
     TELEGRAM_RELEASES_TOPIC_ID: "99",
     TELEGRAM_USER_MAP: JSON.stringify({ YarikMix: "111" }),
-    APIDOG_PROJECT_ID: "1382426",
-    APIDOG_TARGET_BRANCH_ID: "1388508",
-    APIDOG_PROJECT_NAME: "Example",
-    APIDOG_CONTRACT_URL: "https://vb78fyael1.apidog.io/",
-    APIDOG_ACCESS_TOKEN: "test",
-    APIDOG_TELEGRAM_USER_MAP: "{}",
-    APIDOG_MR_REVIEWERS: '[{"name":"One","telegramId":"333"},{"name":"Two","telegramId":"444"}]',
   });
   let service = startService(config, { fetch: fetcher });
   const server = Bun.serve({ port: 0, fetch: service.app.fetch });

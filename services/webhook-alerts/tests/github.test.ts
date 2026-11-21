@@ -163,9 +163,8 @@ describe('GitHub event projection', () => {
     expect(m?.topic).toBe(1513); expect(m?.html).toContain('👍 Апрув'); expect(m?.html).toContain('tg://user?id=111');
     p.review.user.login = 'author'; expect(await formatGithub(delivery('pull_request_review', p), api(), config)).toEqual([]);
   });
-  test('worker projector ignores non-GitHub and unsupported actions', async () => {
+  test('worker projector ignores unsupported actions', async () => {
     const project = createGithubProjector(api(), config);
-    expect(await project({ ...delivery('issues', issue()), source: 'apidog' })).toEqual([]);
     expect(await project(delivery('issues', issue('labeled')))).toEqual([]);
   });
 });
