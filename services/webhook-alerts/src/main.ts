@@ -6,7 +6,8 @@ import { dirname } from 'node:path';
 import { loadConfig, type Config } from './config';
 import { createApp, MAX_BODY_BYTES } from './http';
 import { createGithubApi } from './github-api';
-import { openStore } from './store';
+import { INFRA_REPO, openStore, type Delivery, type ReleaseNotice } from './store';
+import { createInfraReleaseApi, projectInfraRelease } from './infra-releases';
 import { sendMessage } from './telegram';
 import { createGithubProjector, startWorker } from './worker';
 
@@ -17,16 +18,25 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
   const store = openStore(config.databasePath);
   if (store.releaseActivation() !== null && (!config.releasesTopic || !config.githubApiToken?.trim())) {store.close();throw new Error('release notifications require topic and API token');}
   if (store.releaseActivation(BACKEND_REPO) !== null && (!config.backendReleasesTopic || !config.githubApiToken?.trim())) {store.close();throw new Error('backend release notifications require topic and API token');}
+  if (store.releaseActivation(INFRA_REPO) !== null && (!config.infraReleasesTopic || !config.githubApiToken?.trim())) {
+    store.close();
+    throw new Error('infra release notifications require topic and API token');
+  }
   const controller = new AbortController();
   const app = createApp({ config, checkDb: () => store.checkHealth(), accept: delivery => store.accept(delivery) });
   const fetcher = options.fetch ?? fetch;
   const releaseApi=createReleaseApi({token:config.githubApiToken,fetch:fetcher});
   const backendReleaseApi=createReleaseApi({token:config.githubApiToken,fetch:fetcher,repository:BACKEND_REPO});
+  const infraReleaseApi = createInfraReleaseApi({
+    token: config.githubApiToken, fetch: fetcher, cutoffMs: () => store.releaseActivation(INFRA_REPO) ?? Infinity,
+  });
   const worker = config.sendEnabled ? startWorker({
     store,
-    ...((config.releasesTopic === undefined && config.backendReleasesTopic === undefined) ? {} : {
-      releaseProject: (delivery: import('./store').Delivery) => {
+    ...((config.releasesTopic === undefined && config.backendReleasesTopic === undefined && config.infraReleasesTopic === undefined) ? {} : {
+      releaseProject: (delivery: Delivery) => {
         const repository = JSON.parse(new TextDecoder().decode(delivery.raw)).repository?.full_name;
+        if (repository === INFRA_REPO) return config.infraReleasesTopic === undefined
+          ? Promise.resolve([]) : projectInfraRelease(delivery, infraReleaseApi, config.infraReleasesTopic);
         const backend = repository === BACKEND_REPO;
         const topic = backend ? config.backendReleasesTopic : config.releasesTopic;
         if (topic === undefined) return Promise.resolve([]);
@@ -36,7 +46,12 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
           releaseCutoffMs:store.releaseContract() ?? Infinity,
         });
       },
-      beforeReleaseSend: (notice: import('./store').ReleaseNotice) => checkReleaseNotice(notice, notice.repository === BACKEND_REPO ? backendReleaseApi : releaseApi, notice.repository === BACKEND_REPO ? {topic:config.backendReleasesTopic!,siteUrl:'https://cellestial.ru',userMap:config.userMap,repository:BACKEND_REPO} : undefined),
+      beforeReleaseSend: async (notice: ReleaseNotice) => {
+        if (notice.repository === INFRA_REPO) return 'send';
+        return notice.repository === BACKEND_REPO
+          ? checkReleaseNotice(notice, backendReleaseApi, { topic: config.backendReleasesTopic!, siteUrl: 'https://cellestial.ru', userMap: config.userMap, repository: BACKEND_REPO })
+          : checkReleaseNotice(notice, releaseApi);
+      },
     }),
     project: createGithubProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {
       githubTopic: config.githubTopic, reviewTopic: config.reviewTopic, userMap: config.userMap,

@@ -7,6 +7,7 @@ export type DeliveryLane = 'ordinary' | 'release-queue' | 'release-operation';
 export type ReleaseNotice = { key: string; repository?: string; action?: 'deploy'|'rollback'; attempt?: number } & (
   {kind:'queue';prNumber:number;queueEntryId:string} | {kind:'dequeue';prNumber:number} |
   {kind:'ready';sha:string;operationKey:string} | {kind:'start'|'result';deploymentId:number;runId:number} |
+  {kind:'result';repository:typeof INFRA_REPO;runId:number;attempt:number;jobId:number;deploymentId?:number} |
   {kind:'job-error'|'retention';runId:number;attempt:number;jobId:number}
 );
 
@@ -123,12 +124,21 @@ const CLAIM_LIMIT = 10;
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 const releaseSchema = readFileSync(new URL('./release-schema.sql', import.meta.url), 'utf8');
 
+export const INFRA_REPO = 'Cringe-Driven-Development-Team/infra';
+const frontendRepo = 'Cringe-Driven-Development-Team/frontend';
+const releaseActivationTables = new Map([
+  [frontendRepo, 'release_activation'],
+  ['Cringe-Driven-Development-Team/backend', 'backend_release_activation'],
+  [INFRA_REPO, 'infra_release_activation'],
+]);
+
 function lane(input: DeliveryInput): DeliveryLane {
   try {
     const payload=JSON.parse(new TextDecoder().decode(input.raw));
-    if (!['Cringe-Driven-Development-Team/frontend','Cringe-Driven-Development-Team/backend'].includes(payload?.repository?.full_name)) return 'ordinary';
-    if (payload.repository.full_name.endsWith('/frontend') && input.event === 'pull_request' && ['enqueued','dequeued'].includes(payload.action)) return 'release-queue';
-    if (['deployment_status','workflow_job'].includes(input.event) || (payload.repository.full_name.endsWith('/frontend') && input.event === 'release')) return 'release-operation';
+    const repository = payload?.repository?.full_name;
+    if (!releaseActivationTables.has(repository)) return 'ordinary';
+    if (repository === frontendRepo && input.event === 'pull_request' && ['enqueued','dequeued'].includes(payload.action)) return 'release-queue';
+    if (['deployment_status','workflow_job'].includes(input.event) || (repository === frontendRepo && input.event === 'release')) return 'release-operation';
   } catch { /* Other accepted events retain their original preparation path. */ }
   return 'ordinary';
 }
@@ -354,15 +364,15 @@ export class Store {
     }).immediate();
   }
 
-  releaseActivation(repository = 'Cringe-Driven-Development-Team/frontend'): number | null {
-    if (repository === 'Cringe-Driven-Development-Team/backend') return this.db.query<{cutoff_ms:number},[]>('SELECT cutoff_ms FROM backend_release_activation WHERE id=1').get()?.cutoff_ms ?? null;
-    if (repository !== 'Cringe-Driven-Development-Team/frontend') return null;
-    return this.db.query<{cutoff_ms:number},[]>('SELECT cutoff_ms FROM release_activation WHERE id=1').get()?.cutoff_ms ?? null;
+  releaseActivation(repository = frontendRepo): number | null {
+    const table = releaseActivationTables.get(repository);
+    if (!table) return null;
+    return this.db.query<{cutoff_ms:number},[]>(`SELECT cutoff_ms FROM ${table} WHERE id=1`).get()?.cutoff_ms ?? null;
   }
 
-  activateReleases(cutoffMs: number, repository = 'Cringe-Driven-Development-Team/frontend'): void {
-    if (!['Cringe-Driven-Development-Team/frontend','Cringe-Driven-Development-Team/backend'].includes(repository)) throw new Error('invalid release repository');
-    const table = repository.endsWith('/backend') ? 'backend_release_activation' : 'release_activation';
+  activateReleases(cutoffMs: number, repository = frontendRepo): void {
+    const table = releaseActivationTables.get(repository);
+    if (!table) throw new Error('invalid release repository');
     if (!Number.isSafeInteger(cutoffMs) || cutoffMs < 0) throw new Error('invalid release activation');
     this.db.transaction(()=>{
       const old=this.releaseActivation(repository);
@@ -429,7 +439,7 @@ export function openStore(path: string): Store {
     db.exec('PRAGMA foreign_keys = ON');
     db.transaction(() => {
       const version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
-      if (version > 6) throw new Error('unsupported database schema');
+      if (version > 7) throw new Error('unsupported database schema');
       if (version === 0) {
         db.exec(schema);
       }
@@ -458,6 +468,10 @@ export function openStore(path: string): Store {
           DROP INDEX IF EXISTS deliveries_body_window;
           PRAGMA user_version = 6;
         `);
+      }
+      if (version < 7) {
+        db.exec('CREATE TABLE infra_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
+        db.exec('PRAGMA user_version = 7');
       }
     }).immediate();
     return new Store(db);

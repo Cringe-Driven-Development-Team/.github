@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config";
 import { startService } from "../src/main";
 import { createSnapshot } from "../src/snapshot";
-import { openStore } from "../src/store";
+import { INFRA_REPO, openStore } from "../src/store";
 import { A, B, C, REPO } from "./helpers/release";
 import { createHash } from "node:crypto";
 import releaseJson from "./fixtures/github/release-published.json";
@@ -20,6 +20,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
   const initial = openStore(path);
   const cutoff = Date.now() - 60_000;
   initial.activateReleases(cutoff);
+  initial.activateReleases(cutoff, INFRA_REPO);
   initial.activateReleaseContract(cutoff);
   initial.close();
   const timestamp = new Date().toISOString();
@@ -215,6 +216,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     TELEGRAM_BOT_TOKEN: "test",
     TELEGRAM_CHAT_ID: "-1001",
     TELEGRAM_RELEASES_TOPIC_ID: "99",
+    TELEGRAM_INFRA_ALERTS_TOPIC_ID: "14389",
     TELEGRAM_USER_MAP: JSON.stringify({ YarikMix: "111" }),
   });
   let service = startService(config, { fetch: fetcher });
