@@ -39,10 +39,10 @@ test('snapshots committed WAL rows and restores pending/sent deliveries and dedu
     const restored = new Database(restoredPath, { readonly: true });
     try {
       expect(restored.query('PRAGMA integrity_check').all()).toEqual([{ integrity_check: 'ok' }]);
-      expect(restored.query('SELECT id, delivery_id, dedupe_kind FROM deliveries ORDER BY id').all()).toEqual([
-        { id: 1, delivery_id: 'sent-delivery', dedupe_kind: 'id' },
-        { id: 2, delivery_id: 'pending-delivery', dedupe_kind: 'id' },
-        { id: 3, delivery_id: 'unprepared-delivery', dedupe_kind: 'id' },
+      expect(restored.query('SELECT id, delivery_id, body_hash FROM deliveries ORDER BY id').all()).toEqual([
+        { id: 1, delivery_id: 'sent-delivery', body_hash: '090ba1b9ca860d37bb4ca7492549a8a347caac3490f763399e6498622c9b47f9' },
+        { id: 2, delivery_id: 'pending-delivery', body_hash: '090ba1b9ca860d37bb4ca7492549a8a347caac3490f763399e6498622c9b47f9' },
+        { id: 3, delivery_id: 'unprepared-delivery', body_hash: '090ba1b9ca860d37bb4ca7492549a8a347caac3490f763399e6498622c9b47f9' },
       ]);
       expect(restored.query('SELECT id, origin_id, status, telegram_message_id FROM outbox ORDER BY id').all()).toEqual([
         { id: 1, origin_id: 1, status: 'sent', telegram_message_id: 42 },

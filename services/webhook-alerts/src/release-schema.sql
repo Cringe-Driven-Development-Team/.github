@@ -1,5 +1,3 @@
-ALTER TABLE deliveries ADD COLUMN lane TEXT NOT NULL DEFAULT 'ordinary' CHECK (lane IN ('ordinary','release-queue','release-operation'));
-ALTER TABLE outbox ADD COLUMN keyboard_json TEXT;
 CREATE TABLE release_notices (
   notice_key TEXT PRIMARY KEY,
   operation_key TEXT UNIQUE,

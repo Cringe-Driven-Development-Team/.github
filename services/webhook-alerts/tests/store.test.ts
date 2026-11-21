@@ -204,115 +204,152 @@ test('manual retry requeues failed GitHub messages with or without an error code
   } finally { inspect.close(); }
 });
 
-function openV5(path: string) {
+function openLegacyQueue(path: string, version: 6 | 7) {
   const db = new Database(path);
   db.exec('PRAGMA foreign_keys = ON');
-  for (const schema of ['schema.sql', 'review-groups-schema.sql', 'release-schema.sql']) {
-    db.exec(readFileSync(new URL(`../src/${schema}`, import.meta.url), 'utf8'));
-  }
   db.exec(`
-    CREATE INDEX IF NOT EXISTS deliveries_body_window
-      ON deliveries (source, body_hash, received_at) WHERE dedupe_kind = 'body_hash';
+    CREATE TABLE deliveries (
+      id INTEGER PRIMARY KEY,
+      source TEXT NOT NULL CHECK (source IN ('github', 'former-source')),
+      delivery_id TEXT NOT NULL,
+      dedupe_kind TEXT NOT NULL CHECK (dedupe_kind IN ('id', 'body_hash')),
+      event TEXT NOT NULL,
+      raw BLOB NOT NULL,
+      body_hash TEXT NOT NULL,
+      received_at INTEGER NOT NULL,
+      prepared INTEGER NOT NULL DEFAULT 0 CHECK (prepared IN (0, 1)),
+      lease_until INTEGER,
+      lane TEXT NOT NULL DEFAULT 'ordinary' CHECK (lane IN ('ordinary','release-queue','release-operation')),
+      UNIQUE (source, delivery_id)
+    );
+    CREATE INDEX deliveries_unprepared ON deliveries (prepared, lease_until, id);
     CREATE TABLE release_contract (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL);
     CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL);
-    PRAGMA user_version = 5;
+    PRAGMA user_version = ${version};
   `);
+  db.exec(readFileSync(new URL('../src/review-groups-schema.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../src/release-schema.sql', import.meta.url), 'utf8'));
+  if (version === 7) {
+    db.exec('CREATE TABLE infra_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
+  }
   return db;
 }
 
-test('v6 deletes Apidog deliveries and their outbox while preserving GitHub deliveries and links', () => {
-  const path = databasePath();
-  const legacy = openV5(path);
-  const preservedRows = (db: Database) => ({
-    deliveries: db.query("SELECT * FROM deliveries WHERE source = 'github' ORDER BY id").all(),
-    outbox: db.query('SELECT * FROM outbox WHERE id IN (5, 6, 7) ORDER BY id').all(),
+function queueRows(db: Database) {
+  return {
+    deliveries: db.query(`SELECT id, source, delivery_id, event, raw, body_hash, received_at, prepared,
+      lease_until, lane FROM deliveries ORDER BY id`).all(),
+    outbox: db.query('SELECT * FROM outbox ORDER BY id').all(),
     groups: db.query('SELECT * FROM review_groups').all(),
     members: db.query('SELECT * FROM review_group_deliveries').all(),
     notices: db.query('SELECT * FROM release_notices').all(),
     recovery: db.query('SELECT * FROM release_recovery').all(),
+  };
+}
+
+for (const version of [6, 7] as const) {
+  test(`v${version} upgrades to the same v8 schema as a fresh database and preserves the queue`, () => {
+    const path = databasePath();
+    const legacy = openLegacyQueue(path, version);
+    const original = (() => {
+      try {
+        legacy.exec(`
+          INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared, lease_until, lane) VALUES
+            (4, 'github', 'release-card', 'id', 'pull_request', X'7B7D', 'hash', 1, 1, NULL, 'release-queue'),
+            (5, 'github', 'review-delivery', 'id', 'pull_request_review', X'7B7D', 'hash', 1, 1, NULL, 'ordinary'),
+            (8, 'github', 'pending', 'id', 'issues', X'7B7D', 'hash', 1, 0, 500, 'ordinary');
+          INSERT INTO outbox (id, origin_type, origin_id, ordinal, topic, html, status, due_at, error_code, telegram_message_id) VALUES
+            (5, 'delivery', 4, 0, 88, 'Release', 'sent', 1, NULL, 124),
+            (6, 'review_group', 1, 0, 1513, 'Review', 'pending', 1, NULL, NULL),
+            (7, 'delivery', 7, 0, 26, 'Result', 'failed', 1, 'release_uncertain', NULL);
+          INSERT INTO review_groups (id, repository, pr_number, reviewer, due_at, released, revision)
+            VALUES (1, 'org/repo', 1, 'reviewer', 1, 1, 1);
+          INSERT INTO review_group_deliveries (delivery_id, group_id, review_id, repository)
+            VALUES (5, 1, 1, 'org/repo');
+          INSERT INTO release_notices (notice_key, outbox_id, metadata_json)
+            VALUES ('queue:entry-1', 5, '{"kind":"queue","key":"queue:entry-1","prNumber":1,"queueEntryId":"entry-1"}');
+          INSERT INTO release_notices (notice_key, outbox_id, metadata_json, sending_at)
+            VALUES ('result:entry-1', 7, '{"kind":"result","key":"result:entry-1","deploymentId":1,"runId":1}', 50);
+          INSERT INTO release_activation (id, cutoff_ms) VALUES (1, 11);
+          INSERT INTO backend_release_activation (id, cutoff_ms) VALUES (1, 12);
+          INSERT INTO release_contract (id, cutoff_ms) VALUES (1, 13);
+          INSERT INTO release_recovery (delivery_id) VALUES (4);
+        `);
+        if (version === 7) legacy.exec('INSERT INTO infra_release_activation VALUES (1, 14)');
+        legacy.query(`INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
+          VALUES (7, 'github', ?, 'id', ?, ?, '94c5be35049d121380268abbc7c1da2fc90a0ba05d9265ba04155322edd89c68', ?, 1)`)
+          .run(input().deliveryId, input().event, raw, input().receivedAt);
+        return queueRows(legacy);
+      } finally { legacy.close(); }
+    })();
+
+    const freshPath = databasePath();
+    openStore(freshPath).close();
+    const fresh = new Database(freshPath, { readonly: true });
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const store = openStore(path);
+        const db = new Database(path, { readonly: true });
+        try {
+          expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 8 });
+          expect(queueRows(db)).toEqual(original);
+          expect(db.query('PRAGMA table_info(deliveries)').all()).toEqual(fresh.query('PRAGMA table_info(deliveries)').all());
+          expect(db.query('PRAGMA index_list(deliveries)').all()).toEqual(fresh.query('PRAGMA index_list(deliveries)').all());
+          expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+          expect(store.releaseActivation()).toBe(11);
+          expect(store.releaseActivation('Cringe-Driven-Development-Team/backend')).toBe(12);
+          expect(store.releaseActivation('Cringe-Driven-Development-Team/infra')).toBe(version === 7 ? 14 : null);
+          expect(store.releaseContract()).toBe(13);
+          expect(store.accept(input())).toBe('duplicate');
+        } finally { db.close(); store.close(); }
+      }
+    } finally { fresh.close(); }
   });
-  const original = (() => {
-    try {
-      legacy.exec(`
-        INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared, lane) VALUES
-          (1, 'apidog', 'raw-hash:old', 'body_hash', 'API_UPDATED', X'7B7D', 'hash', 1, 1, 'ordinary'),
-          (2, 'apidog', 'mr-poll:cutoff', 'id', 'MR_CUTOFF', X'7B7D', 'hash', 1, 1, 'ordinary'),
-          (3, 'apidog', 'mr-poll:7:OPENED', 'id', 'MR_OPENED', X'7B7D', 'hash', 1, 1, 'ordinary'),
-          (4, 'github', 'release-card', 'id', 'pull_request', X'7B7D', 'hash', 1, 1, 'release-queue'),
-          (5, 'github', 'review-delivery', 'id', 'pull_request_review', X'7B7D', 'hash', 1, 1, 'ordinary');
-        INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at)
-          VALUES (6, 'apidog', 'delivery-1', 'id', 'BRANCH_CREATED', X'7B7D', 'hash', 1);
-        INSERT INTO outbox (id, origin_type, origin_id, ordinal, topic, html, status, due_at, lease_until, error_code, telegram_message_id) VALUES
-          (1, 'delivery', 1, 0, 26, 'Old raw', 'sent', 1, NULL, NULL, 123),
-          (2, 'delivery', 3, 0, 26, 'Old MR', 'pending', 1, NULL, NULL, NULL),
-          (3, 'delivery', 3, 1, 26, 'Old MR', 'leased', 1, 100, NULL, NULL),
-          (4, 'delivery', 1, 1, 26, 'Old raw', 'failed', 1, NULL, 'APIDOG_RAW_SUPPRESSED', NULL),
-          (5, 'delivery', 4, 0, 88, 'Release', 'sent', 1, NULL, NULL, 124),
-          (6, 'review_group', 1, 0, 1513, 'Review', 'pending', 1, NULL, NULL, NULL),
-          (7, 'delivery', 7, 0, 26, 'Issue', 'failed', 1, NULL, 'telegram_400', NULL);
-        INSERT INTO review_groups (id, repository, pr_number, reviewer, due_at, released, revision)
-          VALUES (1, 'org/repo', 1, 'reviewer', 1, 1, 1);
-        INSERT INTO review_group_deliveries (delivery_id, group_id, review_id, repository)
-          VALUES (5, 1, 1, 'org/repo');
-        INSERT INTO release_notices (notice_key, outbox_id, metadata_json)
-          VALUES ('queue:entry-1', 5, '{"kind":"queue","key":"queue:entry-1","prNumber":1,"queueEntryId":"entry-1"}');
-        INSERT INTO release_activation (id, cutoff_ms) VALUES (1, 11);
-        INSERT INTO backend_release_activation (id, cutoff_ms) VALUES (1, 12);
-        INSERT INTO release_contract (id, cutoff_ms) VALUES (1, 13);
-        INSERT INTO release_recovery (delivery_id) VALUES (4);
-      `);
-      legacy.query(`INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
-        VALUES (7, 'github', ?, 'id', ?, ?, '94c5be35049d121380268abbc7c1da2fc90a0ba05d9265ba04155322edd89c68', ?, 1)`)
-        .run(input().deliveryId, input().event, raw, input().receivedAt);
-      return preservedRows(legacy);
-    } finally { legacy.close(); }
-  })();
+}
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const store = open(path);
-    const db = new Database(path, { readonly: true });
-    try {
-      expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 7 });
-      expect(db.query("SELECT id FROM deliveries WHERE source = 'apidog'").all()).toEqual([]);
-      expect(db.query('SELECT id FROM outbox ORDER BY id').all()).toEqual([{ id: 5 }, { id: 6 }, { id: 7 }]);
-      expect(db.query("SELECT name FROM sqlite_master WHERE name = 'deliveries_body_window'").all()).toEqual([]);
-      expect(preservedRows(db)).toEqual(original);
-      expect(store.releaseActivation()).toBe(11);
-      expect(store.releaseActivation('Cringe-Driven-Development-Team/backend')).toBe(12);
-      expect(store.releaseContract()).toBe(13);
-      expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
-      expect(store.retryFailed(4, 1000)).toBe(false);
-      expect(store.accept(input())).toBe('duplicate');
-    } finally {
-      db.close();
-      store.close();
-    }
-  }
-});
-
-test('failed v6 migration rolls back outbox deletion and can be retried', () => {
+test('v8 migration rolls back the rebuilt schema when a foreign key is broken', () => {
   const path = databasePath();
-  const db = openV5(path);
+  const legacy = openLegacyQueue(path, 7);
+  const schema = 'SELECT name, sql FROM sqlite_schema ORDER BY name';
   try {
-    db.exec(`
-      INSERT INTO deliveries (id, source, delivery_id, dedupe_kind, event, raw, body_hash, received_at)
-        VALUES (1, 'apidog', 'old', 'id', 'API_UPDATED', X'7B7D', 'hash', 1);
-      INSERT INTO outbox (id, origin_type, origin_id, ordinal, topic, html, status, due_at)
-        VALUES (1, 'delivery', 1, 0, 26, 'Old raw', 'failed', 1);
-      CREATE TRIGGER deny_delete BEFORE DELETE ON deliveries
-        BEGIN SELECT RAISE(ABORT, 'test migration write failure'); END;
-    `);
-    const deliveries = db.query('SELECT * FROM deliveries').all();
-    const outbox = db.query('SELECT * FROM outbox').all();
-    expect(() => open(path)).toThrow('test migration write failure');
-    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 5 });
-    expect(db.query('SELECT * FROM deliveries').all()).toEqual(deliveries);
-    expect(db.query('SELECT * FROM outbox').all()).toEqual(outbox);
-
-    db.exec('DROP TRIGGER deny_delete');
-    open(path);
-    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 7 });
-    expect(db.query('SELECT * FROM deliveries').all()).toEqual([]);
-    expect(db.query('SELECT * FROM outbox').all()).toEqual([]);
-  } finally { db.close(); }
+    legacy.exec('PRAGMA foreign_keys = OFF');
+    legacy.exec('INSERT INTO release_recovery VALUES (999)');
+    const original = legacy.query(schema).all();
+    expect(() => openStore(path)).toThrow();
+    expect(legacy.query('PRAGMA user_version').get()).toEqual({ user_version: 7 });
+    expect(legacy.query(schema).all()).toEqual(original);
+    expect(legacy.query('SELECT * FROM release_recovery').all()).toEqual([{ delivery_id: 999 }]);
+    legacy.exec('DELETE FROM release_recovery');
+    openStore(path).close();
+    expect(legacy.query('PRAGMA user_version').get()).toEqual({ user_version: 8 });
+  } finally { legacy.close(); }
 });
+
+test('a fresh v8 database accepts only GitHub deliveries and deduplicates by ID and body', () => {
+  const path = databasePath();
+  const store = openStore(path);
+  const db = new Database(path);
+  try {
+    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 8 });
+    expect(db.query<{ name: string }, []>('PRAGMA table_info(deliveries)').all().map(column => column.name))
+      .not.toContain('dedupe_kind');
+    expect(() => db.exec(`INSERT INTO deliveries (source, delivery_id, event, raw, body_hash, received_at)
+      VALUES ('unknown', 'external', 'event', X'7B7D', 'hash', 1)`)).toThrow(/CHECK constraint failed/);
+    expect(store.accept(input())).toBe('accepted');
+    expect(store.accept(input())).toBe('duplicate');
+    expect(store.accept({ ...input(), raw: new Uint8Array([1]) })).toBe('conflict');
+  } finally { db.close(); store.close(); }
+});
+
+for (const version of [5, 9]) {
+  test(`rejects unsupported database version ${version}`, () => {
+    const path = databasePath();
+    const db = openLegacyQueue(path, 6);
+    try {
+      db.exec(`PRAGMA user_version = ${version}`);
+      expect(() => openStore(path)).toThrow('unsupported database schema');
+      expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: version });
+    } finally { db.close(); }
+  });
+}

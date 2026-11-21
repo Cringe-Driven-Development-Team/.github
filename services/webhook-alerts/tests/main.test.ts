@@ -61,7 +61,7 @@ test('disabled entrypoint accepts durably without preparation or network calls',
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('enabled entrypoint rejects Apidog webhooks without writing a delivery', async () => {
+test('enabled entrypoint rejects an unknown webhook source without writing a delivery', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'hooks-rejected-'));
   const path = join(directory, 'queue.sqlite');
   try {
@@ -69,8 +69,8 @@ test('enabled entrypoint rejects Apidog webhooks without writing a delivery', as
       fetch: (() => { throw new Error('unexpected network request'); }) as unknown as typeof fetch,
     });
     try {
-      const response = await service.app.request('/webhooks/apidog', {
-        method: 'POST', body: '{"event":"API_UPDATED"}', headers: { 'content-type': 'application/json' },
+      const response = await service.app.request('/webhooks/unknown', {
+        method: 'POST', body: '{"event":"other"}', headers: { 'content-type': 'application/json' },
       });
       expect(response.status).toBe(404);
     } finally { await service.stop(); }

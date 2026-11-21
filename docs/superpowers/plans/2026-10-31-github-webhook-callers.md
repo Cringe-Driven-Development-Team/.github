@@ -15,7 +15,7 @@
 - Использовать существующую organization variable `TELEGRAM_EVENTS_SOURCE=webhook` с `visibility=selected`.
 - Добавить `docs` (1369785278), `frontend-packages` (1403014726), `figma` (1375950508), `static` (1374136555), сохранив прежние selected repositories.
 - Worker остаётся включённым; рабочая очередь не редактируется, старые сообщения не воспроизводятся и не удаляются.
-- Код отправителей, формат карточек, Apidog, board/close, reminders, course-sync, release/deploy notifications не меняются.
+- Код отправителей, формат карточек, board/close, reminders, course-sync, release/deploy notifications не меняются.
 - Не выводить secrets, полный webhook payload, токены или содержимое `.env`; сохранять только необходимые метаданные сверки.
 - Не изменять пользовательские checkout; работа в `/home/oleg/2026_H2/.github-webhook-callers`, актуальный base `515352beac1a5a3ae98140121ca40e25f9551707`.
 - Мерж PR выполняется при отдельном поручении владельца; переключение variable входит в текущее поручение.

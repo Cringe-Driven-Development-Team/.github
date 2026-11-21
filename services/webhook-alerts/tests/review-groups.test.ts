@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore, type Store, type OutgoingMessage } from '../src/store';
@@ -180,20 +180,6 @@ test('API outage retains a basic review card without inventing a count', async (
 });
 
 
-test('opening a schema-v1 database preserves queued messages and enables review groups', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'reviews-v1-')); directories.push(dir);
-  const path = join(dir, 'db.sqlite'), db = new Database(path);
-  try {
-    db.exec(readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8'));
-    db.exec("INSERT INTO outbox (origin_type, origin_id, ordinal, topic, html, due_at) VALUES ('delivery', 1, 0, 26, 'queued before upgrade', 1000)");
-    db.exec('PRAGMA user_version = 1');
-  } finally { db.close(); }
-  const { store } = open(path); const groups = new ReviewGroups(store);
-  record(store, groups, 1, 1000);
-  expect(await groups.releaseDue(181000, project.reviewGroup!)).toBe(1);
-  expect(store.claimDue(181000, 100).map(row => [row.originType, row.ordinal])).toEqual([['delivery', 0], ['review_group', 0]]);
-  expect(outbox(path)[0]!.html).toBe('queued before upgrade');
-});
 
 test.each([181000, 400000])('backlog comment received at %s starts a new series after 180 seconds of silence', async receivedAt => {
   const { store, path } = open(); const sent: OutgoingMessage[] = [];

@@ -1,18 +1,3 @@
-CREATE TABLE deliveries (
-  id INTEGER PRIMARY KEY,
-  source TEXT NOT NULL CHECK (source IN ('github', 'apidog')),
-  delivery_id TEXT NOT NULL,
-  dedupe_kind TEXT NOT NULL CHECK (dedupe_kind IN ('id', 'body_hash')),
-  event TEXT NOT NULL,
-  raw BLOB NOT NULL,
-  body_hash TEXT NOT NULL,
-  received_at INTEGER NOT NULL,
-  prepared INTEGER NOT NULL DEFAULT 0 CHECK (prepared IN (0, 1)),
-  lease_until INTEGER,
-  UNIQUE (source, delivery_id)
-);
-CREATE INDEX deliveries_unprepared ON deliveries (prepared, lease_until, id);
-
 -- A review group may create messages independently from an individual delivery.
 CREATE TABLE outbox (
   id INTEGER PRIMARY KEY,
@@ -29,6 +14,7 @@ CREATE TABLE outbox (
   lease_until INTEGER,
   error_code TEXT,
   telegram_message_id INTEGER,
+  keyboard_json TEXT,
   UNIQUE (origin_type, origin_id, ordinal)
 );
 CREATE INDEX outbox_due ON outbox (status, due_at, lease_until, id);

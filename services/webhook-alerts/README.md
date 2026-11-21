@@ -5,10 +5,9 @@
 SQLite. При `WEBHOOK_ALERTS_SEND_ENABLED=false` (по умолчанию) worker не запускается:
 приём и `/health` работают без Telegram, payload остаётся для последующей обработки.
 
-Прежний маршрут `POST /webhooks/apidog` отвечает `404`. При открытии рабочей базы
-миграция SQLite до v6 удаляет доставки Apidog и созданные из них outbox-строки. Доставки GitHub, группы ревью, релизные карточки
-и их связи сохраняются. Миграция выполняется до запуска worker. Ранее созданные
-снимки и копии Restic сохраняют данные на момент создания снимка.
+Новая очередь создаётся на схеме v8. Базы v6 и v7 обновляются до v8 перед
+запуском worker. Миграция сохраняет доставки GitHub, группы ревью, релизные
+карточки и их связи.
 
 Необязательный `TELEGRAM_PROXY_URL` задаёт HTTP/HTTPS-прокси только для отправки
 Telegram (`sendMessage`), например `http://proxy.internal:2080`. `TELEGRAM_PROXY_URL` не применяется к GitHub API. Без этой настройки Telegram отправляется напрямую; пустой URL,
@@ -156,7 +155,8 @@ Restic должен запускаться **только после успеш�
 снимка в резервную копию очереди не входят. Интеграция unit Restic выполняется
 отдельной задачей infra.
 
-Проверка восстановления из готового файла (из каталога `services/webhook-alerts`):
+Для восстановления подходят снимки с `user_version` 6, 7 или 8. Проверка
+готового файла из каталога `services/webhook-alerts`:
 
 ```sh
 restore_dir=$(mktemp -d)
@@ -166,7 +166,7 @@ bun -e '
   const db = new Database(process.argv[1], { readonly: true });
   try {
     console.log(db.query("PRAGMA integrity_check").all());
-    console.log(db.query("SELECT id, source, delivery_id, dedupe_kind FROM deliveries ORDER BY id").all());
+    console.log(db.query("SELECT id, source, delivery_id, body_hash FROM deliveries ORDER BY id").all());
     console.log(db.query("SELECT id, origin_id, status, telegram_message_id FROM outbox ORDER BY id").all());
   } finally { db.close(); }
 ' "$restore_dir/queue.sqlite"
@@ -359,15 +359,12 @@ Task 10 ниже фиксируют фактические доставки, п�
 | --- | --- |
 | Публикация SHA в GHCR, pull с VPS | Первый образ: SHA `08e7968fa0d39dd5f25fe8495c58d78006a26653`, digest `sha256:30718ed06926bff66627502361185c2ca6ebca78b20b044ce4d8bba92f12e858`. Текущий образ: `.github/main` `722ee9db38957a160b3bd1f2a5f92b0e3c576bcc`, digest `sha256:8ca5549293a571ae2de60c638bc9cd9a67f59aa158df1d2f8b0d2ce5ddbe6901`; anonymous pull с auxiliary VPS успешен |
 | Infra sub-issue #20 и API-проверка связи | infra#70 подтверждена через sub_issues API, закрыта после merge PR #73 |
-| GitHub signed delivery, health, duplicate | Task 9: health 200; синтетические GitHub/Apidog: неверная подпись 401, первая доставка 202, повтор 200; конфликт GitHub ID 409. Task 10: настоящий ping/push 202, redelivery push 200; issue_comment GUID `ff6fbf10-d084-11f1-94f3-973750d5f14b` после исходного 502 принят при повторе 202, следующий повтор 200, в SQLite одна delivery `140` и одна отправка `7512` |
-| Apidog live header, fixture и Telegram | Настоящий `X-Apidog-Signature` — base64 HMAC-SHA1; после исправления `API_UPDATED` принят как delivery `130`, сообщение `7508`; после переключения delivery `139`, сообщение `7511`; удаление endpoint — `API_DELETED`, delivery `145`, сообщение `7517`. Все в теме `6033` |
-| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Task 9: синтетические pending/sent проверены. Task 10: snapshot `8be495bf…` от `2026-10-25T14:39:40Z` восстановлен без сети: integrity ok, 130 deliveries, pending `129/130`, стабильный GitHub GUID и Apidog body hash распознаны как duplicate; на отдельной копии mock worker отправил только Apidog один раз |
+| GitHub signed delivery, health, duplicate | Task 9: health 200; синтетические GitHub: неверная подпись 401, первая доставка 202, повтор 200; конфликт GitHub ID 409. Task 10: настоящий ping/push 202, redelivery push 200; issue_comment GUID `ff6fbf10-d084-11f1-94f3-973750d5f14b` после исходного 502 принят при повторе 202, следующий повтор 200, в SQLite одна delivery `140` и одна отправка `7512` |
+| Snapshot → Restic → isolated restore, integrity, pending/sent, dedupe | Task 9: синтетические pending/sent проверены. Task 10: snapshot `8be495bf…` от `2026-10-25T14:39:40Z` восстановлен без сети: integrity ok, 130 deliveries, pending `129/130`, стабильный GitHub GUID распознан как duplicate |
 | Репетиция отката и отсутствие двойной отправки | В `2026-10-25T15:05–15:20Z` новый worker остановлен через временный Vault override и Ansible, затем восстановлен. При выключенном worker старый Actions отправил тестовый comment как `7513` в тему `26`; его SQLite ID `141` закрыт с нулём сообщений после сверки и Restic. После возврата org variable старый `notify` skipped, новый worker отправил следующий comment ID `142` ровно один раз как `7514`. Финал: sender=true, pending=0, integrity ok, Restic `15:20:08Z` |
-| Граница Actions/worker, GitHub/Apidog в боевых темах | Org variable `TELEGRAM_EVENTS_SOURCE=webhook` видна только `.github`, `backend`, `frontend`, `infra`; старый `notify` skipped. Новый worker отправил GitHub `133/136` как `7509/7510` в тему `26`, Apidog `130/139` как `7508/7511` в тему `6033`; очередь обработана без дублей |
+| Граница Actions/worker, GitHub в боевых темах | Org variable `TELEGRAM_EVENTS_SOURCE=webhook` видна только `.github`, `backend`, `frontend`, `infra`; старый `notify` skipped. Новый worker отправил GitHub `133/136` как `7509/7510` в тему `26`; очередь обработана без дублей |
 | Code Review в теме `1513` | Подписанный синтетический `pull_request.review_requested` отправлен на живой localhost-маршрут: HTTP `202`, SQLite delivery `147`, outbox `11 sent`, Telegram `7519` в теме `1513`; повтор того же GUID — `200` без дубля. Это проверка боевого маршрута/отправки, а не настоящего GitHub review от участника |
 | Board, close, reminders после переключения и отката | [Тестовая .github issue #33](https://github.com/Cringe-Driven-Development-Team/.github/issues/33) открыта: [run 40206555327](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40206555327) выполнил `board / add-to-project`, карточка появилась в Scrumban/Backlog. После закрытия issue как completed карточка в Scrumban/Done; GitHub ID `143/144` дали Telegram `7515/7516` в теме `26`, старый `notify` skipped. `board / close` в [infra run 40204386040](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40204386040) и ручной [reminders run 40205201295](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40205201295) также успешны |
-| Временная ветка Apidog | Endpoint `45845223` удалён после проверки `API_DELETED`; sprint-ветка `webhook-alerts-smoke-20261025` (`1413097`) архивирована и удалена. Три тестовые AI-ветки `1412939/1413089/1413158` также удалены; связанный с `1413089` MR `39835` закрыт без слияния. `branch list --type all` не показывает веток `webhook-alerts`. Main Apidog не менялась |
-| External AI Edit Permissions в Apidog | Владелец решил оставить права редактирования sprint- и AI-веток через CLI/MCP включёнными для студенческих агентов. Прямые изменения main и general-веток остаются выключенными: `main=false`, `sprint=true`, `general=false`, `ai=true`. Дополнительное действие в UI не требуется |
 
 Источник инфраструктурных результатов — [infra RUNBOOK на проверенном main](https://github.com/Cringe-Driven-Development-Team/infra/blob/edc13058522c850c3cac5cfeb46ba278a74c5c10/RUNBOOK.md#фактическая-проверка-infra70-2026-10-24-utc).
 `systemctl start restic-backup` завершился `Result=success`, `ExecMainStatus=0`.
@@ -384,8 +381,7 @@ restic restore d8b71852ca25c0c3bedd7faa0f4a47a20c41f20261972cf79785b99f75b8e20e 
 доставку в Telegram. После удаления тестовых строк создан и отдельно восстановлен
 чистый snapshot `837743262111103e2929288a77b24cb46376c94ec3c71c4a55158abdfd7b1088`
 (`2026-10-24T21:37:06Z`): integrity ok, ноль тестовых deliveries/outbox.
-Обычное восстановление выполнять из этого или более позднего чистого snapshot:
-первый тестовый архив содержит синтетическую pending-строку.
+Указанные исторические снимки использовались для проверки восстановления в октябре 2026 года.
 
 Infra PR #73 merged в `edc13058522c850c3cac5cfeb46ba278a74c5c10`;
 [post-merge run 40139285195](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40139285195)
@@ -408,10 +404,8 @@ intake; отправка worker тогда ещё не проверялась.
 воспроизводиться worker при переключении.
 Прежний отказ чтения org hooks/variable из-за scope устранён контроллером;
 прежнее состояние variable здесь не утверждается.
-Контроллер read-only подтвердил существующие темы: Apidog `6033`, GitHub `26`,
-Code Review `1513` в чате `-1003713420351`. Владелец настроил Apidog target
-`302418` и notification event `43505`; последующая проверка настоящей доставки
-и отправки приведена ниже. #20 закрывается только после финальной приёмки.
+Контроллер read-only подтвердил темы GitHub `26` и Code Review `1513`
+в чате `-1003713420351`. #20 закрывается только после финальной приёмки.
 
 Сверка shadow-очереди завершена для фиксированной границы SQLite ID `1–67`:
 `32 already sent`, `35 intentionally silent`, `0 unresolved`. Отправленные события
@@ -431,32 +425,8 @@ shadow-доставки без сообщений нового сервиса.
 в `2026-10-25T11:56:28Z`. Его восстановление в изолированном контейнере без сети
 дало `integrity_check=ok`, повтор стабильного delivery ID отвергнут как duplicate,
 нет pending/due обработок. На `2026-10-25T11:56Z` sender был `false`; доставки
-после ID `67` требовали отдельной сверки. Отправка нового сервиса в Telegram,
-Apidog и rollback на этом этапе ещё не проверялись.
-
-Проверка Apidog через CLI не дала доставку: прямое создание endpoint в защищённой
-main отклонено (`403013`, ограничение external AI edits). Контроллер создал
-изолированную AI-ветку, добавил и изменил тестовый endpoint; в 20-секундном окне
-наблюдения VPS не получил HTTP-запросов Apidog, строк Apidog в очереди нет.
-Первая тестовая AI-ветка архивирована, main не менялась.
-
-Следующая попытка: из-за защиты main и невозможности создать endpoint через UI
-контроллер подготовил AI-ветку
-`ai/20261025-from-main-webhook-alerts-delivery` (`1413089`), endpoint
-`45839509` (`GET /__webhook_alerts_smoke`) и MR `39835`, содержащий только этот
-endpoint. CLI approve завершился `Invalid Parameter`. После возражения владельца
-против добавления временного endpoint в main контроллер закрыл MR `39835`
-(проверен статус `CLOSED`) и архивировал ветку `1413089`. В main проверены только
-10 исходных endpoints, smoke endpoint отсутствует. Эта попытка не подтвердила
-уведомления для dev-ветки. На тот момент header, настоящая fixture и отправка
-Apidog оставались непроверенными; последующая проверка описана ниже.
-
-Дополнительная проверка `BRANCH_CREATED` также не подтвердила HTTP-доставку:
-временное правило `43506` удалено (в списке снова только `43505`). На момент
-проверки стандартная sprint-ветка `webhook-alerts-smoke-20261025` (`1413097`)
-была пустой и активной: CLI archive по имени/ID завершился ошибкой, delete
-требовал archive. Позже в этой ветке появился временный endpoint `45845223`;
-его очистка отмечается ниже.
+после ID `67` требовали отдельной сверки. Отправка нового сервиса в Telegram
+и rollback на этом этапе ещё не проверялись.
 
 Перед проверкой маршрута Telegram создан Restic pre-route snapshot
 `8728497eda7fdaf1513a698d4d6a0971524c71507947578cf4c068d079edc6ec`
@@ -489,9 +459,7 @@ VPS завершался timeout, тогда как локально возвр�
 `sha256:4424881b11af1f32a690831d5c9b87351852b4767e182e28f8703e68a90d7622`;
 текущий digest после PR #79 приведён ниже.
 До и после повторной выкладки из `main` Telegram `getMe` через sidecar вернул
-`200`; настоящий вызов `sendMessage` нового сервиса отправил только отмеченное
-тестовое сообщение `7437` в тему Apidog `6033`. Другие события новый sender не
-отправлял: `WEBHOOK_ALERTS_SEND_ENABLED=false`. Последующий
+`200`. На этом этапе `WEBHOOK_ALERTS_SEND_ENABLED=false`. Последующий
 [infra run 40198443651](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40198443651)
 завершился успешно, включая `auxiliary.yml` и `verify.yml`; `/health` и контейнер
 `hooks` healthy, `telegram-proxy` running.
@@ -504,18 +472,8 @@ VPS завершался timeout, тогда как локально возвр�
 пустых outbox/review_groups и совпадающих GUID выполнен `Store.prepare(id, [])`
 только для ID `68–86`. Повторный snapshot и Restic backup
 (`2026-10-25T13:46:29Z`) завершились успешно. Итог: `86` доставок, `86 prepared`,
-outbox `0`, `integrity_check=ok`, Apidog `0`. Новые ID `>86` на этом этапе ещё
+outbox `0`, `integrity_check=ok`. Новые ID `>86` на этом этапе ещё
 требовали отдельной сверки перед переключением.
-
-После включения владельцем CLI-доступа к обычной sprint-ветке временный endpoint
-`45845223` создан и обновлён только в `webhook-alerts-smoke-20261025`; `main`
-Apidog не менялась. Настоящий POST достиг сервиса, но старая версия ответила
-`401`: заголовок `X-Apidog-Signature` содержал корректный base64 HMAC-SHA1,
-тогда как старая версия принимала только `sha1=hex`. Реальный payload имеет поля
-`event`, `title`, `content`, `appLink` без устойчивого ID. На момент отказа
-`2026-10-25` исправление и тесты в `c49429c` ещё ожидали выкладки;
-в очереди Apidog было `0`, старый Actions sender оставался активным, worker
-был выключен. Результат исправленной версии и переключения приведён ниже.
 
 Следующая граница GitHub shadow-очереди ID `87–102` также сверена независимо:
 `10 already sent`, `6 intentionally silent`, `0 unresolved`. После snapshot и
@@ -523,26 +481,21 @@ Restic backup (`2026-10-25T14:15:40Z`, success) выполнен `Store.prepare(
 только для этих 16 строк при совпадающих GUID, sender `false`, пустых
 outbox/review_groups и отсутствии leases. Второй snapshot/backup в
 `14:16:01Z` успешен. На момент проверки: `110` доставок, `102 prepared`,
-outbox `0`, `integrity_check=ok`, Apidog `0`; ID `103+` на тот момент ещё не
+outbox `0`, `integrity_check=ok`; ID `103+` на тот момент ещё не
 были сверены.
 
 ### Исправленный образ и переключение — 2026-10-25 UTC
 
 [`.github` PR #32](https://github.com/Cringe-Driven-Development-Team/.github/pull/32)
-влит как `722ee9db38957a160b3bd1f2a5f92b0e3c576bcc`: приёмник проверяет
-наблюдавшийся base64 HMAC-SHA1 по исходному телу Apidog, а форматтер использует
-`event`, `title`, `content`, `appLink`. Тесты сервиса: `158 pass`, typecheck
-успешен. [Image workflow 40201716631](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40201716631) опубликовал digest
+влит как `722ee9db38957a160b3bd1f2a5f92b0e3c576bcc`. Тесты сервиса
+`158 pass`, typecheck успешен. [Image workflow 40201716631](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40201716631) опубликовал digest
 `sha256:8ca5549293a571ae2de60c638bc9cd9a67f59aa158df1d2f8b0d2ce5ddbe6901`;
 анонимная проверка manifest с auxiliary VPS прошла. [Infra PR #79](https://github.com/Cringe-Driven-Development-Team/infra/pull/79)
 закрепил этот digest; [post-merge run 40202494750](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40202494750)
 завершился успешно. Контейнер `hooks` работал с новым образом и `sender=false`.
-Настоящее изменение endpoint `45845223` в отдельной sprint-ветке Apidog
-создало delivery `130` (`API_UPDATED`); неверная подпись на живой версии
-получила `401` без записи в очередь.
 
 Границы GitHub SQLite ID `103–128`, `129` и `131–132` сверены с Actions и
-фактическими сообщениями прежнего бота; ID `130` относится к Apidog.
+фактическими сообщениями прежнего бота.
 Для `103–128`: `13 already sent`, `13 intentionally silent`, `0 unresolved`;
 для `129`: `already sent` как Telegram `7506`; для `131–132`: push ветки
 infra PR #80 отправлен старым ботом как `7507`, открытый draft PR намеренно
@@ -551,16 +504,13 @@ infra PR #80 отправлен старым ботом как `7507`, откр�
 GUID, пустых outbox/review_groups и отсутствии leases. Снимки SQLite и Restic
 до и после подготовки успешны: последние post-change backup в `14:39:40Z`,
 `14:42:06Z`, `14:48:46Z`. Итого `131` GitHub shadow-доставка закрыта без
-повторной отправки; тестовая Apidog delivery `130` оставлена ожидающей.
+повторной отправки.
 
 Restic snapshot `8be495bf9a8ad826bb13b5016559bfb17eee9f86ca2ebed1042f0c41588ef892`
 от `14:39:40Z` восстановлен в отдельный каталог и проверен без сети на текущем
-образе: `integrity_check=ok`, `130` deliveries, GitHub `129` (из них `128`
-prepared), Apidog `1` pending, outbox/review_groups `0`. Повтор GitHub GUID и
-Apidog body hash в пятиминутном окне дали `duplicate`, число строк осталось
-`130`. На второй одноразовой копии mock worker отправил только Apidog ID `130`
-один раз, сохранил `sent` и не отправил её при следующем запуске. Живая очередь
-и Telegram этим тестом не менялись; временный restore-каталог удалён.
+образе. SQLite вернула `integrity_check=ok`. Из `129` доставок GitHub `128`
+были подготовлены. Повтор GitHub GUID вернул `duplicate`. Живая очередь
+и Telegram этим тестом не менялись, временный restore-каталог удалён.
 
 На auxiliary команда восстановления завершилась с кодом `0`:
 
@@ -571,8 +521,7 @@ sudo bash -c 'set -a; . /etc/restic/env; restic restore 8be495bf9a8ad826bb13b501
 Проверка запускала закреплённый image через `docker run --network none` с
 read-only mount каталога snapshot и `WEBHOOK_ALERTS_SEND_ENABLED=false`.
 `PRAGMA integrity_check`, подсчёт строк и повторные `Store.accept` выполнялись
-на отдельной `/tmp`-копии восстановленного файла; проверка worker — на второй
-копии с mock Telegram. Это не запускало worker против рабочей БД.
+на отдельной `/tmp`-копии восстановленного файла.
 
 [Infra PR #80](https://github.com/Cringe-Driven-Development-Team/infra/pull/80)
 изменил в Vault только `WEBHOOK_ALERTS_SEND_ENABLED: 'false' → 'true'` и влит как
@@ -584,13 +533,10 @@ read-only mount каталога snapshot и `WEBHOOK_ALERTS_SEND_ENABLED=false`
 также skipped; webhook сохранил ID `136`. [Post-merge run 40204385397](https://github.com/Cringe-Driven-Development-Team/infra/actions/runs/40204385397)
 успешен, включая `auxiliary.yml` и `verify.yml`; после пересоздания `hooks`
 фактический env показал `sender=true`, контейнер healthy. Worker отправил
-Apidog ID `130` → Telegram `7508` (тема `6033`), GitHub ID `133` → `7509`
-и ID `136` → `7510` (тема `26`). Для bot comments и push main/удаления ветки
-карточек нет по действующим фильтрам; очередь без pending.
+GitHub ID `133` → `7509` и ID `136` → `7510` в тему `26`. Для bot comments,
+push в main и удаления ветки действующие фильтры пропустили отправку.
 
-После переключения новое изменение того же временного endpoint Apidog стало
-delivery `139`, подготовлено и отправлено один раз как Telegram `7511` в тему
-`6033`. Тестовый [issue_comment в .github#20](https://github.com/Cringe-Driven-Development-Team/.github/issues/20#issuecomment-6399231793)
+Тестовый [issue_comment в .github#20](https://github.com/Cringe-Driven-Development-Team/.github/issues/20#issuecomment-6399231793)
 совпал с концом infra-выкладки: исходная GitHub delivery GUID
 `ff6fbf10-d084-11f1-94f3-973750d5f14b` получила `502` и не попала в SQLite;
 [старый Actions `notify` был skipped](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40204989634).
@@ -599,8 +545,7 @@ ID `140`, одна outbox `sent`, Telegram `7512` в тему `26`. Следую
 того же GUID получила `200`, не создала второй delivery/outbox и сообщение.
 Отдельный ручной [reminders run 40205201295](https://github.com/Cringe-Driven-Development-Team/.github/actions/runs/40205201295)
 успешен; `board / close` в automation run PR #80 также завершился успешно.
-Проверка отправки в тему Code Review `1513` и очистка временной ветки Apidog
-описаны ниже.
+Проверка отправки в тему Code Review `1513` описана ниже.
 
 ### Контролируемый откат и восстановление — 2026-10-25 UTC
 
@@ -650,21 +595,6 @@ GitHub delivery ID `143`, worker отправил Telegram `7515` в тему `2
 SQLite ID `144` как Telegram `7516` в тему `26`. Отдельный workflow напоминаний
 ранее завершился успешно в run `40205201295`.
 
-### Очистка тестовых данных Apidog — 2026-10-25 UTC
-
-Временный endpoint `45845223` находился только в sprint-ветке
-`webhook-alerts-smoke-20261025` (`1413097`). После проверки `API_UPDATED`
-он удалён через Apidog CLI; настоящая `API_DELETED` была принята как SQLite
-delivery `145`, worker отправил Telegram `7517` в тему `6033` с `attempts=1`.
-Sprint-ветка архивирована и удалена. Три тестовые AI-ветки `1412939`,
-`1413089` и `1413158`, ранее архивированные, также удалены. Связанный с
-`1413089` MR `39835` закрыт без слияния; `apidog branch list --type all`
-не содержит веток `webhook-alerts`. Main Apidog за весь тест не менялась.
-Владелец решил оставить **Allow AI to modify sprint branch content through CLI or MCP**
-включённым для студенческих агентов. Проверенные значения разрешений:
-`main=false`, `sprint=true`, `general=false`, `ai=true`. Изменений main/general
-через CLI/MCP этот выбор не разрешает; дополнительных действий в UI нет.
-
 ### Отправка в тему Code Review — 2026-10-25 UTC
 
 Подписанный синтетический GitHub payload с действием
@@ -682,7 +612,7 @@ Sprint-ветка архивирована и удалена. Три тесто�
 ### Завершение охвата GitHub callers — 2026-10-31 UTC
 
 В `17:36:11.152Z` worker уже включён и healthy, `integrity_check=ok`:
-853 prepared deliveries (GitHub 785, Apidog 68), 378 `sent` outbox;
+785 подготовленных доставок GitHub, 378 `sent` outbox;
 unprepared, остальные статусы outbox и незавершённые review groups — `0`.
 Образ до и после:
 `ghcr.io/cringe-driven-development-team/webhook-alerts@sha256:09fd5908e8c90e246a1aaa61a773499cb44ced4b57bc4beeed5829b1448dd8db`.
@@ -749,11 +679,11 @@ delivery и ровно один `sent` outbox, topic `26`, attempts `1`:
 | static | `475a5336-d552-11f1-836d-8386cdcb65ed` / 860 | `6df9a37a-d552-11f1-8bb3-b449d36b1802` / 865 | 17:42:23.950825 |
 
 Финальная readonly-проверка `17:42:54.612Z`: worker=true, health ok, integrity ok,
-865 prepared deliveries (GitHub 797, Apidog 68), 382 `sent`; unprepared,
+797 подготовленных доставок GitHub, 382 `sent`; unprepared,
 unsent и незавершённые review groups — `0`. После очистки все четыре
 контрольных события по-прежнему имеют ровно один outbox и тот же message ID.
 Main SHA и blob SHA всех workflow во всех девяти репозиториях совпали до/после;
-board/close/reminders/course-sync/release/deploy и Apidog не менялись.
+board/close/reminders/course-sync/release/deploy не менялись.
 Deploy/release вручную не запускались.
 
 Проверки: `bun test tests/webhook-workflows.test.ts` — 15 pass;

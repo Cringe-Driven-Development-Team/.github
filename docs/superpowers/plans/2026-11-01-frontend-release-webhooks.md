@@ -19,7 +19,7 @@
 - Перед отправкой и retry enqueue проверяются merged/closed и та же mergeQueueEntry; устаревшее сообщение пропускается.
 - Сохраняются task links, названия PR при старте, Health Check, кнопки PR по две в строке для 1–6 PR, полный Summary для >6.
 - Никаких новых зависимостей, сервиса, брокера, страницы отчёта, полного обхода задач или выполнения кода PR в сервисе.
-- Для новых release-сообщений неизвестный результат Telegram требует ручной проверки; политика обычных GitHub/Apidog сообщений не меняется.
+- Для новых release-сообщений неизвестный результат Telegram требует ручной проверки; политика обычных GitHub сообщений не меняется.
 - Не добавлять поддержку старого notification-контракта, dual send или требования высокого uptime.
 - Во время локальной реализации нет реальных Telegram-сообщений, мержа, переключения подписок или CD фронта.
 
@@ -121,7 +121,7 @@
 **Files:**
 - Create: `services/webhook-alerts/src/release-api.ts`, `src/releases.ts`, `tests/releases.test.ts`, `tests/release-api.test.ts`, `tests/release-worker.test.ts`.
 - Modify: `src/store.ts`, `src/worker.ts`, `src/main.ts`, `src/config.ts`.
-- Test: `tests/http.test.ts`, `tests/main.test.ts`, `tests/github.test.ts`, существующие review/Apidog tests.
+- Test: `tests/http.test.ts`, `tests/main.test.ts`, `tests/github.test.ts`, существующие review tests.
 - Docs: `services/webhook-alerts/README.md`.
 
 **Interfaces:**
@@ -135,7 +135,7 @@
 - `ReleaseApi.changes(baseSha,headSha): Promise<ChangeReport>` — контракт Task 1; `ReleaseApi.job(jobId): Promise<VerifiedJob>`; `ReleaseApi.production(): Promise<VerifiedProduction[]>` — история, включая прошлые успешные состояния до rollback.
 - `projectRelease(delivery, api, {topic,siteUrl,userMap}): Promise<OutgoingMessage[]>`, `checkReleaseNotice(notice, api): Promise<'send'|'skip'|'retry'>` — source validation и guard перед отправкой.
 - `prepareOnce({store,project,now,lane}): Promise<void>`, `deliverOnce({store,send,beforeReleaseSend,now}): Promise<number>`; существующий `runOnce` для обычных тестов вызывает эти же функции, без второго sender в production.
-- `startWorker` запускает независимые preparation loops ordinary/release-queue/release-operation и один общий delivery loop; существующий review grouping и Apidog polling остаются в ordinary-проходе. Интервал 1000 ms, общий AbortSignal, stop ждёт завершения всех loops.
+- `startWorker` запускает независимые preparation loops ordinary/release-queue/release-operation и один общий delivery loop; существующий review grouping остаётся в ordinary-проходе. Интервал 1000 ms, общий AbortSignal, stop ждёт завершения всех loops.
 - Новая конфигурация: `TELEGRAM_RELEASES_TOPIC_ID` и фиксированный `https://cellestial.ru`; при наличии activation topic и GITHUB_API_TOKEN обязательны. Пустая activation означает выключенную release-рассылку; обычная рассылка работает как раньше.
 
 - [ ] **Step 1: Написать RED-тесты источника и устаревания.**
@@ -177,7 +177,7 @@
 - [ ] **Step 2: Проверить RED.** Frontend `bun test scripts/release/workflows.test.ts scripts/release/sync.test.ts`; infra `python3 -m unittest discover -s ansible/tests -p test_hooks.py`. Новые assertions должны падать до удаления/валидации.
 - [ ] **Step 3: Удалить старый путь.**
   Сохранить report и его защиту от унаследованного Summary из Task 1; форматные проверки живут в сервисе. Старые readPRChanges/PRChanges удалить после проверки всех callers и переноса нужных assertions в report.test.ts. Исторические Deployments не удалять. Другие общие Telegram-алерты организации и course-sync sender не менять.
-  В infra валидировать topic/token только при наличии TELEGRAM_RELEASES_TOPIC_ID; это позволяет подготовить image до cutover без отключения остальных GitHub/Apidog сообщений. При созданной activation service startup требует эти значения, даже если infra конфигурация ошибочна.
+  В infra валидировать topic/token только при наличии TELEGRAM_RELEASES_TOPIC_ID; это позволяет подготовить image до cutover без отключения остальных GitHub сообщений. При созданной activation service startup требует эти значения, даже если infra конфигурация ошибочна.
 - [ ] **Step 4: Проверить GREEN.** Frontend check/test/build, actionlint четырёх workflow; infra targeted unittest, Ansible syntax/lint роли по README, без применения playbook. Повторно полный suite сервиса и проверки `.github` из README, обязательные в CI этого репозитория.
 - [ ] **Step 5: Commit отдельно по репозиториям.** `refactor(release): keep only board reconciliation in Actions` и `feat(hooks): validate frontend release notification settings`.
 
