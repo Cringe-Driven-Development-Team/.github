@@ -17,11 +17,16 @@ export class GithubApiError extends Error {
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 type ReaderOptions = { token?: string; fetch?: Fetch; timeoutMs?: number };
 
+export type GithubPageStream = (path: string, paginate?: boolean) => AsyncIterable<unknown>;
 export type GithubPages = (path: string, paginate?: boolean) => Promise<unknown[]>;
 
 export function createGithubReader(options: ReaderOptions) {
   const fetcher = options.fetch ?? fetch;
-  async function operation<T>(run: (pages: GithubPages, graphql: (query: string, variables: Record<string, unknown>) => Promise<Record<string, unknown>>) => Promise<T>): Promise<T> {
+  async function operation<T>(run: (
+    pages: GithubPages,
+    graphql: (query: string, variables: Record<string, unknown>) => Promise<Record<string, unknown>>,
+    stream: GithubPageStream,
+  ) => Promise<T>): Promise<T> {
     if (!options.token?.trim()) throw new GithubApiError('unavailable');
     const signal = AbortSignal.timeout(Math.max(1, Math.min(options.timeoutMs ?? 5000, 5000)));
     async function request(url: URL, body?: string): Promise<Response> {
@@ -42,21 +47,35 @@ export function createGithubReader(options: ReaderOptions) {
         throw new GithubApiError('graphql');
       return object(body.data);
     }
-    async function pages(path: string, paginate = true): Promise<unknown[]> {
+    async function* stream(path: string, paginate = true): AsyncGenerator<unknown> {
       const start = new URL(path, 'https://api.github.com');
-      let url: URL | undefined = start;
-      const result: unknown[] = [];
-      for (let page = 0; url && page < 10; page++) {
-        if (url.origin !== start.origin || url.pathname !== start.pathname) throw new GithubApiError('pagination');
+      let url = start;
+      for (let page = 0; page < 10; page++) {
         const response = await request(url);
-        result.push(await response.json());
+        yield await response.json();
         const next = paginate && response.headers.get('link')?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
-        url = next ? new URL(next, start) : undefined;
+        if (!next) return;
+        url = new URL(next, start);
+        if (url.origin !== start.origin || url.username || url.password) throw new GithubApiError('pagination');
+        if (url.pathname === start.pathname) continue;
+
+        // GitHub can put its repository ID in Link. Keep the original repo and filters.
+        const suffix = /^\/repos\/[^/]+\/[^/]+(\/.*)$/.exec(start.pathname)?.[1];
+        const canonicalSuffix = /^\/repositories\/[1-9]\d*(\/.*)$/.exec(url.pathname)?.[1];
+        const nextPage = url.searchParams.get('page');
+        if (!suffix || canonicalSuffix !== suffix || !nextPage || !/^[1-9]\d*$/.test(nextPage))
+          throw new GithubApiError('pagination');
+        url = new URL(start);
+        url.searchParams.set('page', nextPage);
       }
-      if (url) throw new GithubApiError('pagination_limit');
+      throw new GithubApiError('pagination_limit');
+    }
+    async function pages(path: string, paginate = true): Promise<unknown[]> {
+      const result: unknown[] = [];
+      for await (const page of stream(path, paginate)) result.push(page);
       return result;
     }
-    try { return await run(pages, graphql); }
+    try { return await run(pages, graphql, stream); }
     catch (e) { throw e instanceof GithubApiError ? e : new GithubApiError(signal.aborted ? 'timeout' : 'unavailable'); }
   }
   return operation;

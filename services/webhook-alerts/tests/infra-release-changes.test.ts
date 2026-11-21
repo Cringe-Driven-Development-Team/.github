@@ -39,10 +39,13 @@ const issue = { id: 'issue-9', number: 9, title: 'Связанная задач�
 
 function github({
   history = [release(3, base, '2026-11-21T16:44:40Z')],
+  deploymentPages = [history], canonicalDeployments = false,
   commits = [head], total = commits.length, status = 200, relation = 'ahead',
   pulls = {}, issues = {}, files = {}, beforePulls,
 }: {
   history?: ReturnType<typeof release>[];
+  deploymentPages?: ReturnType<typeof release>[][];
+  canonicalDeployments?: boolean;
   commits?: string[];
   total?: number;
   status?: number;
@@ -66,9 +69,15 @@ function github({
     }
     if (path === '/repos/' + repo + '/deployments') {
       expect(Object.fromEntries(url.searchParams)).toMatchObject({ environment: 'production', task: 'infra-alerts' });
-      return Response.json(history);
+      expect(url.searchParams.get('per_page')).toBe('100');
+      const page = Number(url.searchParams.get('page') ?? 1);
+      const next = canonicalDeployments ? '/repositories/1374133166/deployments' : path;
+      const query = new URLSearchParams(url.searchParams);
+      query.set('page', String(page + 1));
+      const headers = page < deploymentPages.length ? { link: `<https://api.github.com${next}?${query}>; rel="next"` } : undefined;
+      return Response.json(deploymentPages[page - 1] ?? [], { headers });
     }
-    for (const entry of history) {
+    for (const entry of deploymentPages.flat()) {
       const { run_id: runId, kind } = entry.payload;
       const logUrl = 'https://github.com/' + repo + '/actions/runs/' + runId + '/attempts/1';
       if (path === '/repos/' + repo + '/deployments/' + entry.id + '/statuses') {
@@ -114,6 +123,27 @@ test('selects the last real Infra success before this attempt, ignoring later in
   expect(actual).toMatchObject({ base, head, compareUrl: 'https://github.com/' + repo + '/compare/' + base + '...' + head });
   const finished = { ...attempt, job: { ...attempt.job, completed_at: '2026-11-21T17:13:00Z' } };
   expect(await api.changes(finished, deployment)).toEqual(actual);
+});
+
+test('uses the newest confirmation without reading the rest of a long deployment history', async () => {
+  const firstPage = [release(3, base, '2026-11-21T16:44:40Z')];
+  const { api, requested } = github({ deploymentPages: [firstPage, ...Array.from({ length: 10 }, () => [])] });
+  expect((await api.changes(...current()))?.base).toBe(base);
+  expect(requested.filter(url => new URL(url).pathname === '/repos/' + repo + '/deployments')).toHaveLength(1);
+});
+
+test('checks canonical next pages through the original repo route and filters', async () => {
+  const failed = release(9, laterSha, '2026-11-21T17:04:00Z', 'failure');
+  const previous = release(3, base, '2026-11-21T16:44:40Z');
+  const { api, requested } = github({ canonicalDeployments: true, deploymentPages: [[failed], [previous]] });
+  expect((await api.changes(...current()))?.base).toBe(base);
+  expect(requested).toContain(`https://api.github.com/repos/${repo}/deployments?environment=production&task=infra-alerts&per_page=100&page=2`);
+});
+
+test('keeps a confirmed prior deployment when both jobs share a timestamp to the second', async () => {
+  const previous = release(3, base, startedAt);
+  const { api } = github({ history: [previous] });
+  expect((await api.changes(...current()))?.base).toBe(base);
 });
 
 test('deduplicates a shared issue and includes a PR without an issue', async () => {

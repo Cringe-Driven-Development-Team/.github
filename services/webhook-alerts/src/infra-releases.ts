@@ -1,5 +1,5 @@
 import { escapeHtml, link, truncate } from './format';
-import { createGithubReader, GithubApiError, type GithubPages } from './github-api';
+import { createGithubReader, GithubApiError, type GithubPages, type GithubPageStream } from './github-api';
 import { publisherPath, releaseEntries, type InfraReleaseChanges } from './infra-release-changes';
 import { readReleaseChanges, readReleasePullRequest } from './release-api';
 import { INFRA_REPO, type Delivery, type OutgoingMessage, type ReleaseNotice } from './store';
@@ -95,8 +95,8 @@ export function createInfraReleaseApi(options: { token?: string; fetch?: typeof 
       const start = timestamp(run.job.started_at);
       if (!deployment || !Number.isFinite(start) || (run.kind === 'auxiliary' && deployment.operation !== 'deploy')) return;
       try {
-        return await read(async (pages, graphql) => {
-          const previous = await previousDeployment(pages, run, deployment, start);
+        return await read(async (pages, graphql, stream) => {
+          const previous = await previousDeployment(pages, stream, run, deployment, start);
           if (!previous) return;
           const repository = deployment.service ? PUBLISHER_REPO : INFRA_REPO;
           const base = previous.sourceSha ?? previous.sha;
@@ -179,27 +179,28 @@ async function verifyAttempt(api: Pick<InfraReleaseApi, 'runAttempt' | 'jobs'>, 
     url: `https://github.com/${INFRA_REPO}/actions/runs/${attempt.runId}/attempts/${attempt.attempt}` };
 }
 
-async function previousDeployment(pages: GithubPages, run: ChangeAttempt, current: Deployment, start: number) {
-  const history = (await pages(`${prefix}/deployments?${deploymentHistory}`)).flatMap(array);
-  const candidates = history.flatMap(raw => {
-    const deployment = readDeployment(raw);
-    const created = timestamp(record(raw).created_at);
-    if (!deployment || deployment.kind !== current.kind || deployment.service !== current.service
-      || deployment.operation !== current.operation || !(created < start)
-      || (deployment.runId === run.runId && deployment.attempt === run.attempt)) return [];
-    return [{ deployment, created }];
-  }).sort((a, b) => b.created - a.created || b.deployment.id - a.deployment.id);
-
+async function previousDeployment(pages: GithubPages, stream: GithubPageStream, run: ChangeAttempt, current: Deployment, start: number) {
   // Both production workflows serialize deployment creation and completion in infra-production.
   const api = attemptReader(pages);
-  for (const { deployment } of candidates) {
-    const logUrl = `https://github.com/${INFRA_REPO}/actions/runs/${deployment.runId}/attempts/${deployment.attempt}`;
-    const statuses = (await pages(`${prefix}/deployments/${deployment.id}/statuses?per_page=100`)).flatMap(array);
-    if (!statuses.map(record).some(status => status.state === 'success' && status.environment === ENVIRONMENT
-      && status.log_url === logUrl && timestamp(status.created_at) < start)) continue;
-    const previous = await verifyAttempt(api, deployment);
-    if (previous?.kind === deployment.kind && previous.job.status === 'completed'
-      && previous.job.conclusion === 'success' && timestamp(previous.job.completed_at) < start) return deployment;
+  for await (const page of stream(`${prefix}/deployments?${deploymentHistory}`)) {
+    const candidates = array(page).flatMap(raw => {
+      const deployment = readDeployment(raw);
+      const created = timestamp(record(raw).created_at);
+      if (!deployment || deployment.kind !== current.kind || deployment.service !== current.service
+        || deployment.operation !== current.operation || !(created < start)
+        || (deployment.runId === run.runId && deployment.attempt === run.attempt)) return [];
+      return [{ deployment, created }];
+    }).sort((a, b) => b.created - a.created || b.deployment.id - a.deployment.id);
+
+    for (const { deployment } of candidates) {
+      const logUrl = `https://github.com/${INFRA_REPO}/actions/runs/${deployment.runId}/attempts/${deployment.attempt}`;
+      const statuses = (await pages(`${prefix}/deployments/${deployment.id}/statuses?per_page=100`)).flatMap(array);
+      if (!statuses.map(record).some(status => status.state === 'success' && status.environment === ENVIRONMENT
+        && status.log_url === logUrl && timestamp(status.created_at) <= start)) continue;
+      const previous = await verifyAttempt(api, deployment);
+      if (previous?.kind === deployment.kind && previous.job.status === 'completed'
+        && previous.job.conclusion === 'success' && timestamp(previous.job.completed_at) <= start) return deployment;
+    }
   }
 }
 
