@@ -35,17 +35,6 @@ test('backend activation does not replay old events or mark frontend history pre
   s.activateReleases(0);expect(s.claimUnprepared(1000,100,'release-operation').map(d=>d.deliveryId)).toEqual(['front']);
  }finally{s.close()}
 });
-test('migration from v3 keeps frontend activation and uncertain outbox',async()=>{
- const {Database}=await import('bun:sqlite');const {mkdtempSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
- const dir=mkdtempSync(join(tmpdir(),'backend-v3-'));const path=join(dir,'queue.sqlite');
- try{
-  const original=openStore(path);original.activateReleases(100);accept(original,frontend);
-  original.prepare(original.claimUnprepared(1000,100,'release-operation')[0]!.id,[fallback]);
-  const row=original.claimDue(1000,100)[0]!;original.beginReleaseSend(row.id,1000);original.markFailed(row.id,'release_uncertain');original.close();
-  const db=new Database(path);db.exec('DROP TABLE infra_release_activation; DROP TABLE backend_release_activation; DROP TABLE release_contract; PRAGMA user_version=3');db.close();
-  const migrated=openStore(path);try{expect(migrated.releaseActivation()).toBe(100);expect(migrated.releaseActivation(backend)).toBeNull();expect(migrated.claimDue(1000000,100)).toHaveLength(0)}finally{migrated.close()}
- }finally{rmSync(dir,{recursive:true,force:true})}
-});
 test('terminal result discovered by send guard replaces unsent fallback before delivery',async()=>{
  const {releaseFixture}=await import('./helpers/release');const {checkReleaseNotice}=await import('../src/releases');const {deliverOnce}=await import('../src/worker');
  const f=releaseFixture();f.operation.state='failure';f.operation.run.workflow='CI';f.operation.run.event='push';
@@ -59,16 +48,4 @@ test('terminal result discovered by send guard replaces unsent fallback before d
   expect(sent).toHaveLength(1);expect(sent[0]).toContain('Health Check ❌');
   accept(s,backend,'later');s.prepare(s.claimUnprepared(1200,100,'release-operation')[0]!.id,[result]);expect(s.claimDue(2000,100)).toHaveLength(0);
  }finally{s.close()}
-});
-test('main schema v4 upgrades without losing frontend contract activation or outbox',async()=>{
- const {Database}=await import('bun:sqlite');const {mkdtempSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
- const dir=mkdtempSync(join(tmpdir(),'backend-main-v4-'));const path=join(dir,'queue.sqlite');
- try{
-  const initial=openStore(path);initial.activateReleases(100);accept(initial,frontend);initial.prepare(initial.claimUnprepared(1000,100,'release-operation')[0]!.id,[fallback]);initial.close();
-  const db=new Database(path);db.exec('DROP TABLE infra_release_activation; DROP TABLE IF EXISTS backend_release_activation; CREATE TABLE IF NOT EXISTS release_contract (id INTEGER PRIMARY KEY CHECK(id=1), cutoff_ms INTEGER NOT NULL); INSERT INTO release_contract VALUES(1,200); PRAGMA user_version=4');db.close();
-  const migrated=openStore(path);try{
-   expect(migrated.releaseActivation()).toBe(100);expect(migrated.releaseContract()).toBe(200);expect(migrated.releaseActivation(backend)).toBeNull();
-   migrated.activateReleases(500,backend);expect(migrated.releaseActivation(backend)).toBe(500);expect(migrated.claimDue(1000,100)).toHaveLength(1);
-  }finally{migrated.close()}
- }finally{rmSync(dir,{recursive:true,force:true})}
 });

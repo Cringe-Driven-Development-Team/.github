@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openStore, type OutgoingMessage, type Store } from '../src/store';
@@ -49,26 +49,6 @@ afterEach(() => {
     } catch {}
   }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-test('v2_database_keeps_existing_outbox_and_review_groups', () => {
-  const file = path(),
-    db = new Database(file);
-  db.exec(readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8'));
-  db.exec(readFileSync(new URL('../src/review-groups-schema.sql', import.meta.url), 'utf8'));
-  db.exec(
-    "PRAGMA user_version=2; INSERT INTO deliveries (id,source,delivery_id,dedupe_kind,event,raw,body_hash,received_at,prepared) VALUES (1,'github','old','id','issues',X'7B7D','hash',1,1); INSERT INTO outbox (origin_type,origin_id,ordinal,topic,html,button_json,due_at) VALUES ('delivery',1,0,26,'Old','{\"text\":\"Open\",\"url\":\"https://github.com/org/repo\"}',1); INSERT INTO review_groups (repository,pr_number,reviewer,due_at) VALUES ('org/repo',1,'mentor',1000);",
-  );
-  db.close();
-  const s = open(file);
-  expect(s.releaseActivation()).toBeNull();
-  expect(s.claimDue(1000, 100)[0]).toMatchObject({
-    html: 'Old',
-    button: { text: 'Open', url: 'https://github.com/org/repo' },
-  });
-  const inspect = new Database(file);
-  expect(inspect.query('SELECT count(*) AS n FROM review_groups').get()).toEqual({ n: 1 });
-  expect(inspect.query('PRAGMA user_version').get()).toEqual({ user_version: 7 });
-  inspect.close();
 });
 test('activation_is_persistent_and_immutable', () => {
   const file = path(),

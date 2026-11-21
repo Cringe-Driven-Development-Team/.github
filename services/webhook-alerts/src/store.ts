@@ -122,6 +122,7 @@ function hash(raw: Uint8Array): string {
 
 const CLAIM_LIMIT = 10;
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
+const deliveriesSchema = readFileSync(new URL('./deliveries-schema.sql', import.meta.url), 'utf8');
 const releaseSchema = readFileSync(new URL('./release-schema.sql', import.meta.url), 'utf8');
 
 export const INFRA_REPO = 'Cringe-Driven-Development-Team/infra';
@@ -161,8 +162,8 @@ export class Store {
       ).get(input.deliveryId);
       if (existing) return existing.body_hash === bodyHash ? 'duplicate' : 'conflict';
       this.db.query(`INSERT INTO deliveries
-        (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, lane)
-        VALUES ('github', ?, 'id', ?, ?, ?, ?, ?)`).run(input.deliveryId, input.event, input.raw, bodyHash, receivedAt, lane(input));
+        (source, delivery_id, event, raw, body_hash, received_at, lane)
+        VALUES ('github', ?, ?, ?, ?, ?, ?)`).run(input.deliveryId, input.event, input.raw, bodyHash, receivedAt, lane(input));
       return 'accepted';
     }).immediate();
   }
@@ -452,44 +453,42 @@ export function openStore(path: string, { infraReleasesEnabled = true }: { infra
     db.exec('PRAGMA journal_mode = WAL');
     // WAL + FULL syncs every acknowledged commit, including across a power failure.
     db.exec('PRAGMA synchronous = FULL');
-    db.exec('PRAGMA foreign_keys = ON');
+    // Replacing the parent table requires suspending enforcement on this connection.
+    db.exec('PRAGMA foreign_keys = OFF');
     db.transaction(() => {
       const version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
-      if (version > 7) throw new Error('unsupported database schema');
-      if (version === 0) {
-        db.exec(schema);
-      }
-      if (version < 2) {
-        db.exec(reviewSchema);
-        db.exec('PRAGMA user_version = 2');
-      }
-      if (version < 3) {
-        db.exec(releaseSchema);
-        db.exec('PRAGMA user_version = 3');
-      }
-      if (version < 4) {
-        db.exec('CREATE TABLE release_contract (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
-        db.exec('PRAGMA user_version = 4');
-      }
-      if (version < 5) {
-        db.exec('CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
-        db.exec('PRAGMA user_version = 5');
-      }
-      if (version < 6) {
+      if (version === 8) return;
+      if (version !== 0 && version !== 6 && version !== 7) throw new Error('unsupported database schema');
+
+      db.exec(deliveriesSchema);
+      if (version !== 0) {
         db.exec(`
-          DELETE FROM outbox
-            WHERE origin_type = 'delivery'
-              AND origin_id IN (SELECT id FROM deliveries WHERE source = 'apidog');
-          DELETE FROM deliveries WHERE source = 'apidog';
-          DROP INDEX IF EXISTS deliveries_body_window;
-          PRAGMA user_version = 6;
+          INSERT INTO deliveries_next (id, source, delivery_id, event, raw, body_hash, received_at, prepared, lease_until, lane)
+            SELECT id, source, delivery_id, event, raw, body_hash, received_at, prepared, lease_until, lane FROM deliveries;
+          DROP TABLE deliveries;
         `);
       }
-      if (version < 7) {
-        db.exec('CREATE TABLE infra_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
-        db.exec('PRAGMA user_version = 7');
+      db.exec(`
+        ALTER TABLE deliveries_next RENAME TO deliveries;
+        CREATE INDEX deliveries_unprepared ON deliveries (prepared, lease_until, id);
+      `);
+
+      if (version === 0) {
+        db.exec(schema);
+        db.exec(reviewSchema);
+        db.exec(releaseSchema);
+        db.exec(`
+          CREATE TABLE release_contract (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL);
+          CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL);
+        `);
       }
+      if (version === 0 || version === 6) {
+        db.exec('CREATE TABLE infra_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
+      }
+      if (db.query('PRAGMA foreign_key_check').get()) throw new Error('database migration violates foreign keys');
+      db.exec('PRAGMA user_version = 8');
     }).immediate();
+    db.exec('PRAGMA foreign_keys = ON');
     return new Store(db, infraReleasesEnabled ? null : INFRA_REPO);
   } catch (error) {
     db.close();

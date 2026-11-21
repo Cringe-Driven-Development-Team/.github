@@ -8,7 +8,7 @@ webhook worker для `docs`, `frontend-packages`, `figma`, `static`. Испол
 `visibility=selected`. Способ выполнения выбран владельцем: SDD. Необязательные
 вопросы пропускаются по его просьбе.
 
-Код отправителей, формат карточек, Apidog, board/close, reminders, course-sync,
+Код отправителей, формат карточек, board/close, reminders, course-sync,
 release/deploy notifications не меняются. Worker остаётся включённым;
 рабочая очередь не редактируется, старые сообщения не воспроизводятся и не удаляются.
 

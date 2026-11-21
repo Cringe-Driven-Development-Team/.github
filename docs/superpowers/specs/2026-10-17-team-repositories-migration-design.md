@@ -108,7 +108,6 @@
 |---|---|
 | Общее | Доступ к org secrets `TELEGRAM_BOT_TOKEN`, `ADD_TO_PROJECT_PAT`, нужным `TELEGRAM_*` vars |
 | Фронт, production | `S3_ACCESS_KEY`, `S3_SECRET_KEY`; vars S3 endpoint/bucket, CDN и топика релизов |
-| Бэк, repository | `APIDOG_TOKEN` для `contract-drift.yml` |
 | Бэк, production | `DEPLOY_SSH_KEY`, `SSH_KNOWN_HOSTS`, `ANSIBLE_VAULT_PASSWORD`, vars Telegram |
 | Синхронизация | Отдельный `COURSE_SYNC_SSH_KEY` для каждого основного репозитория |
 
@@ -118,7 +117,7 @@ Environment `production` создаётся с эквивалентными ог
 
 Бэк сейчас публикует `ghcr.io/go-park-mail-ru/2026_2_cringe_driven_development`; это имя задано также в `infra/ansible/roles/app/defaults/main.yml`. После переноса публикуется `ghcr.io/cringe-driven-development-team/backend`, связанный с новым репозиторием. Сохраняется приватность образа. Нужно проверить `packages: write/read`, доступ CI и pull образа на сервере с временной авторизацией, а также обновить `app_backend_image` и все фактические overrides в infra. Старые образы сохраняются для отката; простое переключение git remote не заменяет эту работу.
 
-До первого автоматического деплоя нового бэка нужен проверенный новый образ и отдельный контролируемый deploy с health check. Переход на новый registry path не должен менять БД или запускать новые миграции данных как часть переноса репозитория. Проверка контракта Apidog также включается в новом репозитории после настройки токена.
+До первого автоматического деплоя нового бэка нужен проверенный новый образ и отдельный контролируемый deploy с health check. Переход на новый registry path не должен менять БД или запускать новые миграции данных как часть переноса репозитория.
 
 ## 8. Общая автоматизация и документация
 

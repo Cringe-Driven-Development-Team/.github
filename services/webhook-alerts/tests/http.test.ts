@@ -120,10 +120,10 @@ describe('GitHub ingress', () => {
     expect((await app().fetch(request(json, { 'x-github-event': 'future-event' }))).status).toBe(202);
   });
 
-  test('does not register the former Apidog route or accept its deliveries', async () => {
+  test('returns 404 for an unknown webhook source without accepting a delivery', async () => {
     const received: IncomingDelivery[] = [];
     const server = app(delivery => { received.push(delivery); return 'accepted'; });
-    const response = await server.request('/webhooks/apidog', {
+    const response = await server.request('/webhooks/unknown', {
       method: 'POST', body: json, headers: { 'content-type': 'application/json' },
     });
     expect(response.status).toBe(404);
