@@ -43,7 +43,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const releasesTopic = topic('TELEGRAM_RELEASES_TOPIC_ID');
   const backendReleasesTopic = topic('TELEGRAM_BACKEND_RELEASES_TOPIC_ID');
   if (backendReleasesTopic !== undefined && !env.GITHUB_API_TOKEN?.trim()) throw new Error('GITHUB_API_TOKEN is required for backend releases');
-  const infraReleasesTopic = topic('TELEGRAM_INFRA_ALERTS_TOPIC_ID');
+  const infraReleasesTopic = env.TELEGRAM_INFRA_ALERTS_TOPIC_ID?.trim() ? topic('TELEGRAM_INFRA_ALERTS_TOPIC_ID') : undefined;
   if (infraReleasesTopic !== undefined && !env.GITHUB_API_TOKEN?.trim()) throw new Error('GITHUB_API_TOKEN is required for infra releases');
   const reviewTopic = topic('TELEGRAM_REVIEW_TOPIC_ID', 1513)!;
   const proxyUrl = env.TELEGRAM_PROXY_URL;

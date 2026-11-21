@@ -15,10 +15,11 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
   // Validate before opening storage even when called directly rather than through loadConfig.
   if (config.sendEnabled && !config.telegram) throw new Error('Telegram sender configuration is required');
   mkdirSync(dirname(config.databasePath), { recursive: true });
-  const store = openStore(config.databasePath);
+  const infraReleasesEnabled = config.infraReleasesTopic !== undefined;
+  const store = openStore(config.databasePath, { infraReleasesEnabled });
   if (store.releaseActivation() !== null && (!config.releasesTopic || !config.githubApiToken?.trim())) {store.close();throw new Error('release notifications require topic and API token');}
   if (store.releaseActivation(BACKEND_REPO) !== null && (!config.backendReleasesTopic || !config.githubApiToken?.trim())) {store.close();throw new Error('backend release notifications require topic and API token');}
-  if (store.releaseActivation(INFRA_REPO) !== null && (!config.infraReleasesTopic || !config.githubApiToken?.trim())) {
+  if (infraReleasesEnabled && store.releaseActivation(INFRA_REPO) !== null && (!config.infraReleasesTopic || !config.githubApiToken?.trim())) {
     store.close();
     throw new Error('infra release notifications require topic and API token');
   }

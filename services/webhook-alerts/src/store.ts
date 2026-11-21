@@ -146,7 +146,10 @@ function lane(input: DeliveryInput): DeliveryLane {
 const reviewSchema = readFileSync(new URL('./review-groups-schema.sql', import.meta.url), 'utf8');
 
 export class Store {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly pausedReleaseRepository: string | null = null,
+  ) {}
 
   accept(input: DeliveryInput): AcceptResult {
     if (!input.deliveryId?.trim()) throw new Error('delivery ID required');
@@ -177,6 +180,7 @@ export class Store {
       for (const row of pending) {
         if (selectedLane !== 'ordinary') {
           const repository = JSON.parse(new TextDecoder().decode(row.raw)).repository?.full_name;
+          if (repository === this.pausedReleaseRepository) continue;
           const cutoff = this.releaseActivation(repository);
           if (cutoff === null || (row.received_at < cutoff && !row.recovery_allowed)) continue;
         }
@@ -299,20 +303,26 @@ export class Store {
     this.checkLease(now, leaseMs);
     return this.db.transaction(() => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > CLAIM_LIMIT) throw new Error('invalid claim limit');
-      this.db.query(`UPDATE outbox SET status='failed',lease_until=NULL,error_code='release_uncertain' WHERE status='leased' AND lease_until <= ? AND id IN (SELECT outbox_id FROM release_notices WHERE sending_at IS NOT NULL)`).run(now);
-      const rows = this.db.query<OutboxRow, [number, number, DeliveryLane | null, DeliveryLane | null, number]>(`SELECT o.*, n.metadata_json,
+      const paused = this.pausedReleaseRepository;
+      this.db.query(`UPDATE outbox SET status='failed',lease_until=NULL,error_code='release_uncertain'
+        WHERE status='leased' AND lease_until <= ? AND id IN (
+          SELECT outbox_id FROM release_notices WHERE sending_at IS NOT NULL
+          AND (? IS NULL OR json_extract(metadata_json, '$.repository') IS NOT ?)
+        )`).run(now, paused, paused);
+      const rows = this.db.query<OutboxRow, [number, number, DeliveryLane | null, DeliveryLane | null, string | null, string | null, number]>(`SELECT o.*, n.metadata_json,
         CASE WHEN o.origin_type = 'review_group' THEN 'github' ELSE d.source END AS source
         FROM outbox o LEFT JOIN deliveries d ON o.origin_type = 'delivery' AND o.origin_id = d.id
         LEFT JOIN release_notices n ON n.outbox_id=o.id
         WHERE ((o.status = 'pending' AND o.due_at <= ?) OR (o.status = 'leased' AND o.lease_until <= ?))
         AND (? IS NULL OR COALESCE(d.lane, 'ordinary') = ?)
+        AND (? IS NULL OR json_extract(n.metadata_json, '$.repository') IS NOT ?)
         AND NOT EXISTS (
           SELECT 1 FROM release_notices start_notice JOIN outbox start_card ON start_card.id = start_notice.outbox_id
           WHERE n.notice_key GLOB 'result:${INFRA_REPO}:*'
             AND start_notice.notice_key = 'start:' || substr(n.notice_key, length('result:') + 1)
             AND start_card.status IN ('pending', 'leased')
         )
-        ORDER BY o.id LIMIT ?`).all(now, now, lane ?? null, lane ?? null, limit);
+        ORDER BY o.id LIMIT ?`).all(now, now, lane ?? null, lane ?? null, paused, paused, limit);
       const leaseUntil = now + leaseMs;
       for (const row of rows) {
         this.db.query("UPDATE outbox SET status = 'leased', attempts = attempts + 1, lease_until = ? WHERE id = ?").run(leaseUntil, row.id);
@@ -435,7 +445,7 @@ export class Store {
   }
 }
 
-export function openStore(path: string): Store {
+export function openStore(path: string, { infraReleasesEnabled = true }: { infraReleasesEnabled?: boolean } = {}): Store {
   const db = new Database(path, { create: true, strict: true });
   try {
     db.exec('PRAGMA busy_timeout = 1000');
@@ -480,7 +490,7 @@ export function openStore(path: string): Store {
         db.exec('PRAGMA user_version = 7');
       }
     }).immediate();
-    return new Store(db);
+    return new Store(db, infraReleasesEnabled ? null : INFRA_REPO);
   } catch (error) {
     db.close();
     throw error;

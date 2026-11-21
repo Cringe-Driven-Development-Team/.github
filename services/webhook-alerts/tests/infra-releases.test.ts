@@ -46,6 +46,12 @@ function fixture(attempt = 2) {
 type Fixture = ReturnType<typeof fixture>;
 type TelegramCard = { message_thread_id: number; text: string; link_preview_options: unknown; reply_markup: { inline_keyboard: { text: string; url: string }[][] } };
 
+async function waitFor(predicate: () => boolean) {
+  const until = Date.now() + 3_000;
+  while (!predicate() && Date.now() < until) await Bun.sleep(20);
+  expect(predicate()).toBe(true);
+}
+
 async function runService(
   attempts: Fixture[],
   body: (helpers: {
@@ -54,13 +60,22 @@ async function runService(
     cards: TelegramCard[];
     notices(): string[];
     pullLookups: string[];
+    db: Database;
+    restart(overrides?: Record<string, string | undefined>): Promise<void>;
   }) => Promise<void>,
-  options: { pulls?: Record<string, unknown[]> } = {},
+  options: {
+    pulls?: Record<string, unknown[]>;
+    activate?: boolean;
+    config?: Record<string, string | undefined>;
+    seed?: (store: ReturnType<typeof openStore>) => void;
+  } = {},
 ) {
   const disk = checkout();
   const store = openStore(disk.path);
-  store.activateReleases(Date.now() - 10_000, repo);
-  store.close();
+  try {
+    if (options.activate !== false) store.activateReleases(Date.now() - 10_000, repo);
+    options.seed?.(store);
+  } finally { store.close(); }
   const db = new Database(disk.path);
   const cards: TelegramCard[] = [];
   const pullLookups: string[] = [];
@@ -92,31 +107,34 @@ async function runService(
     }
     throw new Error(`Unexpected test GitHub endpoint ${url.pathname}`);
   }) as typeof fetch;
-  const service = startService(loadConfig({
-    ...env, DATABASE_PATH: disk.path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'fake', TELEGRAM_CHAT_ID: '-1001',
-  }), { fetch: fetcher });
+  let service: ReturnType<typeof startService> | undefined;
+  const restart = async (overrides?: Record<string, string | undefined>) => {
+    await service?.stop();
+    service = startService(loadConfig({
+      ...env, DATABASE_PATH: disk.path, WEBHOOK_ALERTS_SEND_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'fake', TELEGRAM_CHAT_ID: '-1001',
+      ...options.config, ...overrides,
+    }), { fetch: fetcher });
+  };
   try {
+    await restart();
     await body({
       async post(id, event, data) {
         const raw = JSON.stringify({ repository: { full_name: repo }, ...data });
-        const response = await service.app.request('/webhooks/github', { method: 'POST', body: raw, headers: {
+        const response = await service!.app.request('/webhooks/github', { method: 'POST', body: raw, headers: {
           'Content-Type': 'application/json', 'X-GitHub-Event': event, 'X-GitHub-Delivery': id,
           'X-Hub-Signature-256': `sha256=${createHmac('sha256', env.GITHUB_WEBHOOK_SECRET).update(raw).digest('hex')}`,
         } });
         expect(response.status).toBe(202);
       },
-      async drained() {
-        const drained = () => db.query('SELECT id FROM deliveries WHERE prepared = 0 UNION ALL SELECT id FROM outbox WHERE status != \'sent\'').get() === null;
-        const until = Date.now() + 3_000;
-        while (!drained() && Date.now() < until) await Bun.sleep(20);
-        expect(drained()).toBe(true);
-      },
+      drained: () => waitFor(() => db.query("SELECT id FROM deliveries WHERE prepared = 0 UNION ALL SELECT id FROM outbox WHERE status != 'sent'").get() === null),
       cards,
       pullLookups,
+      db,
+      restart,
       notices: () => db.query<{ notice_key: string }, []>('SELECT notice_key FROM release_notices ORDER BY outbox_id').all().map(row => row.notice_key),
     });
   } finally {
-    await service.stop();
+    await service?.stop();
     db.close();
     disk.clean();
   }
@@ -131,7 +149,61 @@ test('infra topic is independent and requires a GitHub read token', () => {
     releasesTopic: 640, backendReleasesTopic: 3377, infraReleasesTopic: 14389,
   });
   expect(() => loadConfig({ ...env, GITHUB_API_TOKEN: '' })).toThrow('GITHUB_API_TOKEN');
-  expect(() => loadConfig({ ...env, TELEGRAM_INFRA_ALERTS_TOPIC_ID: '0' })).toThrow('TELEGRAM_INFRA_ALERTS_TOPIC_ID');
+  for (const topic of ['0', '14389x', ' 14389', '9007199254740992']) {
+    expect(() => loadConfig({ ...env, TELEGRAM_INFRA_ALERTS_TOPIC_ID: topic })).toThrow('TELEGRAM_INFRA_ALERTS_TOPIC_ID');
+  }
+  for (const name of ['TELEGRAM_RELEASES_TOPIC_ID', 'TELEGRAM_BACKEND_RELEASES_TOPIC_ID']) {
+    expect(() => loadConfig({ ...env, [name]: '' })).toThrow(name);
+  }
+});
+
+const ordinaryIssue = {
+  action: 'opened', issue: { number: 25, title: 'Обычное уведомление', html_url: `https://github.com/${repo}/issues/25` },
+  sender: { login: 'maintainer' },
+};
+
+test.each(['', ' \t '])('ordinary Infra issue is delivered before activation with a blank Infra topic (%j)', async topic => {
+  await runService([], async ({ post, drained, cards }) => {
+    await post('issue', 'issues', ordinaryIssue);
+    await drained();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ message_thread_id: 26, text: expect.stringContaining('Обычное уведомление') });
+  }, { activate: false, config: { TELEGRAM_INFRA_ALERTS_TOPIC_ID: topic, GITHUB_API_TOKEN: undefined } });
+});
+
+test.each([undefined, ''])('after activation a disabled Infra topic (%j) pauses the queue until re-enabled', async topic => {
+  const frontend = topic === '';
+  const release = fixture(2);
+  release.withDeployment = false;
+  await runService([release], async ({ post, drained, cards, db, restart, notices }) => {
+    const cutoff = () => db.query('SELECT cutoff_ms FROM infra_release_activation').get();
+    const activatedAt = cutoff();
+    await post('paused-result', 'workflow_job', completed(release));
+    if (frontend) {
+      await post('frontend', 'workflow_job', { repository: { full_name: 'Cringe-Driven-Development-Team/frontend' }, action: 'queued' });
+      await waitFor(() => !!db.query("SELECT 1 FROM deliveries WHERE delivery_id = 'frontend' AND prepared = 1").get());
+    }
+    await post('issue', 'issues', ordinaryIssue);
+    await waitFor(() => cards.some(card => card.message_thread_id === 26));
+    expect(cards.map(card => card.message_thread_id)).toEqual([26]);
+    expect(db.query("SELECT prepared FROM deliveries WHERE delivery_id = 'paused-result'").get()).toEqual({ prepared: 0 });
+    expect(db.query('SELECT status, attempts FROM outbox WHERE topic = 14389').all()).toEqual([{ status: 'pending', attempts: 0 }]);
+    await restart({ TELEGRAM_INFRA_ALERTS_TOPIC_ID: '14389', GITHUB_API_TOKEN: env.GITHUB_API_TOKEN });
+    await drained();
+    expect(cards.map(card => card.message_thread_id)).toEqual([26, 14389, 14389]);
+    expect(notices()).toEqual([`start:${repo}:7:1`, `result:${repo}:7:2`]);
+    expect(cutoff()).toEqual(activatedAt);
+  }, {
+    config: {
+      TELEGRAM_INFRA_ALERTS_TOPIC_ID: topic,
+      TELEGRAM_RELEASES_TOPIC_ID: frontend ? '640' : undefined,
+      GITHUB_API_TOKEN: frontend ? env.GITHUB_API_TOKEN : undefined,
+    },
+    seed: store => {
+      if (frontend) store.activateReleases(Date.now() - 10_000);
+      enqueueAttempt(store, 1, ['start'], Date.now());
+    },
+  });
 });
 
 test('migration from v6 preserves previous activations and CLI keeps the infra cutoff immutable', () => {
@@ -157,8 +229,26 @@ test('migration from v6 preserves previous activations and CLI keeps the infra c
       expect(migrated.releaseActivation('Cringe-Driven-Development-Team/backend')).toBe(200);
       expect(migrated.releaseActivation(repo)).toBe(1577836800000);
     } finally { migrated.close(); }
-    expect(() => startService(loadConfig({ ...env, DATABASE_PATH: disk.path, TELEGRAM_RELEASES_TOPIC_ID: '640', TELEGRAM_BACKEND_RELEASES_TOPIC_ID: '3377', TELEGRAM_INFRA_ALERTS_TOPIC_ID: undefined }))).toThrow('infra');
   } finally { disk.clean(); }
+});
+
+test.each([
+  ['action_required', 'требует действий'],
+  ['neutral', 'завершилась с нейтральным результатом'],
+  ['timed_out', 'завершилась с ошибкой'],
+])('signed production job outcome %s sends one result across duplicate deliveries', async (conclusion, heading) => {
+  const release = fixture();
+  release.withDeployment = false;
+  release.job.conclusion = conclusion;
+  release.job.steps = [];
+  await runService([release], async ({ post, drained, cards, notices }) => {
+    await post('terminal', 'workflow_job', completed(release));
+    await post('terminal-duplicate', 'workflow_job', completed(release));
+    await drained();
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ message_thread_id: 14389, text: expect.stringContaining(`Выкатка инфры ${heading}`) });
+    expect(notices()).toEqual([`result:${repo}:7:2`]);
+  });
 });
 
 test('signed start and job completion become separate Infra cards with attempt logs and a uniquely confirmed PR', async () => {
@@ -198,17 +288,20 @@ test('a result before its start enqueues start first, deduplicates new delivery 
 });
 
 test('preview, an unrelated run, an automatic Deployment and an event inconsistent with the verified job are silent', async () => {
-  const foreign = fixture(1), preview = fixture(2), automatic = fixture(3), real = fixture(4);
+  const foreign = fixture(1), preview = fixture(2), automatic = fixture(3), real = fixture(4), skipped = fixture(5);
   foreign.run.path = '.github/workflows/other.yml';
   preview.run.head_branch = 'preview';
   automatic.deployment.task = 'deploy';
-  await runService([foreign, preview, automatic, real], async ({ post, drained, cards }) => {
+  skipped.job.conclusion = 'skipped';
+  await runService([foreign, preview, automatic, real, skipped], async ({ post, drained, cards }) => {
     await post('foreign', 'workflow_job', completed(foreign));
     await post('preview', 'workflow_job', completed(preview));
     await post('automatic', 'deployment_status', started(automatic));
     await post('wrong-conclusion', 'workflow_job', { ...completed(real), workflow_job: { ...real.job, conclusion: 'cancelled' } });
     await post('wrong-identity', 'workflow_job', { ...completed(real), workflow_job: { ...real.job, head_sha: imageSha } });
     await post('unsigned-field-conflict', 'deployment_status', { ...started(real), deployment: { ...real.deployment, ref: imageSha } });
+    await post('skipped-start', 'deployment_status', started(skipped));
+    await post('skipped-result', 'workflow_job', completed(skipped));
     await drained();
     expect(cards).toEqual([]);
   });
@@ -302,10 +395,10 @@ test('recent redelivery of a signed start or result from before activation is si
 });
 
 
-function enqueueAttempt(store: ReturnType<typeof openStore>, attempt: number, phases: ('start' | 'result')[]) {
-  store.accept({ source: 'github', deliveryId: `attempt-${attempt}`, event: 'workflow_job', receivedAt: 1000,
+function enqueueAttempt(store: ReturnType<typeof openStore>, attempt: number, phases: ('start' | 'result')[], receivedAt = 1000) {
+  store.accept({ source: 'github', deliveryId: `attempt-${attempt}`, event: 'workflow_job', receivedAt,
     raw: new TextEncoder().encode(JSON.stringify({ repository: { full_name: repo } })) });
-  const delivery = store.claimUnprepared(1000, 100, 'release-operation')[0]!;
+  const delivery = store.claimUnprepared(receivedAt, 100, 'release-operation')[0]!;
   store.prepare(delivery.id, phases.map((kind): OutgoingMessage => {
     const notice = { key: `${kind}:${repo}:7:${attempt}`, repository: repo, runId: 7, attempt } as const;
     const release: ReleaseNotice = kind === 'start'

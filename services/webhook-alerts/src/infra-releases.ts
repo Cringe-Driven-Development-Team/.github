@@ -131,11 +131,12 @@ async function verifyAttempt(api: InfraReleaseApi, attempt: Attempt) {
 
 type VerifiedAttempt = NonNullable<Awaited<ReturnType<typeof verifyAttempt>>>;
 const labels = {
-  start: '⏳', success: '✅', failure: '❌', cancelled: '⚪',
+  start: '⏳', success: '✅', failure: '❌', cancelled: '⚪', action_required: '⚠️', neutral: '➖',
 } as const;
 type Outcome = keyof typeof labels;
 const outcomes: Record<Outcome, string> = {
   start: 'началась', success: 'завершилась успешно', failure: 'завершилась с ошибкой', cancelled: 'отменена',
+  action_required: 'требует действий', neutral: 'завершилась с нейтральным результатом',
 };
 
 function releaseSource(run: VerifiedAttempt, deployment?: Deployment) {
@@ -169,7 +170,8 @@ function card(topic: number, run: VerifiedAttempt, deployment: Deployment | unde
 }
 
 function result(conclusion: unknown): Exclude<Outcome, 'start'> | undefined {
-  if (conclusion === 'success' || conclusion === 'failure' || conclusion === 'cancelled') return conclusion;
+  if (conclusion === 'success' || conclusion === 'failure' || conclusion === 'cancelled' ||
+      conclusion === 'action_required' || conclusion === 'neutral') return conclusion;
   if (conclusion === 'timed_out') return 'failure';
 }
 

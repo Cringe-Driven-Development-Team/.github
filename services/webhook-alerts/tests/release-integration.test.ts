@@ -216,7 +216,7 @@ test("HTTP release flow suppresses stale retries, deduplicates results and prese
     TELEGRAM_BOT_TOKEN: "test",
     TELEGRAM_CHAT_ID: "-1001",
     TELEGRAM_RELEASES_TOPIC_ID: "99",
-    TELEGRAM_INFRA_ALERTS_TOPIC_ID: "14389",
+    TELEGRAM_INFRA_ALERTS_TOPIC_ID: "",
     TELEGRAM_USER_MAP: JSON.stringify({ YarikMix: "111" }),
   });
   let service = startService(config, { fetch: fetcher });
