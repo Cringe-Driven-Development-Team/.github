@@ -216,7 +216,8 @@ test('migration from v6 preserves previous activations and CLI keeps the infra c
     const db = new Database(disk.path);
     db.exec('DROP TABLE IF EXISTS infra_release_activation; PRAGMA user_version = 6');
     db.close();
-    const activate = (cutoff: string) => Bun.spawnSync([process.execPath, 'run', 'src/cli.ts', 'infra-release-activate', cutoff], { env: { ...process.env, ...env, DATABASE_PATH: disk.path } });
+    const cli = join(import.meta.dir, '../src/cli.ts');
+    const activate = (cutoff: string) => Bun.spawnSync([process.execPath, 'run', cli, 'infra-release-activate', cutoff], { env: { ...process.env, ...env, DATABASE_PATH: disk.path } });
     const result = activate('2020-01-01T00:00:00Z');
     expect(result.exitCode).toBe(0);
     expect(activate('2020-01-01T00:00:00Z').exitCode).toBe(0);
