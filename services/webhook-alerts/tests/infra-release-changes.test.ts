@@ -40,7 +40,7 @@ const issue = { id: 'issue-9', number: 9, title: 'Связанная задач�
 function github({
   history = [release(3, base, '2026-11-21T16:44:40Z')],
   commits = [head], total = commits.length, status = 200, relation = 'ahead',
-  pulls = {}, issues = {}, files = {},
+  pulls = {}, issues = {}, files = {}, beforePulls,
 }: {
   history?: ReturnType<typeof release>[];
   commits?: string[];
@@ -50,6 +50,7 @@ function github({
   pulls?: Record<string, ReturnType<typeof pr>[]>;
   issues?: Record<number, typeof issue[]>;
   files?: Record<number, { filename: string; previous_filename?: string }[]>;
+  beforePulls?: (sha: string) => Promise<void>;
 } = {}) {
   const requested: string[] = [];
   const fetcher = (async (input, init) => {
@@ -90,7 +91,10 @@ function github({
     }
     if (path.includes('/compare/')) return Response.json({ status: relation, total_commits: total, commits: commits.map(sha => ({ sha })) }, { status });
     const merge = path.match(/\/commits\/([a-f0-9]{40})\/pulls$/);
-    if (merge?.[1]) return Response.json(pulls[merge[1]] ?? []);
+    if (merge?.[1]) {
+      await beforePulls?.(merge[1]);
+      return Response.json(pulls[merge[1]] ?? []);
+    }
     const pullFiles = path.match(/\/pulls\/(\d+)\/files$/);
     if (pullFiles) return Response.json(files[Number(pullFiles[1])] ?? []);
     throw new Error('Unexpected GitHub endpoint: ' + path);
@@ -150,6 +154,24 @@ test.each([['webhook-alerts', imageA], ['githubbot', imageB]] as const)('selects
     ],
   });
   expect(requested.some(url => url.includes('/repos/' + publisher + '/compare/'))).toBe(true);
+});
+
+test('looks up independent commits concurrently within the enrichment deadline', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const { api } = github({
+    commits: [prSha, secondPrSha, head],
+    pulls: { [head]: [pr(repo, 173, head, 'Выкатка инфры')] },
+    async beforePulls() {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await Bun.sleep(5);
+      inFlight--;
+    },
+  });
+  const changes = await api.changes(...current());
+  expect(changes?.entries).toHaveLength(1);
+  expect(peak).toBeGreaterThan(1);
 });
 
 test('equal versions give an empty list without comparing files or commits', async () => {

@@ -106,6 +106,14 @@ export async function readReleasePullRequest(
   return { title, issues: [...issues.values()] };
 }
 
+async function inBatches<T, R>(items: T[], size: number, read: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += size) {
+    results.push(...await Promise.all(items.slice(i, i + size).map(read)));
+  }
+  return results;
+}
+
 export async function readReleaseChanges(
   repository: ReleaseRepository,
   base: string | null,
@@ -138,9 +146,11 @@ export async function readReleaseChanges(
     if (commits.size <= previous || commits.size > total)
       throw new GithubApiError('incomplete_comparison');
   }
+  const batchSize = strictRange ? 6 : 1;
+  const pullsByCommit = await inBatches([...commits], batchSize, commit => pages(`/commits/${commit}/pulls?per_page=100`));
   const prs = new Map<number, ChangeReport['prs'][number]>();
-  for (const commit of commits)
-    for (const raw of await pages(`/commits/${commit}/pulls?per_page=100`)) {
+  for (const pulls of pullsByCommit)
+    for (const raw of pulls) {
       const p = obj(raw);
       if (!p.merged_at || typeof p.merge_commit_sha !== 'string' || !commits.has(p.merge_commit_sha))
         continue;
@@ -153,12 +163,17 @@ export async function readReleaseChanges(
         mergeSha: p.merge_commit_sha,
       });
     }
-  for (const pr of [...prs.values()].sort((a, b) => a.number - b.number)) {
-    if (!include || await include(pr.number)) report.prs.push(pr);
-  }
+  const sorted = [...prs.values()].sort((a, b) => a.number - b.number);
   const issues = new Map<string, LinkedIssue>();
-  for (const pr of report.prs) {
-    for (const issue of (await pullRequest(pr.number)).issues) {
+  const changes = await inBatches(sorted, batchSize, async pr => {
+    if (include && !await include(pr.number)) return;
+    return { pr, issues: (await pullRequest(pr.number)).issues };
+  });
+  for (const change of changes) {
+    if (!change) continue;
+    const { pr } = change;
+    report.prs.push(pr);
+    for (const issue of change.issues) {
       const existing = issues.get(issue.id);
       if (existing) existing.prNumbers.push(pr.number);
       else issues.set(issue.id, issue);
