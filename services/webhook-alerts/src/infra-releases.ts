@@ -1,4 +1,4 @@
-import { escapeHtml, truncate } from './format';
+import { escapeHtml, link, truncate } from './format';
 import { createGithubReader, GithubApiError, type GithubPages } from './github-api';
 import { publisherPath, releaseEntries, type InfraReleaseChanges } from './infra-release-changes';
 import { readReleaseChanges, readReleasePullRequest } from './release-api';
@@ -28,6 +28,7 @@ interface Deployment extends Attempt {
 }
 
 type ChangeAttempt = Attempt & { kind: Kind; job: JsonRecord };
+type VerifiedAttempt = ChangeAttempt & { jobId: number; actor?: string; url: string };
 
 export interface InfraReleaseApi {
   runAttempt(runId: number, attempt: number): Promise<unknown>;
@@ -164,7 +165,7 @@ function matchesAttempt(raw: JsonRecord, attempt: Attempt): boolean {
   return raw.run_id === attempt.runId && raw.run_attempt === attempt.attempt && raw.head_sha === attempt.sha;
 }
 
-async function verifyAttempt(api: Pick<InfraReleaseApi, 'runAttempt' | 'jobs'>, attempt: Attempt) {
+async function verifyAttempt(api: Pick<InfraReleaseApi, 'runAttempt' | 'jobs'>, attempt: Attempt): Promise<VerifiedAttempt | undefined> {
   const run = record(await api.runAttempt(attempt.runId, attempt.attempt));
   const kind = run.path === workflows.infra.path ? 'infra' : run.path === workflows.auxiliary.path ? 'auxiliary' : undefined;
   if (!kind || run.id !== attempt.runId || run.run_attempt !== attempt.attempt || run.head_sha !== attempt.sha
@@ -202,7 +203,6 @@ async function previousDeployment(pages: GithubPages, run: ChangeAttempt, curren
   }
 }
 
-type VerifiedAttempt = NonNullable<Awaited<ReturnType<typeof verifyAttempt>>>;
 const labels = {
   start: '⏳', success: '✅', failure: '❌', cancelled: '⚪', action_required: '⚠️', neutral: '➖',
 } as const;
@@ -217,11 +217,28 @@ function releaseSource(run: VerifiedAttempt, deployment?: Deployment) {
   if (run.kind === 'infra' || deployment?.operation === 'initialize') return { repository: INFRA_REPO, sha: run.sha };
 }
 
-function card(topic: number, run: VerifiedAttempt, deployment: Deployment | undefined, outcome: Outcome, prUrl?: string): OutgoingMessage {
+function changeLines(changes: InfraReleaseChanges | undefined, outcome: Outcome): string[] {
+  if (!changes) return [];
+  if (changes.base === changes.head) return ['Новых изменений нет'];
+  const { entries } = changes;
+  if (!entries.length) return [];
+  const heading = outcome === 'failure' || outcome === 'cancelled' ? 'Планировались изменения'
+    : entries.length > 1 ? 'Задачи и изменения' : entries[0]?.kind === 'issue' ? 'Задача' : 'Изменение';
+  const lines = [`<b>${heading}</b>`, ...entries.slice(0, 3).map(entry =>
+    `• ${link(escapeHtml(truncate(entry.title.replace(/\s+/g, ' '), 140)), entry.url)}`)];
+  if (entries.length > 3) lines.push(link('Все изменения', changes.compareUrl));
+  return lines;
+}
+
+function card(topic: number, run: VerifiedAttempt, deployment: Deployment | undefined, outcome: Outcome,
+  prUrl?: string, changes?: InfraReleaseChanges,
+): OutgoingMessage {
   const title = run.kind === 'infra' ? 'Выкатка инфры' : deployment?.service ? `Выкатка ${deployment.service}`
     : deployment?.operation === 'initialize' ? 'Инициализация VPS3' : 'Операция на VPS3';
   const version = releaseSource(run, deployment)?.sha;
   const lines = [`<b>${labels[outcome]} ${title} ${outcomes[outcome]}</b>`, version ? `production · <code>${version.slice(0, 7)}</code>` : 'production'];
+  const tasks = changeLines(changes, outcome);
+  if (tasks.length) lines.push('', ...tasks, '');
   if (outcome !== 'start') {
     const steps = Array.isArray(run.job.steps) ? run.job.steps.map(record) : [];
     if (outcome === 'failure' || outcome === 'cancelled') {
@@ -239,7 +256,7 @@ function card(topic: number, run: VerifiedAttempt, deployment: Deployment | unde
     : { ...notice, kind: 'result', jobId: run.jobId, ...(deployment ? { deploymentId: deployment.id } : {}) };
   const keyboard = [[{ text: 'Логи выкатки', url: run.url }]];
   if (prUrl) keyboard.unshift([{ text: 'PR', url: prUrl }]);
-  return { topic, html: lines.join('\n'), keyboard, release };
+  return { topic, html: lines.join('\n').trimEnd(), keyboard, release };
 }
 
 function result(conclusion: unknown): Exclude<Outcome, 'start'> | undefined {
@@ -277,7 +294,8 @@ export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseA
     if (!run || run.kind !== deployment.kind || status.log_url !== run.url
       || (run.job.status !== 'in_progress' && run.job.status !== 'completed') || run.job.conclusion === 'skipped') return [];
     if (!await api.started(deployment.id, run.url, deliveryCutoff, status.id)) return [];
-    return [card(topic, run, deployment, 'start', await associatedPullRequest(api, run, deployment))];
+    const [prUrl, changes] = await Promise.all([associatedPullRequest(api, run, deployment), api.changes(run, deployment)]);
+    return [card(topic, run, deployment, 'start', prUrl, changes)];
   }
 
   if (delivery.event !== 'workflow_job' || event.action !== 'completed') return [];
@@ -295,7 +313,7 @@ export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseA
     && deployment.kind === run.kind && deployment.runId === runId && deployment.attempt === attempt);
   const deployment = deployments.length === 1 ? deployments[0] : undefined;
   const started = deployment && await api.started(deployment.id, run.url, cutoff);
-  const prUrl = await associatedPullRequest(api, run, deployment);
-  const message = card(topic, run, deployment, outcome, prUrl);
-  return started ? [card(topic, run, deployment, 'start', prUrl), message] : [message];
+  const [prUrl, changes] = await Promise.all([associatedPullRequest(api, run, deployment), api.changes(run, deployment)]);
+  const message = card(topic, run, deployment, outcome, prUrl, changes);
+  return started ? [card(topic, run, deployment, 'start', prUrl, changes), message] : [message];
 }
