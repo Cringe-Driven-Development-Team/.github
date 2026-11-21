@@ -1011,7 +1011,9 @@ Deployments и их статусы в `Cringe-Driven-Development-Team/infra`, а
 фактическую UTC-границу приёма.
 
 ```sh
-docker exec hooks bun run src/cli.ts infra-release-activate <UTC-ISO>
+infra_cutover_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sudo docker compose -f /opt/hooks/compose.yml exec -T hooks \
+  bun run src/cli.ts infra-release-activate "$infra_cutover_utc"
 ```
 
 Граница Infra неизменяема и отдельна от Frontend и Backend. До активации Infra
