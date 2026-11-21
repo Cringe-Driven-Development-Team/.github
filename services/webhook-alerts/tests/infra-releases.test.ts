@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config';
 import { startService } from '../src/main';
-import { openStore } from '../src/store';
+import { openStore, type OutgoingMessage, type ReleaseNotice } from '../src/store';
+import { sendMessage } from '../src/telegram';
+import { deliverOnce } from '../src/worker';
 
 const repo = 'Cringe-Driven-Development-Team/infra';
 const publisher = 'Cringe-Driven-Development-Team/.github';
@@ -51,6 +53,7 @@ async function runService(
     drained(): Promise<void>;
     cards: TelegramCard[];
     notices(): string[];
+    pullLookups: string[];
   }) => Promise<void>,
   options: { pulls?: Record<string, unknown[]> } = {},
 ) {
@@ -60,6 +63,7 @@ async function runService(
   store.close();
   const db = new Database(disk.path);
   const cards: TelegramCard[] = [];
+  const pullLookups: string[] = [];
   const fetcher = (async (input, init) => {
     const url = new URL(String(input));
     if (url.hostname === 'api.telegram.org') {
@@ -81,7 +85,11 @@ async function runService(
       if (path === `${deploymentPath}/statuses/${f.status.id}`) return Response.json(f.status);
     }
     const pulls = /\/repos\/(.+)\/commits\/([a-f0-9]{40})\/pulls$/.exec(url.pathname);
-    if (pulls) return Response.json(options.pulls?.[`${pulls[1]}:${pulls[2]}`] ?? []);
+    if (pulls) {
+      const lookup = `${pulls[1]}:${pulls[2]}`;
+      pullLookups.push(lookup);
+      return Response.json(options.pulls?.[lookup] ?? []);
+    }
     throw new Error(`Unexpected test GitHub endpoint ${url.pathname}`);
   }) as typeof fetch;
   const service = startService(loadConfig({
@@ -104,6 +112,7 @@ async function runService(
         expect(drained()).toBe(true);
       },
       cards,
+      pullLookups,
       notices: () => db.query<{ notice_key: string }, []>('SELECT notice_key FROM release_notices ORDER BY outbox_id').all().map(row => row.notice_key),
     });
   } finally {
@@ -159,7 +168,7 @@ test('signed start and job completion become separate Infra cards with attempt l
     await post('deploy-success', 'deployment_status', { ...started(release), deployment_status: { ...release.status, state: 'success' } });
     await drained();
     expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ message_thread_id: 14389, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: 'Логи выкатки', url: attemptUrl }]] } });
+    expect(cards[0]).toMatchObject({ message_thread_id: 14389, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: 'PR', url: `https://github.com/${repo}/pull/171` }], [{ text: 'Логи выкатки', url: attemptUrl }]] } });
     expect(cards[0]!.text).toContain('Выкатка инфры началась');
     expect(cards[0]!.text).toContain('Запустил: maintainer');
     expect(cards[0]!.text).not.toContain('Health Check');
@@ -236,13 +245,13 @@ test('an early VPS3 failure has a failed step and no substituted image SHA, whil
   });
 });
 
-test('VPS3 deploy uses the validated image source and its PR, while initialize uses the infra SHA', async () => {
+test('VPS3 deploy and initialize use the PR matching each verified source for both phases', async () => {
   const deploy = fixture(1), initialize = fixture(2);
   auxiliary(deploy);
   auxiliary(initialize);
   Object.assign(deploy.deployment.payload, { operation: 'deploy', service: 'webhook-alerts', source_sha: imageSha });
   initialize.deployment.payload.operation = 'initialize';
-  await runService([deploy, initialize], async ({ post, drained, cards }) => {
+  await runService([deploy, initialize], async ({ post, drained, cards, pullLookups }) => {
     await post('deploy', 'workflow_job', completed(deploy));
     await post('initialize', 'workflow_job', completed(initialize));
     await drained();
@@ -251,9 +260,15 @@ test('VPS3 deploy uses the validated image source and its PR, while initialize u
     expect(cards[1]!.text).toContain('<code>abcdef1</code>');
     expect(cards[1]!.text).not.toContain('1234567');
     expect(cards[1]!.text).not.toContain('Health Check');
-    expect(cards[1]!.reply_markup.inline_keyboard[0]).toEqual([{ text: 'PR', url: `https://github.com/${publisher}/pull/35` }]);
     expect(cards[3]!.text).toContain('Инициализация VPS3 завершилась успешно');
     expect(cards[3]!.text).toContain('<code>1234567</code>');
+    for (const card of [cards[3]!, cards[2]!]) {
+      expect(card.reply_markup.inline_keyboard[0]).toEqual([{ text: 'PR', url: `https://github.com/${repo}/pull/171` }]);
+    }
+    for (const card of cards.slice(0, 2)) {
+      expect(card.reply_markup.inline_keyboard[0]).toEqual([{ text: 'PR', url: `https://github.com/${publisher}/pull/35` }]);
+    }
+    expect(pullLookups).toEqual([`${publisher}:${imageSha}`, `${repo}:${infraSha}`]);
   }, { pulls: { [`${publisher}:${imageSha}`]: [merged(35, imageSha, publisher), merged(36, imageSha, repo)], [`${repo}:${infraSha}`]: [merged(171)] } });
 });
 
@@ -284,4 +299,52 @@ test('recent redelivery of a signed start or result from before activation is si
     expect(cards).toEqual([]);
     expect(notices()).toEqual([]);
   });
+});
+
+
+function enqueueAttempt(store: ReturnType<typeof openStore>, attempt: number, phases: ('start' | 'result')[]) {
+  store.accept({ source: 'github', deliveryId: `attempt-${attempt}`, event: 'workflow_job', receivedAt: 1000,
+    raw: new TextEncoder().encode(JSON.stringify({ repository: { full_name: repo } })) });
+  const delivery = store.claimUnprepared(1000, 100, 'release-operation')[0]!;
+  store.prepare(delivery.id, phases.map((kind): OutgoingMessage => {
+    const notice = { key: `${kind}:${repo}:7:${attempt}`, repository: repo, runId: 7, attempt } as const;
+    const release: ReleaseNotice = kind === 'start'
+      ? { ...notice, kind, deploymentId: 700 + attempt }
+      : { ...notice, kind, jobId: 70 + attempt };
+    return { topic: 14389, html: `${kind} ${attempt}`, release };
+  }));
+}
+
+test('an Infra result waits after Telegram 429 on its start while another attempt sends', async () => {
+  const store = openStore(':memory:');
+  try {
+    store.activateReleases(0, repo);
+    enqueueAttempt(store, 2, ['start', 'result']);
+    enqueueAttempt(store, 3, ['result']);
+    const requests: string[] = [];
+    const fetcher = (async (_input, init) => {
+      const text = JSON.parse(String(init?.body)).text;
+      requests.push(text);
+      if (requests.length === 1) return Response.json({ ok: false, parameters: { retry_after: 2 } }, { status: 429 });
+      return Response.json({ ok: true, result: { message_id: requests.length } });
+    }) as typeof fetch;
+    const send = (message: OutgoingMessage) => sendMessage(message, { botToken: 'fake', chatId: '-1001' }, fetcher);
+    await deliverOnce({ store, send, now: 1000, lane: 'release-operation' });
+    expect(requests).toEqual(['start 2', 'result 3']);
+    await deliverOnce({ store, send, now: 5000, lane: 'release-operation' });
+    expect(requests).toEqual(['start 2', 'result 3', 'start 2', 'result 2']);
+  } finally { store.close(); }
+});
+
+test('an Infra result cannot be claimed while its start is leased, then proceeds after terminal failure', () => {
+  const store = openStore(':memory:');
+  try {
+    store.activateReleases(0, repo);
+    enqueueAttempt(store, 2, ['start', 'result']);
+    const start = store.claimDue(1000, 100, 1, 'release-operation')[0]!;
+    expect(start.html).toBe('start 2');
+    expect(store.claimDue(1001, 100, 1, 'release-operation')).toEqual([]);
+    store.markFailed(start.id, 'telegram_400');
+    expect(store.claimDue(1002, 100, 1, 'release-operation').map(message => message.html)).toEqual(['result 2']);
+  } finally { store.close(); }
 });

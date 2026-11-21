@@ -306,6 +306,12 @@ export class Store {
         LEFT JOIN release_notices n ON n.outbox_id=o.id
         WHERE ((o.status = 'pending' AND o.due_at <= ?) OR (o.status = 'leased' AND o.lease_until <= ?))
         AND (? IS NULL OR COALESCE(d.lane, 'ordinary') = ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM release_notices start_notice JOIN outbox start_card ON start_card.id = start_notice.outbox_id
+          WHERE n.notice_key GLOB 'result:${INFRA_REPO}:*'
+            AND start_notice.notice_key = 'start:' || substr(n.notice_key, length('result:') + 1)
+            AND start_card.status IN ('pending', 'leased')
+        )
         ORDER BY o.id LIMIT ?`).all(now, now, lane ?? null, lane ?? null, limit);
       const leaseUntil = now + leaseMs;
       for (const row of rows) {

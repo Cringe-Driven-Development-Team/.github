@@ -138,10 +138,15 @@ const outcomes: Record<Outcome, string> = {
   start: 'началась', success: 'завершилась успешно', failure: 'завершилась с ошибкой', cancelled: 'отменена',
 };
 
+function releaseSource(run: VerifiedAttempt, deployment?: Deployment) {
+  if (deployment?.sourceSha) return { repository: PUBLISHER_REPO, sha: deployment.sourceSha };
+  if (run.kind === 'infra' || deployment?.operation === 'initialize') return { repository: INFRA_REPO, sha: run.sha };
+}
+
 function card(topic: number, run: VerifiedAttempt, deployment: Deployment | undefined, outcome: Outcome, prUrl?: string): OutgoingMessage {
   const title = run.kind === 'infra' ? 'Выкатка инфры' : deployment?.service ? `Выкатка ${deployment.service}`
     : deployment?.operation === 'initialize' ? 'Инициализация VPS3' : 'Операция на VPS3';
-  const version = run.kind === 'infra' || deployment?.operation === 'initialize' ? run.sha : deployment?.sourceSha;
+  const version = releaseSource(run, deployment)?.sha;
   const lines = [`<b>${labels[outcome]} ${title} ${outcomes[outcome]}</b>`, version ? `production · <code>${version.slice(0, 7)}</code>` : 'production'];
   if (outcome !== 'start') {
     const steps = Array.isArray(run.job.steps) ? run.job.steps.map(record) : [];
@@ -169,9 +174,9 @@ function result(conclusion: unknown): Exclude<Outcome, 'start'> | undefined {
 }
 
 async function associatedPullRequest(api: InfraReleaseApi, run: VerifiedAttempt, deployment?: Deployment): Promise<string | undefined> {
-  const repository = run.kind === 'infra' ? INFRA_REPO : PUBLISHER_REPO;
-  const sha = run.kind === 'infra' ? run.sha : deployment?.sourceSha;
-  if (!sha) return;
+  const source = releaseSource(run, deployment);
+  if (!source) return;
+  const { repository, sha } = source;
   try {
     const number = await api.pullRequest(repository, sha);
     if (number !== undefined) return `https://github.com/${repository}/pull/${number}`;
@@ -196,7 +201,8 @@ export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseA
     const run = await verifyAttempt(api, deployment);
     if (!run || run.kind !== deployment.kind || status.log_url !== run.url
       || (run.job.status !== 'in_progress' && run.job.status !== 'completed') || run.job.conclusion === 'skipped') return [];
-    return await api.started(deployment.id, run.url, deliveryCutoff, status.id) ? [card(topic, run, deployment, 'start')] : [];
+    if (!await api.started(deployment.id, run.url, deliveryCutoff, status.id)) return [];
+    return [card(topic, run, deployment, 'start', await associatedPullRequest(api, run, deployment))];
   }
 
   if (delivery.event !== 'workflow_job' || event.action !== 'completed') return [];
@@ -213,7 +219,8 @@ export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseA
   const deployments = (await api.deployments(sha)).map(readDeployment).filter(deployment => deployment?.sha === sha
     && deployment.kind === run.kind && deployment.runId === runId && deployment.attempt === attempt);
   const deployment = deployments.length === 1 ? deployments[0] : undefined;
-  const messages = deployment && await api.started(deployment.id, run.url, cutoff) ? [card(topic, run, deployment, 'start')] : [];
-  messages.push(card(topic, run, deployment, outcome, await associatedPullRequest(api, run, deployment)));
-  return messages;
+  const started = deployment && await api.started(deployment.id, run.url, cutoff);
+  const prUrl = await associatedPullRequest(api, run, deployment);
+  const message = card(topic, run, deployment, outcome, prUrl);
+  return started ? [card(topic, run, deployment, 'start', prUrl), message] : [message];
 }
