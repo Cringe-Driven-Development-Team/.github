@@ -15,13 +15,10 @@ export class GithubApiError extends Error {
   constructor(public readonly code: string) { super(code); }
 }
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
-export function createGithubApi(options: { token?: string; fetch?: Fetch; timeoutMs?: number } = {}): GithubApi {
+type ReaderOptions = { token?: string; fetch?: Fetch; timeoutMs?: number };
+
+export function createGithubReader(options: ReaderOptions) {
   const fetcher = options.fetch ?? fetch;
-  const repoPath = (repo: string) => {
-    const parts = repo.split('/');
-    if (parts.length !== 2 || parts.some(p => !p || p === '.' || p === '..')) throw new GithubApiError('invalid_repository');
-    return '/repos/' + parts.map(encodeURIComponent).join('/');
-  };
   async function operation<T>(run: (get: (path: string, paginate?: boolean) => Promise<unknown[]>) => Promise<T>): Promise<T> {
     if (!options.token?.trim()) throw new GithubApiError('unavailable');
     const signal = AbortSignal.timeout(Math.max(1, Math.min(options.timeoutMs ?? 5000, 5000)));
@@ -48,6 +45,16 @@ export function createGithubApi(options: { token?: string; fetch?: Fetch; timeou
     try { return await run(pages); }
     catch (e) { throw e instanceof GithubApiError ? e : new GithubApiError(signal.aborted ? 'timeout' : 'unavailable'); }
   }
+  return operation;
+}
+
+export function createGithubApi(options: ReaderOptions = {}): GithubApi {
+  const operation = createGithubReader(options);
+  const repoPath = (repo: string) => {
+    const parts = repo.split('/');
+    if (parts.length !== 2 || parts.some(p => !p || p === '.' || p === '..')) throw new GithubApiError('invalid_repository');
+    return '/repos/' + parts.map(encodeURIComponent).join('/');
+  };
   const rows = (pages: unknown[]) => pages.flatMap(p => {
     if (!Array.isArray(p)) throw new GithubApiError('invalid_response');
     return p.map(object);

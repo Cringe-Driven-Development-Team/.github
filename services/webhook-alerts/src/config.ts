@@ -10,6 +10,7 @@ export interface Config {
   githubTopic: number;
   releasesTopic?: number;
   backendReleasesTopic?: number;
+  infraReleasesTopic?: number;
   reviewTopic: number;
   userMap: Record<string, string | number>;
 }
@@ -42,6 +43,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const releasesTopic = topic('TELEGRAM_RELEASES_TOPIC_ID');
   const backendReleasesTopic = topic('TELEGRAM_BACKEND_RELEASES_TOPIC_ID');
   if (backendReleasesTopic !== undefined && !env.GITHUB_API_TOKEN?.trim()) throw new Error('GITHUB_API_TOKEN is required for backend releases');
+  const infraReleasesTopic = env.TELEGRAM_INFRA_ALERTS_TOPIC_ID?.trim() ? topic('TELEGRAM_INFRA_ALERTS_TOPIC_ID') : undefined;
+  if (infraReleasesTopic !== undefined && !env.GITHUB_API_TOKEN?.trim()) throw new Error('GITHUB_API_TOKEN is required for infra releases');
   const reviewTopic = topic('TELEGRAM_REVIEW_TOPIC_ID', 1513)!;
   const proxyUrl = env.TELEGRAM_PROXY_URL;
   if (proxyUrl !== undefined) {
@@ -63,5 +66,5 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     } catch { throw new Error('TELEGRAM_USER_MAP must map GitHub logins to Telegram user IDs'); }
   }
   return { githubWebhookSecret, databasePath, port, sendEnabled, telegram,
-    githubApiToken: env.GITHUB_API_TOKEN, githubTopic, releasesTopic, backendReleasesTopic, reviewTopic, userMap };
+    githubApiToken: env.GITHUB_API_TOKEN, githubTopic, releasesTopic, backendReleasesTopic, infraReleasesTopic, reviewTopic, userMap };
 }

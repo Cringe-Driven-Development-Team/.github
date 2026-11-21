@@ -997,3 +997,44 @@ docker exec hooks bun run src/cli.ts release-contract <UTC-ISO>
 адресно: `release-recover <delivery-id>`. Подписку org hook: Settings → Webhooks →
 hook `hooks.cellestial.ru` → Individual events → добавить Releases, остальные
 отметки сохранить; затем проверить Recent Deliveries `release` → 202.
+
+## Infra / Alerts
+
+Выставьте `TELEGRAM_INFRA_ALERTS_TOPIC_ID=14389` для `webhook-alerts` и проверьте,
+что существующий `GITHUB_API_TOKEN` читает Actions (runs, attempts, jobs),
+Deployments и их статусы в `Cringe-Driven-Development-Team/infra`, а также PR,
+связанные с коммитами в `infra` и `.github`. Проверяйте HTTP-ответы без вывода
+токена. Подписанный org webhook должен охватывать `infra` и доставлять
+`deployment_status` и `workflow_job` в `/webhooks/github`.
+
+После обновления контейнера и переключения workflow на события GitHub запишите
+фактическую UTC-границу приёма.
+
+```sh
+infra_cutover_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sudo docker compose -f /opt/hooks/compose.yml exec -T hooks \
+  bun run src/cli.ts infra-release-activate "$infra_cutover_utc"
+```
+
+Граница Infra неизменяема и отдельна от Frontend и Backend. До активации Infra
+сохраняет доставки в SQLite. После активации старт и завершение до указанного
+времени пропускаются, включая их запоздалую повторную доставку.
+Пустая или отсутствующая тема приостанавливает подготовку и отправку карточек Infra.
+При восстановлении темы обработка продолжится с той же границей и сохранёнными
+записями SQLite. Остальные уведомления продолжают отправляться во время паузы.
+
+Старт подтверждает `in_progress` явного Deployment с `task: infra-alerts` в
+`production`. Результат подтверждает завершение production job конкретной
+попытки `infra.yml` или `auxiliary-deploy.yml` из `main`. Если доставка результата
+опередила старт, сервис восстанавливает старт по статусу этой попытки после
+границы и ставит его в очередь первым. Результат ждёт отправки или окончательного
+сбоя карточки старта той же попытки, в том числе после ответа Telegram 429.
+Ключи двух карточек привязаны к `run_id` и `run_attempt` в `release_notices`.
+Для VPS3 карточка выкатки использует SHA исходников образа, а карточка инициализации
+— SHA infra. Обе фазы показывают кнопку PR при одном подтверждённом совпадении
+по SHA. При известном исходе `verify.yml` выводится Health Check.
+
+На штатных выкатках Infra и VPS3 проверьте обе карточки в теме `14389`, ссылки на
+логи нужных попыток и записи outbox. Для диагностики сверяйте `run_id`,
+`run_attempt`, Deployment и идентификаторы delivery/outbox. Действуют обычные
+`release-recover <delivery-id>` и `retry <outbox-id>` после сверки Telegram.

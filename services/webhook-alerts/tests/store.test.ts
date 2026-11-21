@@ -272,7 +272,7 @@ test('v6 deletes Apidog deliveries and their outbox while preserving GitHub deli
     const store = open(path);
     const db = new Database(path, { readonly: true });
     try {
-      expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 6 });
+      expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 7 });
       expect(db.query("SELECT id FROM deliveries WHERE source = 'apidog'").all()).toEqual([]);
       expect(db.query('SELECT id FROM outbox ORDER BY id').all()).toEqual([{ id: 5 }, { id: 6 }, { id: 7 }]);
       expect(db.query("SELECT name FROM sqlite_master WHERE name = 'deliveries_body_window'").all()).toEqual([]);
@@ -311,7 +311,7 @@ test('failed v6 migration rolls back outbox deletion and can be retried', () => 
 
     db.exec('DROP TRIGGER deny_delete');
     open(path);
-    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 6 });
+    expect(db.query('PRAGMA user_version').get()).toEqual({ user_version: 7 });
     expect(db.query('SELECT * FROM deliveries').all()).toEqual([]);
     expect(db.query('SELECT * FROM outbox').all()).toEqual([]);
   } finally { db.close(); }

@@ -1,11 +1,11 @@
 import {expect,test} from 'bun:test';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createHmac} from 'node:crypto';
 import {Database} from 'bun:sqlite';
-import {openStore} from '../src/store';import {loadConfig} from '../src/config';import {startService} from '../src/main';
+import {INFRA_REPO,openStore} from '../src/store';import {loadConfig} from '../src/config';import {startService} from '../src/main';
 import {backendApiFixture,repo} from './helpers/backend';
 test('signed backend webhook reaches its own topic and preserves outbox after restart without live Telegram',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'backend-worker-'));const path=join(dir,'queue.sqlite');
- const s=openStore(path);s.activateReleases(Date.now()-10000);s.activateReleases(Date.now()-10000,repo);s.close();
+ const s=openStore(path);s.activateReleases(Date.now()-10000);s.activateReleases(Date.now()-10000,repo);s.activateReleases(Date.now()-10000,INFRA_REPO);s.close();
  const f=backendApiFixture();f.state.current.created_at=new Date().toISOString();
  const sent:Record<string,unknown>[]=[];
  const fetcher=(async(input,init)=>{
