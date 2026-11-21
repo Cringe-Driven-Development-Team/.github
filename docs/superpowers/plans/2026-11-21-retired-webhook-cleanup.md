@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Цель.** Убрать следы выведенной из эксплуатации интеграции из `.github`, `infra`, опубликованной OpenWiki и рабочей схемы SQLite.
+**Цель.** Убрать следы выведенной из эксплуатации интеграции из `.github`, `infra` и рабочей схемы SQLite.
 
-**Архитектура.** Сервис создаёт новые базы v8 и обновляет v6 или v7 через транзакционную замену `deliveries`. OpenWiki генерируется отдельной веткой после мержа исходников `infra`.
+**Архитектура.** Сервис создаёт новые базы v8 и обновляет v6 или v7 через транзакционную замену `deliveries`.
 
-**Стек.** Bun 1.4.4, `bun:sqlite`, Docker Compose, Ansible 2.19.7, GitHub Actions и OpenWiki.
+**Стек.** Bun 1.4.4, `bun:sqlite`, Docker Compose, Ansible 2.19.7, GitHub Actions.
 
 **Спецификация.** [Очистка следов прежней интеграции вебхуков](../specs/2026-11-21-retired-webhook-cleanup-design.md).
 
@@ -23,7 +23,7 @@
 2. `review_group_deliveries` и `release_recovery` по-прежнему ссылаются на исходные ID даже при наличии подготовленной и арендованной доставок.
 3. На повреждённой входной базе проверка внешних ключей отменяет замену таблицы и изменение версии.
 4. Новый запуск и повторное открытие дают одну схему v8. Вставка доставки неизвестного источника отвергается, идентичный GitHub redelivery возвращает `duplicate`, конфликт тела возвращает `conflict`.
-5. Поиск проверяет также имена документов и Claims OpenWiki. Свежесть Wiki подтверждается относительно `main` после мержа исходников.
+5. После слияния поиск охватывает имена и содержимое отслеживаемых файлов обоих `main`.
 
 ---
 
@@ -44,13 +44,13 @@
 
 ### Task 2. Очистить исходники `infra`
 
-**Файлы.** `RUNBOOK.md` и `ansible/tests/test_hooks.py`. Правки Wiki делает Task 4.
+**Файлы.** `RUNBOOK.md` и `ansible/tests/test_hooks.py`.
 
 **Интерфейсы.** Прежние `vault_hooks_env`, `env.j2`, `auxiliary.yml` и набор полей `hooks_env`. Тест `test_compose_uses_image_entrypoint_and_preserves_webhook_secrets` проверяет рендер существующего шаблона и Compose.
 
 - [ ] **Заменить проверку отдельного префикса в тесте.** Сравнить ключи `service["environment"]` с ключами заданного `vault_hooks_env` и defaults `DATABASE_PATH`, `PORT`, `WEBHOOK_ALERTS_SEND_ENABLED`, `TELEGRAM_PROXY_URL`, `TELEGRAM_INFRA_ALERTS_TOPIC_ID`. Сохранить проверки экранирования секрета, тем и использования entrypoint.
 - [ ] **Очистить `RUNBOOK.md`.** В датированном отчёте оставить подтверждённые результаты GitHub, SQLite и бэкапа. Убрать фрагменты бывшей интеграции.
-- [ ] **Запустить тесты и закоммитить.** Из `ansible/` выполнить `COMPOSE_CLI='docker compose' python -m unittest discover -s tests -v` на версии CI и `git diff --check`. Проверить поиск по имени прежнего поставщика в отслеживаемых файлах `infra` вне `openwiki/`. Тесты и проверка diff завершаются с кодом 0, поиск пуст.
+- [ ] **Запустить тесты и закоммитить.** Из `ansible/` выполнить `COMPOSE_CLI='docker compose' python -m unittest discover -s tests -v` на версии CI и `git diff --check`. Проверить поиск по имени прежнего поставщика в отслеживаемых файлах `infra`. Тесты и проверка diff завершаются с кодом 0, поиск пуст.
 
 ### Task 3. Влить изменения и перестроить рабочую SQLite
 
@@ -60,11 +60,4 @@
 - [ ] **Влить PR сервиса и проследить фактическую выкатку.** Перед мержем сверить актуальные head, CI и mergeability. После мержа проверить `Webhook alerts image`, `Auxiliary CD`, результат дочернего deployment и digest из publisher artifact в `/opt/hooks/releases.json` и Compose.
 - [ ] **Проверить v8 на VPS3.** Read-only подтвердить `user_version=8`, итоговое ограничение на источник и отсутствие `dedupe_kind` через `sqlite_schema` и `PRAGMA table_info`, пустой `foreign_key_check`, неизменность контрольной суммы исходных GitHub записей и значений cutoff. Для исходной v6 новая таблица `infra` есть, её конфигурация применяется штатно. `/health` возвращает `200`. Сопоставить новое подлинное GitHub-событие с `sent` outbox и ID карточки Telegram.
 - [ ] **Влить PR с исходниками `infra`.** Перед мержем сверить head, CI и preview. Дождаться штатного post-merge workflow. Сохранить его URL и подтвердить здоровый `hooks` на том же digest.
-
-### Task 4. Обновить OpenWiki и проверить оба `main`
-
-**Файлы.** Сгенерированные `infra/openwiki/operations/auxiliary.md`, `infra/openwiki/testing/verification.md` и управляемые OpenWiki метаданные. `openwiki-freshness.yml` проверяет wiki-only PR, `publish-docs-wiki.yml` запускает публикацию после мержа.
-
-- [ ] **Обновить Wiki из `infra/main` после Task 3.** Хост с доступом к OpenWiki запускает `openwiki_begin` с mode `update` и последовательно обрабатывает назначенные jobs до `openwiki_finish`. В двух целевых страницах и Claims убрать устаревшие утверждения и сохранить текущую информацию о настройках и тестах. Sidecars и checkpoint формирует OpenWiki.
-- [ ] **Проверить и влить wiki-only PR.** `bun scripts/openwiki-check.ts --against <полный SHA исходного main>` должен завершиться с кодом 0. Проверить свежесть в CI, влить PR и дождаться `Publish docs wiki` и вызванного workflow Pages в `docs`.
-- [ ] **Подтвердить итог.** В каждом репозитории обновить `origin/main`. `git grep -i -F -e "$RETIRED_WEBHOOK_PROVIDER" origin/main --` и `git ls-tree -r --name-only origin/main | rg -i -F -- "$RETIRED_WEBHOOK_PROVIDER"` должны вернуть код 1 без совпадений. Проверить опубликованные страницы, живой `/health`, зафиксировать ссылки на PR, CI/CD и версию базы.
+- [ ] **Подтвердить итог.** В каждом репозитории обновить `origin/main`. `git grep -i -F -e "$RETIRED_WEBHOOK_PROVIDER" origin/main --` и `git ls-tree -r --name-only origin/main | rg -i -F -- "$RETIRED_WEBHOOK_PROVIDER"` должны вернуть код 1 без совпадений. Проверить живой `/health` и зафиксировать ссылки на PR, CI/CD и версию базы.
