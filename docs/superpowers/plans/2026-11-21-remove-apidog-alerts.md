@@ -27,7 +27,7 @@
 
 ---
 
-### Задача 1. Удалить Apidog из сервиса и рабочей SQLite
+### Task 1. Удалить Apidog из сервиса и рабочей SQLite
 
 **Файлы.** `services/webhook-alerts/src/{auth,config,http,main,store,telegram,worker}.ts`, `src/schema.sql` в каталоге сервиса, пять `src/apidog*.ts`, тесты и фикстуры в `services/webhook-alerts/tests/`, `tests/webhook-alerts-docker.sh`, `README.md`, `services/webhook-alerts/README.md`.
 
@@ -62,7 +62,7 @@
 
   Все команды завершаются с кодом 0. Зафиксировать сервис, тесты и README одним коммитом `refactor(webhooks): remove Apidog alerts`.
 
-### Задача 2. Удалить конфигурацию из `infra`
+### Task 2. Удалить конфигурацию из `infra`
 
 **Файлы.** `ansible/roles/hooks/defaults/main.yml`, `ansible/roles/hooks/tasks/validate.yml`, `ansible/inventory/group_vars/all/vault.yml`, `ansible/tests/test_hooks.py`, `ansible/tests/test_githubbot.py`, `ansible/README.md`, `RUNBOOK.md`.
 
@@ -73,7 +73,7 @@
 - [ ] **Убрать Apidog из роли и Vault.** Снять четыре публичных defaults `APIDOG_PROJECT_ID`, `APIDOG_TARGET_BRANCH_ID`, `APIDOG_PROJECT_NAME`, `APIDOG_CONTRACT_URL`. Из `vault_hooks_env` убрать все `APIDOG_*` и `TELEGRAM_APIDOG_*` штатным редактированием Ansible Vault. Значения проверять без раскрытия. Удалить относящиеся к ним проверки из `validate.yml` и обновить текущие инструкции в двух README/runbook. `env.j2` уже рендерит словарь, дополнительных фильтров ему не требуется.
 - [ ] **Запустить GREEN из `infra/ansible`.** Выполнить `COMPOSE_CLI='docker compose' python -m unittest discover -s tests -v`, `ansible-playbook -i inventory/ci.yml --syntax-check auxiliary.yml deploy-auxiliary.yml` и `git diff --check`. Все команды завершаются с кодом 0. Зафиксировать изменения коммитом `refactor(hooks): remove Apidog configuration`.
 
-### Задача 3. Выкатить и проверить VPS3
+### Task 3. Выкатить и проверить VPS3
 
 **Входы.** PR сервиса с зелёным CI, PR `infra` с зелёными тестами и preview, текущие `hooks` и Apidog project `1382426`. `Webhook alerts image` запускает `Auxiliary CD`, который ждёт результата `infra/.github/workflows/auxiliary-deploy.yml`. Очистку `.env` применяет `auxiliary.yml` из workflow `Инфраструктура`.
 
