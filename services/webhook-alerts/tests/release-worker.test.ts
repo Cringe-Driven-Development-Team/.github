@@ -32,8 +32,6 @@ test('signed_enqueue_needs_only_target_pr_and_rechecks_before_send', async () =>
   const app = createApp({
     config: loadConfig({
       GITHUB_WEBHOOK_SECRET: 'test',
-      APIDOG_SIGNATURE_KEY: 'test',
-      APIDOG_SIGNATURE_HEADER: 'X-Test',
     }),
     accept: (input) => s.accept({ ...input, receivedAt: 1000 }),
     checkDb: () => s.checkHealth(),
@@ -136,8 +134,6 @@ test('activation_requires_release_topic_and_token_at_service_start', async () =>
     startService(
       loadConfig({
         GITHUB_WEBHOOK_SECRET: 'test',
-        APIDOG_SIGNATURE_KEY: 'test',
-        APIDOG_SIGNATURE_HEADER: 'X-Test',
         DATABASE_PATH: db,
       }),
     ),

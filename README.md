@@ -58,7 +58,7 @@ Monitoring переключается независимо: repository var `COUR
 | `.github/workflows/add-to-project.yml` | добавляет новые и переоткрытые issue на доску; после мержа PR закрывает задачи организации, на которые он ссылается |
 | `.github/workflows/automation.yml` | подключает оба workflow к этому репозиторию |
 | `.github/workflows/reminders.yml` | в 00:01 МСК напоминает о PR, которые 4 часа и дольше ждут ревью или мержа после апрува; в 00:01, 15:00 и 20:00 сообщает о сбоях самих уведомлений и о новых репозиториях организации |
-| `services/webhook-alerts/` | работающий sender GitHub и Apidog MR → постоянная очередь SQLite → Telegram |
+| `services/webhook-alerts/` | работающий sender GitHub → постоянная очередь SQLite → Telegram |
 | `services/githubbot/` | GitHubBot: Telegram-команды для Issues и Scrumban; [запуск и приёмка](services/githubbot/README.md) |
 | `.github/workflows/githubbot-image.yml` | тестирует GitHubBot и публикует `ghcr.io/cringe-driven-development-team/githubbot:sha-<full SHA>` после push в main |
 | `.github/workflows/webhook-alerts-image.yml` | после push в main публикует GHCR образ с полным SHA коммита |
@@ -74,7 +74,7 @@ Monitoring переключается независимо: repository var `COUR
 callers: `.github`, `backend`, `frontend`, `infra`, `docs`, `frontend-packages`,
 `figma`, `static`. Она выключает только `notify` в `telegram.yml`; доска,
 закрытие задач, напоминания и релизные сообщения продолжают работать.
-Настройки GitHub organization webhook, Apidog, `vault_hooks_env`,
+Настройки GitHub organization webhook, `vault_hooks_env`,
 восстановление, порядок расширения охвата и фактический журнал переключения — в
 [runbook сервиса](services/webhook-alerts/README.md).
 

@@ -3,7 +3,7 @@ import {loadConfig} from '../src/config';
 import {startService} from '../src/main';
 import {openStore} from '../src/store';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-const env={GITHUB_WEBHOOK_SECRET:'test',APIDOG_SIGNATURE_KEY:'test',APIDOG_SIGNATURE_HEADER:'X-Test'};
+const env={GITHUB_WEBHOOK_SECRET:'test'};
 test('backend topic is separate and requires a GitHub reading token',()=>{
  expect(loadConfig({...env,TELEGRAM_RELEASES_TOPIC_ID:'99',TELEGRAM_BACKEND_RELEASES_TOPIC_ID:'3377',GITHUB_API_TOKEN:'test'})).toMatchObject({releasesTopic:99,backendReleasesTopic:3377});
  for(const value of ['0','-1','oops','9007199254740992'])expect(()=>loadConfig({...env,TELEGRAM_BACKEND_RELEASES_TOPIC_ID:value,GITHUB_API_TOKEN:'test'})).toThrow();

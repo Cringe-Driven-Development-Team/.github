@@ -1,7 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { ApidogMr } from './apidog-api';
 import { githubReview } from './github';
 
 export type DeliveryLane = 'ordinary' | 'release-queue' | 'release-operation';
@@ -14,8 +13,8 @@ export type ReleaseNotice = { key: string; repository?: string; action?: 'deploy
 export type AcceptResult = 'accepted' | 'duplicate' | 'conflict';
 
 export interface DeliveryInput {
-  source: 'github' | 'apidog';
-  deliveryId?: string;
+  source: 'github';
+  deliveryId: string;
   event: string;
   raw: Uint8Array;
   receivedAt?: number;
@@ -23,7 +22,6 @@ export interface DeliveryInput {
 
 export interface Delivery extends DeliveryInput {
   id: number;
-  deliveryId: string;
   bodyHash: string;
   receivedAt: number;
   prepared: boolean;
@@ -35,7 +33,6 @@ export interface OutgoingMessage {
   topic: number;
   html: string;
   button?: { text: string; url: string };
-  secondaryButton?: { text: string; url: string };
   fallbackHtml?: string;
   keyboard?: {text:string;url:string}[][];
   release?: ReleaseNotice;
@@ -101,20 +98,16 @@ function delivery(row: DeliveryRow): Delivery {
   };
 }
 function buttonJson(item: OutgoingMessage): string | null {
-  return item.button ? JSON.stringify({
-    ...item.button,
-    ...(item.secondaryButton ? { secondaryButton: item.secondaryButton } : {}),
-  }) : null;
+  return item.button ? JSON.stringify(item.button) : null;
 }
 
 function message(row: OutboxRow): DueMessage {
-  if (row.source !== 'github' && row.source !== 'apidog') throw new Error('outbox origin has no source');
-  const buttons = row.button_json === null ? undefined : JSON.parse(row.button_json) as NonNullable<OutgoingMessage['button']> & Pick<OutgoingMessage, 'secondaryButton'>;
+  if (row.source !== 'github') throw new Error('outbox origin has no source');
+  const button = row.button_json === null ? undefined : JSON.parse(row.button_json) as OutgoingMessage['button'];
   return {
     id: row.id, source: row.source, originType: row.origin_type, originId: row.origin_id, ordinal: row.ordinal,
     topic: row.topic, html: row.html,
-    ...(buttons ? { button: { text: buttons.text, url: buttons.url } } : {}),
-    ...(buttons?.secondaryButton ? { secondaryButton: buttons.secondaryButton } : {}),
+    ...(button ? { button: { text: button.text, url: button.url } } : {}),
     ...(row.fallback_html === null ? {} : { fallbackHtml: row.fallback_html }),
     ...(row.keyboard_json ? {keyboard:JSON.parse(row.keyboard_json)} : {}),
     ...(row.metadata_json ? {release:JSON.parse(row.metadata_json)} : {}),
@@ -126,13 +119,11 @@ function hash(raw: Uint8Array): string {
   return createHash('sha256').update(raw).digest('hex');
 }
 
-const HASH_WINDOW_MS = 5 * 60 * 1000;
 const CLAIM_LIMIT = 10;
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 const releaseSchema = readFileSync(new URL('./release-schema.sql', import.meta.url), 'utf8');
 
 function lane(input: DeliveryInput): DeliveryLane {
-  if (input.source !== 'github') return 'ordinary';
   try {
     const payload=JSON.parse(new TextDecoder().decode(input.raw));
     if (!['Cringe-Driven-Development-Team/frontend','Cringe-Driven-Development-Team/backend'].includes(payload?.repository?.full_name)) return 'ordinary';
@@ -148,73 +139,18 @@ export class Store {
   constructor(private readonly db: Database) {}
 
   accept(input: DeliveryInput): AcceptResult {
-    if (!input.deliveryId?.trim() && input.source !== 'apidog') throw new Error('delivery ID required');
+    if (!input.deliveryId?.trim()) throw new Error('delivery ID required');
     const bodyHash = hash(input.raw);
     const receivedAt = input.receivedAt ?? Date.now();
-    const fallback = !input.deliveryId?.trim();
-    const deliveryId = fallback ? `sha256:${bodyHash}:${receivedAt}` : input.deliveryId!;
     return this.db.transaction((): AcceptResult => {
-      if (fallback) {
-        // A rolling window also deduplicates notifications straddling fixed time buckets.
-        const recent = this.db.query(`SELECT id FROM deliveries
-          WHERE source = 'apidog' AND dedupe_kind = 'body_hash' AND body_hash = ?
-          AND received_at > ? AND received_at <= ? LIMIT 1`).get(bodyHash, receivedAt - HASH_WINDOW_MS, receivedAt);
-        if (recent) return 'duplicate';
-      }
-      const existing = this.db.query<{ body_hash: string }, [string, string]>(
-        'SELECT body_hash FROM deliveries WHERE source = ? AND delivery_id = ?',
-      ).get(input.source, deliveryId);
+      const existing = this.db.query<{ body_hash: string }, [string]>(
+        "SELECT body_hash FROM deliveries WHERE source = 'github' AND delivery_id = ?",
+      ).get(input.deliveryId);
       if (existing) return existing.body_hash === bodyHash ? 'duplicate' : 'conflict';
       this.db.query(`INSERT INTO deliveries
         (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, lane)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(input.source, deliveryId, fallback ? 'body_hash' : 'id', input.event, input.raw, bodyHash, receivedAt, lane(input));
+        VALUES ('github', ?, 'id', ?, ?, ?, ?, ?)`).run(input.deliveryId, input.event, input.raw, bodyHash, receivedAt, lane(input));
       return 'accepted';
-    }).immediate();
-  }
-
-  startApidogMrMonitoring(now: number): void {
-    if (!Number.isSafeInteger(now)) throw new Error('invalid monitoring cutoff');
-    this.db.query(`UPDATE outbox SET status = 'failed', lease_until = NULL, error_code = 'APIDOG_RAW_SUPPRESSED'
-      WHERE status IN ('pending', 'leased', 'failed') AND origin_type = 'delivery'
-      AND origin_id IN (SELECT id FROM deliveries WHERE source = 'apidog' AND delivery_id NOT GLOB 'mr-poll:*')`).run();
-    const raw = new TextEncoder().encode('{}');
-    this.db.query(`INSERT INTO deliveries
-      (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
-      VALUES ('apidog', 'mr-poll:cutoff', 'id', 'MR_MONITORING_STARTED', ?, ?, ?, 1)
-      ON CONFLICT (source, delivery_id) DO NOTHING`).run(raw, hash(raw), now);
-  }
-
-  recordApidogMergeRequests(rows: ApidogMr[]): number {
-    return this.db.transaction(() => {
-      const cutoff = this.db.query<{ received_at: number }, []>(
-        "SELECT received_at FROM deliveries WHERE source = 'apidog' AND delivery_id = 'mr-poll:cutoff'",
-      ).get();
-      if (!cutoff) throw new Error('Apidog MR monitoring not started');
-      const insert = this.db.query(`INSERT INTO deliveries
-        (source, delivery_id, dedupe_kind, event, raw, body_hash, received_at, prepared)
-        VALUES ('apidog', ?, 'id', ?, ?, ?, ?, ?)
-        ON CONFLICT (source, delivery_id) DO NOTHING`);
-      let count = 0;
-      for (const row of rows) {
-        const createdAt = Date.parse(row.createdAt);
-        const closedAt = row.closedAt === null ? null : Date.parse(row.closedAt);
-        if (!Number.isSafeInteger(row.id) || row.id <= 0 || !Number.isFinite(createdAt)
-          || !['OPEN', 'CLOSED', 'MERGED'].includes(row.status)
-          || (closedAt !== null && !Number.isFinite(closedAt))
-          || (row.status !== 'OPEN' && (closedAt === null || !Number.isSafeInteger(row.closedById) || row.closedById! <= 0))) {
-          throw new Error('invalid Apidog MR snapshot');
-        }
-        const raw = new TextEncoder().encode(JSON.stringify(row));
-        const bodyHash = hash(raw);
-        const events: [string, number][] = [['OPENED', createdAt]];
-        if (row.status !== 'OPEN') events.push([row.status, closedAt!]);
-        for (const [event, timestamp] of events) {
-          const prepared = timestamp < cutoff.received_at ? 1 : 0;
-          const result = insert.run(`mr-poll:${row.id}:${event}`, `MR_${event}`, raw, bodyHash, timestamp, prepared);
-          if (!prepared) count += result.changes;
-        }
-      }
-      return count;
     }).immediate();
   }
 
@@ -412,7 +348,7 @@ export class Store {
 
   retryFailed(id: number, now: number): boolean {
     return this.db.transaction(()=>{
-      const updated=this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'failed' AND error_code IS NOT 'APIDOG_RAW_SUPPRESSED' AND error_code IS NOT 'release_skipped'").run(now, id);
+      const updated=this.db.query("UPDATE outbox SET status = 'pending', due_at = ?, lease_until = NULL, error_code = NULL WHERE id = ? AND status = 'failed' AND error_code IS NOT 'release_skipped'").run(now, id);
       if (updated.changes) this.db.query('UPDATE release_notices SET sending_at=NULL WHERE outbox_id=?').run(id);
       return updated.changes === 1;
     }).immediate();
@@ -493,7 +429,7 @@ export function openStore(path: string): Store {
     db.exec('PRAGMA foreign_keys = ON');
     db.transaction(() => {
       const version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
-      if (version > 5) throw new Error('unsupported database schema');
+      if (version > 6) throw new Error('unsupported database schema');
       if (version === 0) {
         db.exec(schema);
       }
@@ -512,6 +448,16 @@ export function openStore(path: string): Store {
       if (version < 5) {
         db.exec('CREATE TABLE backend_release_activation (id INTEGER PRIMARY KEY CHECK (id=1), cutoff_ms INTEGER NOT NULL)');
         db.exec('PRAGMA user_version = 5');
+      }
+      if (version < 6) {
+        db.exec(`
+          DELETE FROM outbox
+            WHERE origin_type = 'delivery'
+              AND origin_id IN (SELECT id FROM deliveries WHERE source = 'apidog');
+          DELETE FROM deliveries WHERE source = 'apidog';
+          DROP INDEX IF EXISTS deliveries_body_window;
+          PRAGMA user_version = 6;
+        `);
       }
     }).immediate();
     return new Store(db);

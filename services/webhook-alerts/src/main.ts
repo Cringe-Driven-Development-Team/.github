@@ -1,7 +1,6 @@
 import { BACKEND_REPO } from './backend-releases';
 import {createReleaseApi} from './release-api';
 import {projectRelease,checkReleaseNotice} from './releases';
-import { createApidogApi } from './apidog-api';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { loadConfig, type Config } from './config';
@@ -9,12 +8,11 @@ import { createApp, MAX_BODY_BYTES } from './http';
 import { createGithubApi } from './github-api';
 import { openStore } from './store';
 import { sendMessage } from './telegram';
-import { createProjector, startWorker } from './worker';
+import { createGithubProjector, startWorker } from './worker';
 
 export function startService(config: Config, options: { fetch?: typeof fetch } = {}) {
   // Validate before opening storage even when called directly rather than through loadConfig.
-  if (config.sendEnabled && (!config.telegram || !config.apidogTelegram || config.apidogTopic === undefined)) throw new Error('Telegram sender configuration is required');
-  if (config.sendEnabled && (!config.apidogMerge || !config.apidogAccessToken?.trim())) throw new Error('Apidog merge configuration is required');
+  if (config.sendEnabled && !config.telegram) throw new Error('Telegram sender configuration is required');
   mkdirSync(dirname(config.databasePath), { recursive: true });
   const store = openStore(config.databasePath);
   if (store.releaseActivation() !== null && (!config.releasesTopic || !config.githubApiToken?.trim())) {store.close();throw new Error('release notifications require topic and API token');}
@@ -24,8 +22,6 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
   const fetcher = options.fetch ?? fetch;
   const releaseApi=createReleaseApi({token:config.githubApiToken,fetch:fetcher});
   const backendReleaseApi=createReleaseApi({token:config.githubApiToken,fetch:fetcher,repository:BACKEND_REPO});
-  const apidogApi = config.sendEnabled ? createApidogApi({ token: config.apidogAccessToken!, fetch: fetcher }) : undefined;
-  if (config.sendEnabled) store.startApidogMrMonitoring(Date.now());
   const worker = config.sendEnabled ? startWorker({
     store,
     ...((config.releasesTopic === undefined && config.backendReleasesTopic === undefined) ? {} : {
@@ -42,15 +38,11 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
       },
       beforeReleaseSend: (notice: import('./store').ReleaseNotice) => checkReleaseNotice(notice, notice.repository === BACKEND_REPO ? backendReleaseApi : releaseApi, notice.repository === BACKEND_REPO ? {topic:config.backendReleasesTopic!,siteUrl:'https://cellestial.ru',userMap:config.userMap,repository:BACKEND_REPO} : undefined),
     }),
-    project: createProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {
-      githubTopic: config.githubTopic, reviewTopic: config.reviewTopic, userMap: config.userMap, apidogTopic: config.apidogTopic!,
-    }, { api: apidogApi!, config: config.apidogMerge! }),
-    send: message => sendMessage(message, message.source === 'apidog' ? config.apidogTelegram! : config.telegram!, fetcher),
+    project: createGithubProjector(createGithubApi({ token: config.githubApiToken, fetch: (url, init) => fetcher(url, init) }), {
+      githubTopic: config.githubTopic, reviewTopic: config.reviewTopic, userMap: config.userMap,
+    }),
+    send: message => sendMessage(message, config.telegram!, fetcher),
     signal: controller.signal,
-    pollApidog: async () => {
-      const rows = await apidogApi!.listMergeRequests(config.apidogMerge!);
-      if (!controller.signal.aborted) store.recordApidogMergeRequests(rows);
-    },
   }) : Promise.resolve();
   let stopping: Promise<void> | undefined;
   return { app, stop: () => stopping ??= (async () => { controller.abort(); await worker; store.close(); })() };

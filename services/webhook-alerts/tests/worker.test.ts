@@ -54,29 +54,6 @@ test('success sends HTML to the configured topic and persists message_id across 
   expect(await runOnce(deps(reopened, fetcher))).toBe(0);
 });
 
-test('worker sends the MR and API contract buttons in one ordered row', async () => {
-  const { store } = queue();
-  const twoButtons = {
-    topic: 26, html: 'Apidog MR',
-    button: { text: 'Открыть MR', url: 'https://app.apidog.com/...' },
-    secondaryButton: { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' },
-  };
-  const requests: unknown[] = [];
-  const fetcher = (async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    requests.push(JSON.parse(String(init!.body)));
-    return Response.json({ ok: true, result: { message_id: 322 } });
-  }) as unknown as typeof fetch;
-  expect(await runOnce({ ...deps(store, fetcher), project: async () => [twoButtons] })).toBe(1);
-  expect(requests).toEqual([{
-    chat_id: '-100123', message_thread_id: 26, text: 'Apidog MR', parse_mode: 'HTML',
-    link_preview_options: { is_disabled: true },
-    reply_markup: { inline_keyboard: [[
-      { text: 'Открыть MR', url: 'https://app.apidog.com/...' },
-      { text: 'Контракт API', url: 'https://vb78fyael1.apidog.io/' },
-    ]] },
-  }]);
-});
-
 for (const proxyUrl of [undefined, 'http://proxy.internal:2080', 'https://proxy.internal:2080']) {
   test(`worker sends with ${proxyUrl === undefined ? 'no explicit proxy' : 'configured Telegram proxy'}`, async () => {
     const { store, path } = queue();
@@ -226,23 +203,4 @@ test('retry_after starts after the Telegram response rather than at the beginnin
     return { kind: 'retry', errorCode: 'telegram_429', httpStatus: 429, retryAfterMs: 1000 };
   } });
   expect(Number(rows(path)[0]!.due_at)).toBeGreaterThanOrEqual(2040);
-});
-
-test('projector prepares only polled MR deliveries while raw Apidog webhooks remain silent', async () => {
-  const { createProjector } = await import('../src/worker');
-  const { store, path } = queue();
-  // Complete the helper's GitHub row before exercising the Apidog queue.
-  for (const delivery of store.claimUnprepared(1000, 1000)) store.prepare(delivery.id, []);
-  const mr = { id: 39834, sourceBranchId: 5, targetBranchId: 1388508, createdById: 1, reviewerIds: [], status: 'OPEN', description: 'Contract change', createdAt: '2026-10-26T10:00:00Z', closedAt: null, closedById: null };
-  for (const [deliveryId, event] of [['raw-api', 'API_UPDATED'], ['raw-branch', 'BRANCH_CREATED'], ['mr-poll:39834:OPENED', 'MR_OPENED']]) {
-    store.accept({ source: 'apidog', deliveryId: deliveryId!, event: event!, raw: new TextEncoder().encode(JSON.stringify(mr)), receivedAt: 1000 });
-  }
-  const githubApi = { getIssue: async () => undefined } as unknown as import('../src/github-api').GithubApi;
-  const project = createProjector(githubApi, { apidogTopic: 88 }, { api: {} as import('../src/apidog-api').ApidogApi,
-    config: { projectId: 1382426, targetBranchId: 1388508, projectName: 'Example', contractUrl: 'https://vb78fyael1.apidog.io/', reviewers: [{ name: 'Reviewer One', telegramId: '333' }, { name: 'Reviewer Two', telegramId: '444' }], peopleMap: {} } });
-  const sent: OutgoingMessage[] = [];
-  expect(await runOnce({ store, project, now: 1000, send: async message => { sent.push(message); return { kind: 'sent', telegramMessageId: 321 }; } })).toBe(1);
-  expect(sent[0]!.html).toContain('Открыт MR #39834');
-  expect(sent[0]!.secondaryButton?.url).toBe('https://vb78fyael1.apidog.io/');
-  expect(rows(path)).toHaveLength(1);
 });

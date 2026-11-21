@@ -12,7 +12,6 @@ CREATE TABLE deliveries (
   UNIQUE (source, delivery_id)
 );
 CREATE INDEX deliveries_unprepared ON deliveries (prepared, lease_until, id);
-CREATE INDEX deliveries_body_window ON deliveries (source, body_hash, received_at) WHERE dedupe_kind = 'body_hash';
 
 -- A review group may create messages independently from an individual delivery.
 CREATE TABLE outbox (

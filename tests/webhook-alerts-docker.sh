@@ -20,8 +20,6 @@ docker volume create "$volume" >/dev/null
 start() {
   docker run -d --name "$name" --mount "type=volume,src=$volume,dst=/data" \
     -e GITHUB_WEBHOOK_SECRET=synthetic-github-secret \
-    -e APIDOG_SIGNATURE_KEY=synthetic-apidog-secret \
-    -e APIDOG_SIGNATURE_HEADER=X-Synthetic-Signature \
     -e WEBHOOK_ALERTS_SEND_ENABLED=false "$image" >/dev/null
   for _ in {1..50}; do
     if docker exec "$name" wget -q -O /dev/null http://127.0.0.1:8080/health; then return; fi

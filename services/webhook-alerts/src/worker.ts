@@ -1,13 +1,10 @@
 import type { ReleaseDecision } from './releases';
-import type { ApidogApi } from './apidog-api';
-import type { ApidogMergeConfig } from './apidog-merge';
 import { setTimeout } from 'node:timers/promises';
 import type { Store, Delivery, DueMessage, OutgoingMessage, DeliveryLane, ReleaseNotice } from './store';
 import type { SendResult } from './telegram';
 import { formatGithub, formatGithubReviewGroup, githubReview, type FormatConfig } from './github';
 import type { GithubApi } from './github-api';
 import { ReviewGroups } from './review-groups';
-import { formatApidogMr, type FormatConfig as ApidogFormatConfig } from './apidog';
 
 interface Projector {
   (delivery: Delivery): Promise<OutgoingMessage[]>;
@@ -97,7 +94,7 @@ export async function deliverOnce({
       if (typeof guard === 'object') {
         if (!store.refreshReleaseMessage(message.id, message.leaseUntil, guard.replace)) return false;
         const card = guard.replace;
-        Object.assign(message, {topic:card.topic,html:card.html,keyboard:card.keyboard,button:card.button,secondaryButton:card.secondaryButton,fallbackHtml:card.fallbackHtml,release:card.release});
+        Object.assign(message, {topic:card.topic,html:card.html,keyboard:card.keyboard,button:card.button,fallbackHtml:card.fallbackHtml,release:card.release});
         return true;
       }
       if (guard === 'skip') {
@@ -159,10 +156,9 @@ export async function deliverOnce({
 }
 
 export async function startWorker(
-  deps: WorkerDeps & { signal: AbortSignal; pollApidog?: () => Promise<void> },
+  deps: WorkerDeps & { signal: AbortSignal },
 ): Promise<void> {
-  let nextApidogPoll = 0,
-    wake = new AbortController();
+  let wake = new AbortController();
   let sending = Promise.resolve();
   const serializeSend = (task: () => Promise<void>) => {
     const result = sending.then(task);
@@ -194,15 +190,6 @@ export async function startWorker(
   }
   const preparations = [
     loop(async () => {
-      if (deps.pollApidog && Date.now() >= nextApidogPoll) {
-        try {
-          await deps.pollApidog();
-        } catch {
-          console.error(JSON.stringify({ errorCode: 'apidog_mr_poll_failed' }));
-        }
-        nextApidogPoll = Date.now() + 30000;
-      }
-      if (deps.signal.aborted) return;
       await prepareOnce({ ...deps, now: Date.now(), lane: 'ordinary' });
       wake.abort();
     }),
@@ -237,10 +224,4 @@ export function createGithubProjector(api: GithubApi, config: FormatConfig = {})
   return Object.assign((delivery: Delivery) => formatGithub(delivery, api, config), {
     reviewGroup: (deliveries: Delivery[]) => formatGithubReviewGroup(deliveries, api, config),
   });
-}
-
-export function createProjector(api: GithubApi, config: FormatConfig & ApidogFormatConfig, merge?: { api: ApidogApi; config: ApidogMergeConfig }): WorkerDeps['project'] {
-  const github = createGithubProjector(api, config);
-  return Object.assign(async (delivery: Delivery) => delivery.source === 'apidog'
-    ? merge ? formatApidogMr(delivery, { ...config, ...merge.config }) : [] : github(delivery), { reviewGroup: github.reviewGroup });
 }
