@@ -30,10 +30,10 @@ function fixture(attempt = 2) {
   };
   const job = {
     id: 70 + attempt, name: 'Выкатка на прод', run_id: 7, run_attempt: attempt, head_sha: infraSha, head_branch: 'main',
-    status: 'completed', conclusion: 'success', completed_at: new Date().toISOString(), steps: [{ name: 'verify.yml', conclusion: 'success' }],
+    status: 'completed', conclusion: 'success', started_at: undefined as string | undefined, completed_at: new Date().toISOString(), steps: [{ name: 'verify.yml', conclusion: 'success' }],
   };
   const deployment = {
-    id: 700 + attempt, ref: infraSha, sha: infraSha, task: 'infra-alerts', environment: 'production',
+    id: 700 + attempt, ref: infraSha, sha: infraSha, task: 'infra-alerts', environment: 'production', created_at: undefined as string | undefined,
     payload: { schema: 1, kind: 'infra', run_id: 7, run_attempt: attempt } as Record<string, unknown>,
   };
   const status = {
@@ -65,6 +65,7 @@ async function runService(
   }) => Promise<void>,
   options: {
     pulls?: Record<string, unknown[]>;
+    github?: (url: URL, init?: RequestInit) => Response | undefined;
     activate?: boolean;
     config?: Record<string, string | undefined>;
     seed?: (store: ReturnType<typeof openStore>) => void;
@@ -87,8 +88,9 @@ async function runService(
     }
     const path = url.pathname.replace(`/repos/${repo}`, '');
     if (path === '/deployments') {
-      expect(Object.fromEntries(url.searchParams)).toMatchObject({ sha: infraSha, environment: 'production', task: 'infra-alerts' });
-      return Response.json(attempts.filter(f => f.withDeployment).map(f => f.deployment));
+      expect(Object.fromEntries(url.searchParams)).toMatchObject({ environment: 'production', task: 'infra-alerts' });
+      const sha = url.searchParams.get('sha');
+      return Response.json(attempts.filter(f => f.withDeployment && (!sha || f.deployment.sha === sha)).map(f => f.deployment));
     }
     for (const f of attempts) {
       const runPath = `/actions/runs/7/attempts/${f.run.run_attempt}`;
@@ -105,6 +107,8 @@ async function runService(
       pullLookups.push(lookup);
       return Response.json(options.pulls?.[lookup] ?? []);
     }
+    const response = options.github?.(url, init);
+    if (response) return response;
     throw new Error(`Unexpected test GitHub endpoint ${url.pathname}`);
   }) as typeof fetch;
   let service: ReturnType<typeof startService> | undefined;
@@ -252,7 +256,7 @@ test.each([
   });
 });
 
-test('signed start and job completion become separate Infra cards with attempt logs and a uniquely confirmed PR', async () => {
+test('signed start and job completion mention the triggering actor in both Infra cards', async () => {
   const release = fixture();
   await runService([release], async ({ post, drained, cards }) => {
     await post('start', 'deployment_status', started(release));
@@ -261,15 +265,19 @@ test('signed start and job completion become separate Infra cards with attempt l
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ message_thread_id: 14389, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: 'PR', url: `https://github.com/${repo}/pull/171` }], [{ text: 'Логи выкатки', url: attemptUrl }]] } });
     expect(cards[0]!.text).toContain('Выкатка инфры началась');
-    expect(cards[0]!.text).toContain('Запустил: maintainer');
+    expect(cards[0]!.text).toContain('Запустил: <a href="tg://user?id=111">maintainer</a>');
     expect(cards[0]!.text).not.toContain('Health Check');
     await post('result', 'workflow_job', completed(release));
     await drained();
     expect(cards).toHaveLength(2);
     expect(cards[1]!.text).toContain('Выкатка инфры завершилась успешно');
+    expect(cards[1]!.text).toContain('Запустил: <a href="tg://user?id=111">maintainer</a>');
     expect(cards[1]!.text).toContain('Health Check ✅');
     expect(cards[1]!.reply_markup.inline_keyboard).toEqual([[{ text: 'PR', url: `https://github.com/${repo}/pull/171` }], [{ text: 'Логи выкатки', url: attemptUrl }]]);
-  }, { pulls: { [`${repo}:${infraSha}`]: [merged(171), merged(172, imageSha)] } });
+  }, {
+    config: { TELEGRAM_USER_MAP: '{"maintainer":"111","original":"222"}' },
+    pulls: { [`${repo}:${infraSha}`]: [merged(171), merged(172, imageSha)] },
+  });
 });
 
 test('a result before its start enqueues start first, deduplicates new delivery IDs and permits the next attempt', async () => {
@@ -285,6 +293,118 @@ test('a result before its start enqueues start first, deduplicates new delivery 
     expect(notices()).toEqual([`start:${repo}:7:2`, `result:${repo}:7:2`, `start:${repo}:7:3`, `result:${repo}:7:3`]);
     expect(cards).toHaveLength(4);
     expect(cards[3]!.reply_markup.inline_keyboard[0]![0]!.url).toEndWith('/attempts/3');
+  });
+});
+
+function withHistory(base = imageSha) {
+  const previous = fixture(1), current = fixture(2);
+  previous.run.head_sha = previous.job.head_sha = previous.deployment.ref = previous.deployment.sha = base;
+  previous.deployment.created_at = new Date(Date.now() - 60_000).toISOString();
+  previous.job.completed_at = previous.status.created_at = new Date(Date.now() - 30_000).toISOString();
+  previous.status.state = 'success';
+  current.job.started_at = new Date(Date.now() - 2_000).toISOString();
+  current.deployment.created_at = current.status.created_at;
+  return [previous, current] as const;
+}
+
+const compare = `https://github.com/${repo}/compare/${imageSha}...${infraSha}`;
+const changesEndpoint = '/repos/' + repo + '/compare/' + imageSha + '...' + infraSha;
+const compareResponse = () => Response.json({ total_commits: 1, status: 'ahead', commits: [{ sha: infraSha }] });
+const pullTitle = 'Обновление <infra> & прод';
+
+test('signed completion received first reuses the task list in both cards and links to the full range', async () => {
+  const [previous, current] = withHistory();
+  let compareReads = 0;
+  await runService([previous, current], async ({ post, drained, cards }) => {
+    await post('completed-first', 'workflow_job', completed(current));
+    await drained();
+    expect(cards.map(card => card.text.split('\n')[0])).toEqual(['<b>⏳ Выкатка инфры началась</b>', '<b>✅ Выкатка инфры завершилась успешно</b>']);
+    expect(compareReads).toBe(1);
+    await post('late-start', 'deployment_status', started(current));
+    await drained();
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card.message_thread_id).toBe(14389);
+      expect(card.text).toContain([
+        '<b>Задачи и изменения</b>',
+        `• <a href="https://github.com/${repo}/issues/9">Задача &lt;infra&gt; &amp; прод</a>`,
+        `• <a href="https://github.com/${repo}/pull/172">Правка 172</a>`,
+        `• <a href="https://github.com/${repo}/pull/173">Правка 173</a>`,
+        `<a href="${compare}">Все изменения</a>`,
+      ].join('\n'));
+      expect(card.text).not.toContain('Правка 174');
+    }
+    expect(cards[1]!.text).toContain('Health Check ✅');
+    expect(cards[1]!.text).toContain('Запустил: maintainer');
+  }, {
+    pulls: { [`${repo}:${infraSha}`]: [171, 172, 173, 174].map(number => ({ ...merged(number), title: `Правка ${number}` })) },
+    github: (url, init) => {
+      if (url.pathname === changesEndpoint) {
+        compareReads++;
+        return compareResponse();
+      }
+      if (url.pathname === '/graphql') {
+        const number = JSON.parse(String(init?.body)).variables.number;
+        const nodes = number === 171 ? [{ id: '9', number: 9, title: 'Задача <infra> & прод', repository: { nameWithOwner: repo } }] : [];
+        return Response.json({ data: { repository: { pullRequest: { title: 'PR', closingIssuesReferences: { nodes, pageInfo: { hasNextPage: false } } } } } });
+      }
+    },
+  });
+});
+
+test.each(['failure', 'cancelled'])('signed %s still shows the planned changes', async conclusion => {
+  const [previous, current] = withHistory();
+  current.job.conclusion = conclusion;
+  await runService([previous, current], async ({ post, drained, cards }) => {
+    await post('start', 'deployment_status', started(current));
+    await drained();
+    await post('result', 'workflow_job', completed(current));
+    await drained();
+    expect(cards).toHaveLength(2);
+    const row = `• <a href="https://github.com/${repo}/pull/173">Обновление &lt;infra&gt; &amp; прод</a>`;
+    expect(cards[0]!.text).toContain('<b>Изменение</b>\n' + row);
+    expect(cards[1]!.text).toContain('<b>Планировались изменения</b>\n' + row);
+  }, {
+    pulls: { [`${repo}:${infraSha}`]: [{ ...merged(173), title: pullTitle }] },
+    github: url => {
+      if (url.pathname === changesEndpoint) return compareResponse();
+      if (url.pathname === '/graphql') {
+        return Response.json({ data: { repository: { pullRequest: { title: pullTitle, closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+      }
+    },
+  });
+});
+
+test('the same deployed SHA is explicitly a repeat in both cards', async () => {
+  const [previous, current] = withHistory(infraSha);
+  await runService([previous, current], async ({ post, drained, cards }) => {
+    await post('result', 'workflow_job', completed(current));
+    await drained();
+    expect(cards).toHaveLength(2);
+    for (const card of cards) expect(card.text).toContain('Новых изменений нет');
+  });
+});
+
+test('an unavailable comparison keeps the existing cards and buttons', async () => {
+  const [previous, current] = withHistory();
+  let compareReads = 0;
+  await runService([previous, current], async ({ post, drained, cards }) => {
+    await post('result', 'workflow_job', completed(current));
+    await drained();
+    expect(compareReads).toBe(1);
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card.text).not.toContain('изменени');
+      expect(card.reply_markup.inline_keyboard).toEqual([[{ text: 'PR', url: `https://github.com/${repo}/pull/173` }], [{ text: 'Логи выкатки', url: attemptUrl }]]);
+    }
+  }, {
+    pulls: { [`${repo}:${infraSha}`]: [merged(173)] },
+    github: url => {
+      if (url.pathname === changesEndpoint) {
+        compareReads++;
+        return Response.json({}, { status: 503 });
+      }
+    },
   });
 });
 
@@ -345,6 +465,7 @@ test('VPS3 deploy and initialize use the PR matching each verified source for bo
   auxiliary(initialize);
   Object.assign(deploy.deployment.payload, { operation: 'deploy', service: 'webhook-alerts', source_sha: imageSha });
   initialize.deployment.payload.operation = 'initialize';
+  initialize.job.started_at = new Date(Date.now() - 2_000).toISOString();
   await runService([deploy, initialize], async ({ post, drained, cards, pullLookups }) => {
     await post('deploy', 'workflow_job', completed(deploy));
     await post('initialize', 'workflow_job', completed(initialize));
@@ -357,6 +478,7 @@ test('VPS3 deploy and initialize use the PR matching each verified source for bo
     expect(cards[3]!.text).toContain('Инициализация VPS3 завершилась успешно');
     expect(cards[3]!.text).toContain('<code>1234567</code>');
     for (const card of [cards[3]!, cards[2]!]) {
+      expect(card.text).not.toContain('изменени');
       expect(card.reply_markup.inline_keyboard[0]).toEqual([{ text: 'PR', url: `https://github.com/${repo}/pull/171` }]);
     }
     for (const card of cards.slice(0, 2)) {
