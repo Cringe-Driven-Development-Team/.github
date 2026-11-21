@@ -37,7 +37,9 @@ export function startService(config: Config, options: { fetch?: typeof fetch } =
       releaseProject: (delivery: Delivery) => {
         const repository = JSON.parse(new TextDecoder().decode(delivery.raw)).repository?.full_name;
         if (repository === INFRA_REPO) return config.infraReleasesTopic === undefined
-          ? Promise.resolve([]) : projectInfraRelease(delivery, infraReleaseApi, config.infraReleasesTopic);
+          ? Promise.resolve([]) : projectInfraRelease(delivery, infraReleaseApi, {
+            topic: config.infraReleasesTopic, userMap: config.userMap,
+          });
         const backend = repository === BACKEND_REPO;
         const topic = backend ? config.backendReleasesTopic : config.releasesTopic;
         if (topic === undefined) return Promise.resolve([]);
