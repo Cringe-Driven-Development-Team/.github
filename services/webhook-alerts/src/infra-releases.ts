@@ -1,4 +1,4 @@
-import { escapeHtml, link, truncate } from './format';
+import { escapeHtml, link, mention, truncate } from './format';
 import { createGithubReader, GithubApiError, type GithubPages, type GithubPageStream } from './github-api';
 import { publisherPath, releaseEntries, type InfraReleaseChanges } from './infra-release-changes';
 import { readReleaseChanges, readReleasePullRequest } from './release-api';
@@ -231,7 +231,12 @@ function changeLines(changes: InfraReleaseChanges | undefined, outcome: Outcome)
   return lines;
 }
 
-function card(topic: number, run: VerifiedAttempt, deployment: Deployment | undefined, outcome: Outcome,
+interface InfraReleaseConfig {
+  topic: number;
+  userMap: Record<string, string | number>;
+}
+
+function card({ topic, userMap }: InfraReleaseConfig, run: VerifiedAttempt, deployment: Deployment | undefined, outcome: Outcome,
   prUrl?: string, changes?: InfraReleaseChanges,
 ): OutgoingMessage {
   const title = run.kind === 'infra' ? 'Выкатка инфры' : deployment?.service ? `Выкатка ${deployment.service}`
@@ -249,7 +254,7 @@ function card(topic: number, run: VerifiedAttempt, deployment: Deployment | unde
     const health = run.kind === 'infra' ? steps.find(step => step.name === 'verify.yml')?.conclusion : undefined;
     if (health === 'success' || health === 'failure') lines.push(`Health Check ${labels[health]}`);
   }
-  if (run.actor) lines.push(`Запустил: ${escapeHtml(run.actor)}`);
+  if (run.actor) lines.push(`Запустил: ${mention(run.actor, userMap)}`);
   const kind = outcome === 'start' ? 'start' : 'result';
   const notice = { key: `${kind}:${INFRA_REPO}:${run.runId}:${run.attempt}`, repository: INFRA_REPO, runId: run.runId, attempt: run.attempt } as const;
   const release: ReleaseNotice = outcome === 'start' && deployment
@@ -276,7 +281,7 @@ async function associatedPullRequest(api: InfraReleaseApi, run: VerifiedAttempt,
   } catch { /* PR enrichment does not delay the release notification. */ }
 }
 
-export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseApi, topic: number): Promise<OutgoingMessage[]> {
+export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseApi, config: InfraReleaseConfig): Promise<OutgoingMessage[]> {
   if (delivery.source !== 'github') return [];
   const event = record(JSON.parse(new TextDecoder().decode(delivery.raw)));
   if (record(event.repository).full_name !== INFRA_REPO) return [];
@@ -296,7 +301,7 @@ export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseA
       || (run.job.status !== 'in_progress' && run.job.status !== 'completed') || run.job.conclusion === 'skipped') return [];
     if (!await api.started(deployment.id, run.url, deliveryCutoff, status.id)) return [];
     const [prUrl, changes] = await Promise.all([associatedPullRequest(api, run, deployment), api.changes(run, deployment)]);
-    return [card(topic, run, deployment, 'start', prUrl, changes)];
+    return [card(config, run, deployment, 'start', prUrl, changes)];
   }
 
   if (delivery.event !== 'workflow_job' || event.action !== 'completed') return [];
@@ -315,6 +320,6 @@ export async function projectInfraRelease(delivery: Delivery, api: InfraReleaseA
   const deployment = deployments.length === 1 ? deployments[0] : undefined;
   const started = deployment && await api.started(deployment.id, run.url, cutoff);
   const [prUrl, changes] = await Promise.all([associatedPullRequest(api, run, deployment), api.changes(run, deployment)]);
-  const message = card(topic, run, deployment, outcome, prUrl, changes);
-  return started ? [card(topic, run, deployment, 'start', prUrl, changes), message] : [message];
+  const message = card(config, run, deployment, outcome, prUrl, changes);
+  return started ? [card(config, run, deployment, 'start', prUrl, changes), message] : [message];
 }

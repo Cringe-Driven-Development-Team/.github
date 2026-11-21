@@ -256,7 +256,7 @@ test.each([
   });
 });
 
-test('signed start and job completion become separate Infra cards with attempt logs and a uniquely confirmed PR', async () => {
+test('signed start and job completion mention the triggering actor in both Infra cards', async () => {
   const release = fixture();
   await runService([release], async ({ post, drained, cards }) => {
     await post('start', 'deployment_status', started(release));
@@ -265,15 +265,19 @@ test('signed start and job completion become separate Infra cards with attempt l
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ message_thread_id: 14389, link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [[{ text: 'PR', url: `https://github.com/${repo}/pull/171` }], [{ text: 'Логи выкатки', url: attemptUrl }]] } });
     expect(cards[0]!.text).toContain('Выкатка инфры началась');
-    expect(cards[0]!.text).toContain('Запустил: maintainer');
+    expect(cards[0]!.text).toContain('Запустил: <a href="tg://user?id=111">maintainer</a>');
     expect(cards[0]!.text).not.toContain('Health Check');
     await post('result', 'workflow_job', completed(release));
     await drained();
     expect(cards).toHaveLength(2);
     expect(cards[1]!.text).toContain('Выкатка инфры завершилась успешно');
+    expect(cards[1]!.text).toContain('Запустил: <a href="tg://user?id=111">maintainer</a>');
     expect(cards[1]!.text).toContain('Health Check ✅');
     expect(cards[1]!.reply_markup.inline_keyboard).toEqual([[{ text: 'PR', url: `https://github.com/${repo}/pull/171` }], [{ text: 'Логи выкатки', url: attemptUrl }]]);
-  }, { pulls: { [`${repo}:${infraSha}`]: [merged(171), merged(172, imageSha)] } });
+  }, {
+    config: { TELEGRAM_USER_MAP: '{"maintainer":"111","original":"222"}' },
+    pulls: { [`${repo}:${infraSha}`]: [merged(171), merged(172, imageSha)] },
+  });
 });
 
 test('a result before its start enqueues start first, deduplicates new delivery IDs and permits the next attempt', async () => {
@@ -331,6 +335,7 @@ test('signed completion received first reuses the task list in both cards and li
       expect(card.text).not.toContain('Правка 174');
     }
     expect(cards[1]!.text).toContain('Health Check ✅');
+    expect(cards[1]!.text).toContain('Запустил: maintainer');
   }, {
     pulls: { [`${repo}:${infraSha}`]: [171, 172, 173, 174].map(number => ({ ...merged(number), title: `Правка ${number}` })) },
     github: (url, init) => {
