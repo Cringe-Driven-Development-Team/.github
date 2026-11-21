@@ -352,7 +352,11 @@ test('signed completion received first reuses the task list in both cards and li
   });
 });
 
-test.each(['failure', 'cancelled'])('signed %s still shows the planned changes', async conclusion => {
+test.each([
+  ['success', 'Задачи'],
+  ['failure', 'Планировались изменения'],
+  ['cancelled', 'Планировались изменения'],
+])('signed %s uses the right heading for a single PR', async (conclusion, heading) => {
   const [previous, current] = withHistory();
   current.job.conclusion = conclusion;
   await runService([previous, current], async ({ post, drained, cards }) => {
@@ -362,8 +366,8 @@ test.each(['failure', 'cancelled'])('signed %s still shows the planned changes',
     await drained();
     expect(cards).toHaveLength(2);
     const row = `• <a href="https://github.com/${repo}/pull/173">Обновление &lt;infra&gt; &amp; прод</a>`;
-    expect(cards[0]!.text).toContain('<b>Изменение</b>\n' + row);
-    expect(cards[1]!.text).toContain('<b>Планировались изменения</b>\n' + row);
+    expect(cards[0]!.text).toContain('<b>Задачи</b>\n' + row);
+    expect(cards[1]!.text).toContain(`<b>${heading}</b>\n${row}`);
   }, {
     pulls: { [`${repo}:${infraSha}`]: [{ ...merged(173), title: pullTitle }] },
     github: url => {

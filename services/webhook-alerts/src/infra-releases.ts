@@ -224,7 +224,7 @@ function changeLines(changes: InfraReleaseChanges | undefined, outcome: Outcome)
   const { entries } = changes;
   if (!entries.length) return [];
   const heading = outcome === 'failure' || outcome === 'cancelled' ? 'Планировались изменения'
-    : entries.length > 1 ? 'Задачи и изменения' : entries[0]?.kind === 'issue' ? 'Задача' : 'Изменение';
+    : entries.length > 1 ? 'Задачи и изменения' : entries[0]?.kind === 'issue' ? 'Задача' : 'Задачи';
   const lines = [`<b>${heading}</b>`, ...entries.slice(0, 3).map(entry =>
     `• ${link(escapeHtml(truncate(entry.title.replace(/\s+/g, ' '), 140)), entry.url)}`)];
   if (entries.length > 3) lines.push(link('Все изменения', changes.compareUrl));
