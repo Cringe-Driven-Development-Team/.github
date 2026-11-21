@@ -17,24 +17,38 @@ export class GithubApiError extends Error {
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 type ReaderOptions = { token?: string; fetch?: Fetch; timeoutMs?: number };
 
+export type GithubPages = (path: string, paginate?: boolean) => Promise<unknown[]>;
+
 export function createGithubReader(options: ReaderOptions) {
   const fetcher = options.fetch ?? fetch;
-  async function operation<T>(run: (get: (path: string, paginate?: boolean) => Promise<unknown[]>) => Promise<T>): Promise<T> {
+  async function operation<T>(run: (pages: GithubPages, graphql: (query: string, variables: Record<string, unknown>) => Promise<Record<string, unknown>>) => Promise<T>): Promise<T> {
     if (!options.token?.trim()) throw new GithubApiError('unavailable');
     const signal = AbortSignal.timeout(Math.max(1, Math.min(options.timeoutMs ?? 5000, 5000)));
+    async function request(url: URL, body?: string): Promise<Response> {
+      if (url.origin !== 'https://api.github.com' || url.username || url.password) throw new GithubApiError('pagination');
+      const response = await fetcher(url.href, { method: body ? 'POST' : 'GET', body, redirect: 'error', signal,
+        headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${options.token}`, 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'content-type': 'application/json' } : {}) } });
+      if (!response.ok) {
+        // Only a known error classification survives; never expose response text.
+        const noAncestor = response.status === 404 && /No common ancestor/i.test(await response.text());
+        throw new GithubApiError(noAncestor ? 'no_common_ancestor' : `http_${response.status}`);
+      }
+      return response;
+    }
+    async function graphql(query: string, variables: Record<string, unknown>) {
+      const response = await request(new URL('https://api.github.com/graphql'), JSON.stringify({ query, variables }));
+      const body = object(await response.json());
+      if (body.errors !== undefined && (!Array.isArray(body.errors) || body.errors.length))
+        throw new GithubApiError('graphql');
+      return object(body.data);
+    }
     async function pages(path: string, paginate = true): Promise<unknown[]> {
       const start = new URL(path, 'https://api.github.com');
       let url: URL | undefined = start;
       const result: unknown[] = [];
       for (let page = 0; url && page < 10; page++) {
         if (url.origin !== start.origin || url.pathname !== start.pathname) throw new GithubApiError('pagination');
-        const response = await fetcher(url.href, { method: 'GET', redirect: 'error', signal,
-          headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${options.token}`, 'X-GitHub-Api-Version': '2022-11-28' } });
-        if (!response.ok) {
-          // Only a known error classification survives; never expose response text.
-          const noAncestor = response.status === 404 && /No common ancestor/i.test(await response.text());
-          throw new GithubApiError(noAncestor ? 'no_common_ancestor' : `http_${response.status}`);
-        }
+        const response = await request(url);
         result.push(await response.json());
         const next = paginate && response.headers.get('link')?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
         url = next ? new URL(next, start) : undefined;
@@ -42,7 +56,7 @@ export function createGithubReader(options: ReaderOptions) {
       if (url) throw new GithubApiError('pagination_limit');
       return result;
     }
-    try { return await run(pages); }
+    try { return await run(pages, graphql); }
     catch (e) { throw e instanceof GithubApiError ? e : new GithubApiError(signal.aborted ? 'timeout' : 'unavailable'); }
   }
   return operation;

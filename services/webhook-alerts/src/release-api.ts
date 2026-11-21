@@ -44,6 +44,131 @@ export interface ChangeReport {
   issues: LinkedIssue[];
   complete: boolean;
 }
+type ReleaseRepository = `Cringe-Driven-Development-Team/${'frontend' | 'backend' | 'infra' | '.github'}`;
+
+export async function readReleasePullRequest(
+  repository: ReleaseRepository,
+  graphql: (query: string, variables: Record<string, unknown>) => Promise<Obj>,
+  number: number,
+): ReturnType<ReleaseApi['pullRequest']> {
+  const [, name] = repository.split('/');
+  const issues = new Map<string, LinkedIssue>();
+  const cursors = new Set<string>();
+  let cursor: string | null = null,
+    title = '';
+  do {
+    const data = await graphql(
+        `
+          query ReleaseIssues($number: Int!, $cursor: String) {
+            repository(owner: "Cringe-Driven-Development-Team", name: "${name}") {
+              pullRequest(number: $number) {
+                title
+                closingIssuesReferences(first: 100, after: $cursor) {
+                  nodes {
+                    id
+                    number
+                    title
+                    repository {
+                      nameWithOwner
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+          }
+        `,
+        { number: positive(number), cursor },
+      ),
+      pr = obj(obj(data.repository).pullRequest),
+      connection = obj(pr.closingIssuesReferences);
+    title = str(pr.title);
+    for (const raw of list(connection.nodes)) {
+      const i = obj(raw),
+        id = str(i.id);
+      issues.set(id, {
+        id,
+        number: positive(i.number),
+        title: str(i.title),
+        repo: str(obj(i.repository).nameWithOwner),
+        prNumbers: [number],
+      });
+    }
+    const page = obj(connection.pageInfo);
+    if (typeof page.hasNextPage !== 'boolean') throw new GithubApiError('invalid_response');
+    cursor = page.hasNextPage ? str(page.endCursor) : null;
+    if (page.hasNextPage && (!cursor || cursors.has(cursor))) throw new GithubApiError('pagination');
+    if (cursor) cursors.add(cursor);
+  } while (cursor);
+  return { title, issues: [...issues.values()] };
+}
+
+export async function readReleaseChanges(
+  repository: ReleaseRepository,
+  base: string | null,
+  head: string,
+  { get, pages, pullRequest, include }: {
+    get: (path: string) => Promise<unknown>;
+    pages: (path: string) => Promise<unknown[]>;
+    pullRequest: ReleaseApi['pullRequest'];
+    include?: (number: number) => Promise<boolean>;
+  },
+): Promise<ChangeReport> {
+  sha(head);
+  const report: ChangeReport = { baseSha: base, headSha: head, prs: [], issues: [], complete: false };
+  if (base === null) return report;
+  sha(base);
+  const commits = new Set<string>();
+  const strictRange = repository.endsWith('/infra') || repository.endsWith('/.github');
+  let expectedTotal: number | undefined;
+  for (let page = 1; ; page++) {
+    const b = obj(await get(`/compare/${base}...${head}?per_page=100&page=${page}`)),
+      total = b.total_commits,
+      previous = commits.size;
+    if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0)
+      throw new GithubApiError('invalid_comparison');
+    if (strictRange && (b.status !== 'ahead' || total === 0 || (expectedTotal !== undefined && expectedTotal !== total)))
+      throw new GithubApiError('invalid_comparison');
+    expectedTotal = total;
+    for (const c of list(b.commits)) commits.add(sha(obj(c).sha));
+    if (commits.size === total) break;
+    if (commits.size <= previous || commits.size > total)
+      throw new GithubApiError('incomplete_comparison');
+  }
+  const prs = new Map<number, ChangeReport['prs'][number]>();
+  for (const commit of commits)
+    for (const raw of await pages(`/commits/${commit}/pulls?per_page=100`)) {
+      const p = obj(raw);
+      if (!p.merged_at || typeof p.merge_commit_sha !== 'string' || !commits.has(p.merge_commit_sha))
+        continue;
+      if (strictRange && (obj(p.base).ref !== 'main' || obj(obj(p.base).repo).full_name !== repository)) continue;
+      const number = positive(p.number);
+      prs.set(number, {
+        number,
+        title: str(p.title),
+        url: `https://github.com/${repository}/pull/${number}`,
+        mergeSha: p.merge_commit_sha,
+      });
+    }
+  for (const pr of [...prs.values()].sort((a, b) => a.number - b.number)) {
+    if (!include || await include(pr.number)) report.prs.push(pr);
+  }
+  const issues = new Map<string, LinkedIssue>();
+  for (const pr of report.prs) {
+    for (const issue of (await pullRequest(pr.number)).issues) {
+      const existing = issues.get(issue.id);
+      if (existing) existing.prNumbers.push(pr.number);
+      else issues.set(issue.id, issue);
+    }
+  }
+  report.issues = [...issues.values()];
+  report.complete = true;
+  return report;
+}
+
 export interface ReleaseStep {
   name: string;
   outcome: 'success' | 'failure' | 'cancelled' | 'skipped' | 'pending';
@@ -179,7 +304,7 @@ export function createReleaseApi(
   options: { token?: string; fetch?: typeof fetch; timeoutMs?: number; repository?: string } = {},
 ): ReleaseApi {
   const REPO = options.repository ?? "Cringe-Driven-Development-Team/frontend";
-  if (!["Cringe-Driven-Development-Team/frontend", "Cringe-Driven-Development-Team/backend"].includes(REPO)) throw new GithubApiError("untrusted_repository");
+  if (REPO !== "Cringe-Driven-Development-Team/frontend" && REPO !== "Cringe-Driven-Development-Team/backend") throw new GithubApiError("untrusted_repository");
   const PREFIX = `/repos/${REPO}`, backend = REPO.endsWith("/backend");
   const fetcher = options.fetch ?? fetch;
   async function request(path: string, init?: RequestInit): Promise<{ body: unknown; next: string | null }> {
@@ -460,57 +585,7 @@ export function createReleaseApi(
   }
 
   const api: ReleaseApi = {
-    pullRequest: async (number) => {
-      const issues = new Map<string, LinkedIssue>();
-      let cursor: string | null = null,
-        title = '';
-      do {
-        const data = await graphql(
-            `
-              query ReleaseIssues($number: Int!, $cursor: String) {
-                repository(owner: "Cringe-Driven-Development-Team", name: "${backend ? 'backend' : 'frontend'}") {
-                  pullRequest(number: $number) {
-                    title
-                    closingIssuesReferences(first: 100, after: $cursor) {
-                      nodes {
-                        id
-                        number
-                        title
-                        repository {
-                          nameWithOwner
-                        }
-                      }
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                    }
-                  }
-                }
-              }
-            `,
-            { number: positive(number), cursor },
-          ),
-          pr = obj(obj(data.repository).pullRequest),
-          connection = obj(pr.closingIssuesReferences);
-        title = str(pr.title);
-        for (const raw of list(connection.nodes)) {
-          const i = obj(raw),
-            id = str(i.id);
-          issues.set(id, {
-            id,
-            number: positive(i.number),
-            title: str(i.title),
-            repo: str(obj(i.repository).nameWithOwner),
-            prNumbers: [number],
-          });
-        }
-        const page = obj(connection.pageInfo);
-        cursor = page.hasNextPage ? str(page.endCursor) : null;
-        if (page.hasNextPage && !cursor) throw new GithubApiError('pagination');
-      } while (cursor);
-      return { title, issues: [...issues.values()] };
-    },
+    pullRequest: number => readReleasePullRequest(REPO, graphql, number),
     queue: async (number) => {
       const data = await graphql(
           `
@@ -607,50 +682,7 @@ export function createReleaseApi(
         throw new GithubApiError('invalid_comparison');
       return comparison.status === 'ahead' || comparison.status === 'identical';
     },
-    changes: async (base, head) => {
-      sha(head);
-      const report: ChangeReport = { baseSha: base, headSha: head, prs: [], issues: [], complete: false };
-      if (base === null) return report;
-      sha(base);
-      const commits = new Set<string>();
-      for (let page = 1; ; page++) {
-        const b = obj(await get(`/compare/${base}...${head}?per_page=100&page=${page}`)),
-          total = b.total_commits,
-          previous = commits.size;
-        if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0)
-          throw new GithubApiError('invalid_comparison');
-        for (const c of list(b.commits)) commits.add(sha(obj(c).sha));
-        if (commits.size === total) break;
-        if (commits.size <= previous || commits.size > total)
-          throw new GithubApiError('incomplete_comparison');
-      }
-      const prs = new Map<number, ChangeReport['prs'][number]>();
-      for (const commit of commits)
-        for (const raw of await pages(`/commits/${commit}/pulls?per_page=100`)) {
-          const p = obj(raw);
-          if (!p.merged_at || typeof p.merge_commit_sha !== 'string' || !commits.has(p.merge_commit_sha))
-            continue;
-          const number = positive(p.number);
-          prs.set(number, {
-            number,
-            title: str(p.title),
-            url: `https://github.com/${REPO}/pull/${number}`,
-            mergeSha: p.merge_commit_sha,
-          });
-        }
-      report.prs = [...prs.values()].sort((a, b) => a.number - b.number);
-      const issues = new Map<string, LinkedIssue>();
-      for (const pr of report.prs) {
-        for (const issue of (await api.pullRequest(pr.number)).issues) {
-          const existing = issues.get(issue.id);
-          if (existing) existing.prNumbers.push(pr.number);
-          else issues.set(issue.id, issue);
-        }
-      }
-      report.issues = [...issues.values()];
-      report.complete = true;
-      return report;
-    },
+    changes: (base, head) => readReleaseChanges(REPO, base, head, { get, pages, pullRequest: api.pullRequest }),
     job: async (id) => {
       const raw = obj(await get(`/actions/jobs/${positive(id)}`));
       if (raw.id !== id) throw new GithubApiError('invalid_job');
