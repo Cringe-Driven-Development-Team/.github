@@ -308,6 +308,35 @@ test('range_collects_all_pages_without_scanning_all_merged_prs', async () => {
   expect(f.calls.some((u) => /\/pulls\?state=closed/.test(u))).toBe(false);
   expect(f.calls.some((u) => u.includes('page=2'))).toBe(true);
 });
+const deploymentsPath = `/repos/${REPO}/deployments`;
+const deploymentsUrl = `https://api.github.com${deploymentsPath}?environment=production&per_page=100`;
+
+test.each([deploymentsPath, '/repositories/1393814114/deployments'])(
+  'reads page two of production history using the original URL for %s',
+  async (path) => {
+    const f = fixture();
+    f.extra = (url) => url.href === deploymentsUrl
+      ? Response.json([], { headers: { link: `<${path}?environment=other&page=2>; rel="next"` } })
+      : undefined;
+    expect(await f.api.production()).toMatchObject([{ id: 1, everSucceeded: true }]);
+    expect(f.calls.slice(0, 2)).toEqual([deploymentsUrl, deploymentsUrl + '&page=2']);
+  },
+);
+
+test.each([
+  '/repositories/1393814114/issues?page=2',
+  deploymentsPath + '?per_page=100',
+  deploymentsPath + '?page=x',
+  deploymentsPath + '?page=2&page=3',
+  deploymentsPath + '?page=1',
+])('rejects invalid next page before requesting it: %s', async (next) => {
+  const f = fixture();
+  f.extra = (url) => url.href === deploymentsUrl
+    ? Response.json([], { headers: { link: `<${next}>; rel="next"` } })
+    : undefined;
+  await expect(f.api.production()).rejects.toThrow('pagination');
+  expect(f.calls).toEqual([deploymentsUrl]);
+});
 test('cross_origin_pagination_never_sends_the_token_elsewhere', async () => {
   const f = fixture();
   f.extra = (u) =>
