@@ -18,3 +18,7 @@ run/attempt и reusable job/steps по backend#42. Job `deploy / deploy` под�
 вымышленные. Backend API tests читают этот JSON напрямую. Producer #42 должен
 использовать ту же fixture; после его реализации сравнить файлы побайтно.
 Rollback job `rollback / deploy` пока целевое имя, не свидетельство запуска.
+
+`backend-microservices-contract.json` содержит общую fixture v2 для manifest,
+частичного выбора сервисов и итогового отчёта. Все ID, SHA и digest синтетические.
+Consumer проверяет её по запросам GitHub Releases, Deployments и Actions artifacts.

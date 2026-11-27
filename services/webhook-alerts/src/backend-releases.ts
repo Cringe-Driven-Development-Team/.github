@@ -1,4 +1,5 @@
 import { escapeHtml, fitHtml, link, mention, truncate } from './format';
+import { SERVICES, SERVICE_NAMES, sameVersion, servicePassed, type ServiceVersion } from './backend-release-evidence';
 import type { ReleaseApi, VerifiedJob, VerifiedOperation, VerifiedRun } from './release-api';
 import type { OutgoingMessage } from './store';
 
@@ -30,8 +31,93 @@ function buttons(run: VerifiedRun, config: Config, report: string, rollback: boo
     [{ text: rollback ? 'Логи отката' : 'Логи выкатки', url: `${run.url}/attempts/${run.attempt}` }],
   ];
 }
+function versionLink(version: ServiceVersion | undefined): string {
+  if (!version) return 'не подтверждена';
+  const shortDigest = version.image_ref.split('@sha256:')[1]!.slice(0, 8);
+  return `${link(version.source_sha.slice(0, 7), `${root}/commit/${version.source_sha}`)} · <code>${shortDigest}</code>`;
+}
+
+function backendPublicationMessage(op: VerifiedOperation, config: Config): OutgoingMessage {
+  const target = op.release!;
+  const lines = [
+    '<b>📦 Релиз бэка подготовлен</b>',
+    link(op.sha.slice(0, 7), target.url),
+    '',
+    ...SERVICES.map(service => `${SERVICE_NAMES[service]}: ${versionLink(op.backendPublication?.[service])}`),
+    '',
+    'Комплект образов готов к выкладке.',
+  ];
+  return {
+    topic: config.topic, html: fitHtml(lines.join('\n')),
+    keyboard: [[{ text: 'GitHub Release', url: target.url }, { text: 'CI', url: op.run.url }]],
+    release: {
+      repository: BACKEND_REPO, kind: 'ready', sha: op.sha, releaseId: target.id,
+      key: `ready:${BACKEND_REPO}:${op.sha}`, operationKey: `publication:${BACKEND_REPO}:${op.sha}`,
+    },
+  };
+}
+
+async function backendMicroservicesMessage(op: VerifiedOperation, api: ReleaseApi, config: Config): Promise<OutgoingMessage> {
+  const deployment = op.backendDeployment!, result = deployment.result;
+  const rollback = op.kind === 'rollback', start = op.state === 'in_progress';
+  const action = rollback ? 'rollback' : 'deploy', title = rollback ? 'Откат бэка' : 'Выкатка бэка';
+  const reportUrl = op.notification.report_url ?? `${op.run.url}#summary`;
+  const successful = op.state === 'success' && !!result && deployment.selected.every(service =>
+    servicePassed(result.checks[service]) && sameVersion(result.observed[service], deployment.desired[service]));
+  const partial = !start && !successful && !!result && deployment.selected.some(service => {
+    const observed = result.observed[service];
+    return observed && !sameVersion(observed, deployment.before[service]);
+  });
+  const resultText = start ? (rollback ? 'начался' : 'началась') : successful ? 'успешно' : partial ? 'частично' : 'ошибка';
+  const lines = [
+    `<b>${start ? '⏳' : successful ? '✅' : partial ? '⚠️' : '❌'} ${title}: ${resultText}</b>`,
+    `${escapeHtml(config.siteUrl)} · production`, '',
+  ];
+  const comparisons: { text: string; url: string }[][] = [];
+  const changes = new Map<string, ReturnType<ReleaseApi['changes']>>();
+  for (const service of deployment.selected) {
+    const before = deployment.before[service], target = deployment.desired[service], observed = result?.observed[service];
+    const after = start ? target : observed, name = SERVICE_NAMES[service];
+    const checks = result?.checks[service];
+    const state = start ? 'запрошен' : servicePassed(checks) ? '✅ подтверждён'
+      : Object.values(checks ?? {}).includes('failed') ? '❌ ошибка проверки' : '⚪ проверки не подтверждены';
+    lines.push(`<b>${name}</b> · ${state}`, `${versionLink(before)} → ${versionLink(after)}`);
+    if (!start && !sameVersion(target, observed)) lines.push(`Цель: ${versionLink(target)}`);
+    if (before && after && before.source_sha !== after.source_sha) {
+      const base = rollback ? after.source_sha : before.source_sha;
+      const head = rollback ? before.source_sha : after.source_sha;
+      const compare = `${root}/compare/${base}...${head}`;
+      const comparison: { text: string; url: string }[] = [{ text: `Изменения ${name}`, url: compare }];
+      try {
+        const key = `${base}...${head}`;
+        if (!changes.has(key)) changes.set(key, api.changes(base, head));
+        const change = await changes.get(key)!;
+        const issue = change.issues[0], pr = change.prs[0];
+        const item = issue ? { title: issue.title, url: `https://github.com/${issue.repo}/issues/${issue.number}` } : pr;
+        if (change.complete && item) lines.push(`• ${link(escapeHtml(truncate(item.title.replace(/\s+/g, ' '), 115)), item.url)}`);
+        else if (!change.complete) lines.push('Список изменений неполный.');
+        if (change.complete && pr) comparison.push({ text: `PR #${pr.number}`, url: pr.url });
+      } catch {
+        lines.push('Список изменений недоступен.');
+      }
+      comparisons.push(comparison);
+    }
+    lines.push('');
+  }
+  const failed = op.run.steps?.find(s => s.outcome === 'failure' || s.outcome === 'cancelled');
+  if (!start && failed) lines.push(`Этап сбоя: ${escapeHtml(truncate(failed.name, 100))}`);
+  lines.push(`Запустил: ${mention(op.run.actor, config.userMap)}`);
+  return {
+    topic: config.topic, html: fitHtml(lines.join('\n')),
+    keyboard: buttons(op.run, config, reportUrl, rollback, comparisons),
+    release: { repository: BACKEND_REPO, action, attempt: op.run.attempt, kind: start ? 'start' : 'result',
+      key: start ? `start:${BACKEND_REPO}:${op.id}` : backendResultKey(action, op.run), deploymentId: op.id, runId: op.run.id },
+  };
+}
+
 export async function backendOperationMessage(op: VerifiedOperation, api: ReleaseApi, config: Config): Promise<OutgoingMessage> {
-  if (op.kind === 'publish') throw new Error('backend publication is not a production operation');
+  if (op.kind === 'publish') return backendPublicationMessage(op, config);
+  if (op.backendDeployment) return backendMicroservicesMessage(op, api, config);
   const rollback = op.kind === 'rollback', start = op.state === 'in_progress';
   const reportUrl = op.notification.report_url ?? `${op.run.url}#summary`;
   const fact = evidence(op.run, op.state === 'success');
@@ -74,7 +160,9 @@ export async function backendOperationMessage(op: VerifiedOperation, api: Releas
       kind:start?'start':'result',key:start?`start:${BACKEND_REPO}:${op.id}`:backendResultKey(op.kind,op.run),deploymentId:op.id,runId:op.run.id} };
 }
 export function backendJobMessage(job: VerifiedJob, config: Config): OutgoingMessage {
-  const rollback=job.run.workflow==='Rollback', kind=rollback?'rollback':'deploy', fact=evidence(job.run,false);
+  const rollback=job.run.workflow==='Rollback', kind=rollback?'rollback':'deploy';
+  const versioned = job.operation?.backendDeployment || job.run.steps?.some(step => step.name === 'Upload deployment evidence');
+  const fact = evidence(versioned ? { ...job.run, steps: null } : job.run, false);
   const lines=[`<b>${fact.checked?'✅':job.conclusion==='cancelled'?'⚪':'❌'} ${rollback?'Откат':'Выкатка'} бэка: ${fact.checked?'успешно':job.conclusion==='cancelled'?'отменено':'ошибка'}</b>`,
     `${escapeHtml(config.siteUrl)} · production`, '', `Health Check ${fact.health==='❌'?'⚪':fact.health}`,
     fact.checked ? 'Проверки прошли; поздняя ошибка не меняет результат выкатки. Подробности — в полном отчёте.' : 'Состояние прода: неизвестно. Подробности — в полном отчёте.',

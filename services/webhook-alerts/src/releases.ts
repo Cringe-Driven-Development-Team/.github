@@ -19,6 +19,10 @@ function object(value: unknown): Record<string, unknown> {
     ? (value as Record<string, unknown>)
     : {};
 }
+function logBackendRejection(delivery: Delivery, error: GithubApiError) {
+  if (error.code.startsWith('untrusted_backend'))
+    console.warn(JSON.stringify({ repository: BACKEND_REPO, deliveryId: delivery.deliveryId, errorCode: error.code }));
+}
 function number(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
     throw new GithubApiError('invalid_event');
@@ -118,7 +122,7 @@ async function operationMessage(
     header = ['📦 Релиз фронта залит, ждёт выкатки'];
     footer = [
       `Тег для CD (поле release): <code>${op.release!.tag}</code>`,
-      `Образ BFF <code>${op.imageRef.split('@')[1]}</code>`,
+      `Образ BFF <code>${op.imageRef?.split('@')[1]}</code>`,
       link('CI выпуска', run.url),
       `Запустил: ${mention(run.actor, config.userMap)}`,
     ];
@@ -153,7 +157,7 @@ async function operationMessage(
       '',
       ...(op.kind === 'deploy' ? [] : [
         `Релиз <code>${op.sha}</code>`,
-        `Образ BFF <code>${op.imageRef.split('@')[1]}</code>`,
+        `Образ BFF <code>${op.imageRef?.split('@')[1]}</code>`,
       ]),
       `Запустил: ${mention(run.actor, config.userMap)}`,
     ];
@@ -231,17 +235,21 @@ export async function projectRelease(
     ];
   }
   if (delivery.event === 'release') {
-    if (backend) return [];
     if (payload.action !== 'published') return [];
     let op: VerifiedOperation;
     try {
       op = await api.release(number(object(payload.release).id));
     } catch (e) {
-      if (e instanceof GithubApiError && e.code.startsWith('untrusted')) return [];
+      if (e instanceof GithubApiError && e.code.startsWith('untrusted')) {
+        if (backend) logBackendRejection(delivery, e);
+        return [];
+      }
       throw e;
     }
     // Imported and pre-contract Releases are catalog entries, not new ready events.
-    if (op.release!.imported || (Date.parse(op.createdAt) < (config.releaseCutoffMs ?? 0) && !delivery.releaseRecovery))
+    const cutoff = backend ? config.cutoffMs : config.releaseCutoffMs;
+    if ((backend && !op.backendPublication) || op.release!.imported
+        || (Date.parse(op.createdAt) < (cutoff ?? 0) && !delivery.releaseRecovery))
       return [];
     return [await operationMessage(op, api, config)];
   }
@@ -261,8 +269,10 @@ export async function projectRelease(
       if (
         e instanceof GithubApiError &&
         (e.code.startsWith('untrusted') || e.code === 'notification_missing')
-      )
+      ) {
+        if (backend) logBackendRejection(delivery, e);
         return [];
+      }
       throw e;
     }
     if (Date.parse(op.createdAt) < (config.cutoffMs ?? 0) && !delivery.releaseRecovery) return [];
@@ -381,6 +391,11 @@ export async function checkReleaseNotice(
         return 'skip';
     }
     if (notice.kind === 'ready') {
+      if (notice.repository === BACKEND_REPO) {
+        if (notice.releaseId === undefined) return 'skip';
+        const publication = await api.release(notice.releaseId);
+        return publication.backendPublication && publication.sha === notice.sha ? 'send' : 'skip';
+      }
       for (const production of await api.production())
         if (production.everSucceeded && (await api.isAncestor(notice.sha, production.sha))) return 'skip';
     }
