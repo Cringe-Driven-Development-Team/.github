@@ -393,13 +393,13 @@ export function createReleaseApi(
       if (!link || link.origin !== start.origin || link.username || link.password)
         throw new GithubApiError('pagination');
       const canonicalPath = link.pathname.replace(/^\/repositories\/[1-9]\d*(?=\/)/, PREFIX);
-      const pages = link.searchParams.getAll('page');
-      const page = Number(pages[0]);
-      if (canonicalPath !== start.pathname || pages.length !== 1 || !/^[1-9]\d*$/.test(pages[0]) ||
+      const [nextPage, duplicate] = link.searchParams.getAll('page');
+      const page = Number(nextPage);
+      if (canonicalPath !== start.pathname || !nextPage || duplicate !== undefined || !/^[1-9]\d*$/.test(nextPage) ||
           !Number.isSafeInteger(page) || page <= Number(url.searchParams.get('page') ?? 1))
         throw new GithubApiError('pagination');
       // GitHub may link by repository ID. Keep the original route and its filters.
-      url.searchParams.set('page', pages[0]);
+      url.searchParams.set('page', nextPage);
     }
     return result;
   }
