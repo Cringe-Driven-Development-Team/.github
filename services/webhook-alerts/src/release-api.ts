@@ -382,16 +382,24 @@ export function createReleaseApi(
   }
   async function pages(path: string, field?: string): Promise<unknown[]> {
     const start = new URL(PREFIX + path, 'https://api.github.com'),
-      seen = new Set<string>(),
       result: unknown[] = [];
-    let url: URL | null = start;
-    while (url) {
-      if (url.origin !== start.origin || url.pathname !== start.pathname || seen.has(url.href))
+    const url = new URL(start);
+    while (true) {
+      const response = await request(url.href);
+      result.push(...list(field ? obj(response.body)[field] : response.body));
+      if (!response.next) break;
+
+      const link = URL.parse(response.next, start);
+      if (!link || link.origin !== start.origin || link.username || link.password)
         throw new GithubApiError('pagination');
-      seen.add(url.href);
-      const next = await request(url.href);
-      result.push(...list(field ? obj(next.body)[field] : next.body));
-      url = next.next ? new URL(next.next, start) : null;
+      const canonicalPath = link.pathname.replace(/^\/repositories\/[1-9]\d*(?=\/)/, PREFIX);
+      const [nextPage, duplicate] = link.searchParams.getAll('page');
+      const page = Number(nextPage);
+      if (canonicalPath !== start.pathname || !nextPage || duplicate !== undefined || !/^[1-9]\d*$/.test(nextPage) ||
+          !Number.isSafeInteger(page) || page <= Number(url.searchParams.get('page') ?? 1))
+        throw new GithubApiError('pagination');
+      // GitHub may link by repository ID. Keep the original route and its filters.
+      url.searchParams.set('page', nextPage);
     }
     return result;
   }
