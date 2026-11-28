@@ -6,7 +6,7 @@ import { githubReview } from './github';
 export type DeliveryLane = 'ordinary' | 'release-queue' | 'release-operation';
 export type ReleaseNotice = { key: string; repository?: string; action?: 'deploy'|'rollback'; attempt?: number } & (
   {kind:'queue';prNumber:number;queueEntryId:string} | {kind:'dequeue';prNumber:number} |
-  {kind:'ready';sha:string;operationKey:string} | {kind:'start'|'result';deploymentId:number;runId:number} |
+  {kind:'ready';sha:string;operationKey:string;releaseId?:number} | {kind:'start'|'result';deploymentId:number;runId:number} |
   {kind:'result';repository:typeof INFRA_REPO;runId:number;attempt:number;jobId:number;deploymentId?:number} |
   {kind:'job-error'|'retention';runId:number;attempt:number;jobId:number}
 );
@@ -139,7 +139,7 @@ function lane(input: DeliveryInput): DeliveryLane {
     const repository = payload?.repository?.full_name;
     if (!releaseActivationTables.has(repository)) return 'ordinary';
     if (repository === frontendRepo && input.event === 'pull_request' && ['enqueued','dequeued'].includes(payload.action)) return 'release-queue';
-    if (['deployment_status','workflow_job'].includes(input.event) || (repository === frontendRepo && input.event === 'release')) return 'release-operation';
+    if (['deployment_status','workflow_job'].includes(input.event) || ([frontendRepo, 'Cringe-Driven-Development-Team/backend'].includes(repository) && input.event === 'release')) return 'release-operation';
   } catch { /* Other accepted events retain their original preparation path. */ }
   return 'ordinary';
 }

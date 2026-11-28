@@ -1,0 +1,201 @@
+{
+  "deployment": {
+    "id": 2,
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ref": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "created_at": "2026-11-27T13:00:00Z",
+    "task": "deploy",
+    "environment": "production",
+    "creator": {
+      "login": "github-actions[bot]"
+    },
+    "payload": {
+      "schema_version": 2,
+      "action": "deploy",
+      "release_tag": "release-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "run": "https://github.com/Cringe-Driven-Development-Team/backend/actions/runs/20",
+      "infra_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "selected_services": [
+        "identity",
+        "workspace"
+      ],
+      "before": {
+        "identity": {
+          "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-identity@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "migration_version": 1
+        },
+        "workspace": {
+          "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-workspace@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "migration_version": 1
+        },
+        "environments": {
+          "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-environments@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "migration_version": 1
+        }
+      },
+      "desired": {
+        "identity": {
+          "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-identity@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "migration_version": 1
+        },
+        "workspace": {
+          "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-workspace@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "migration_version": 1
+        },
+        "environments": {
+          "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-environments@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+          "migration_version": 1
+        }
+      },
+      "notification": {
+        "run_attempt": 1,
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "report_url": "https://github.com/Cringe-Driven-Development-Team/backend/actions/runs/20#summary"
+      }
+    }
+  },
+  "result": {
+    "schema_version": 2,
+    "action": "deploy",
+    "release_tag": "release-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "infra_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "selected_services": [
+      "identity",
+      "workspace"
+    ],
+    "before": {
+      "identity": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-identity@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      },
+      "workspace": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-workspace@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      },
+      "environments": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-environments@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      }
+    },
+    "desired": {
+      "identity": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-identity@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      },
+      "workspace": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-workspace@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      },
+      "environments": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-environments@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      }
+    },
+    "run_id": 20,
+    "run_attempt": 1,
+    "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deployment_id": 2,
+    "observed": {
+      "identity": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-identity@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      },
+      "workspace": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-workspace@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      },
+      "environments": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-environments@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+        "migration_version": 1
+      }
+    },
+    "checks": {
+      "identity": {
+        "image": "passed",
+        "ready": "passed",
+        "smoke": "passed"
+      },
+      "workspace": {
+        "image": "passed",
+        "ready": "passed",
+        "smoke": "passed"
+      }
+    }
+  },
+  "manifest": {
+    "format_version": 2,
+    "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ci_url": "https://github.com/Cringe-Driven-Development-Team/backend/actions/runs/30",
+    "protocol_revision": "cccccccccccccccccccccccccccccccccccccccc",
+    "services": {
+      "identity": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-identity@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "platform": "linux/amd64",
+        "image_id": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+        "migration_version": 1,
+        "archive": {
+          "name": "identity-image.tar.gz",
+          "size": 1024,
+          "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+        }
+      },
+      "workspace": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-workspace@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "platform": "linux/amd64",
+        "image_id": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "migration_version": 1,
+        "archive": {
+          "name": "workspace-image.tar.gz",
+          "size": 1024,
+          "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      },
+      "environments": {
+        "image_ref": "ghcr.io/cringe-driven-development-team/cellestial-environments@sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "platform": "linux/amd64",
+        "image_id": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "migration_version": 1,
+        "archive": {
+          "name": "environments-image.tar.gz",
+          "size": 1024,
+          "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+        },
+        "agent_version": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "kernel_ref": "ghcr.io/cringe-driven-development-team/cellestial-kernel-python@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    }
+  }
+}

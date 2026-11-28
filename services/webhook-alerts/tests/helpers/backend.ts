@@ -10,8 +10,8 @@ export function backendApiFixture() {
     extra: undefined as ((url: URL, init?: RequestInit) => Response | undefined) | undefined };
   const fetcher = (async (input, init) => {
     const url = new URL(String(input)); state.calls.push(url.href);
-    expect(url.origin).toBe('https://api.github.com');
     const special = state.extra?.(url, init); if (special) return special;
+    expect(url.origin).toBe('https://api.github.com');
     const p = url.pathname.replace(`/repos/${repo}`, '');
     if (p === '/deployments/2') return Response.json(current);
     if (p === '/deployments/1') return Response.json(previous);
